@@ -109,8 +109,11 @@ struct SessionRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Circle().fill(word == "unknown" ? Color.clear : Color.state(word)).stroke(Color.state(word), lineWidth: 1.5).frame(width: 8, height: 8)
-                HarnessMark(harness: r.harness)
+                ZStack(alignment: .bottomTrailing) {
+                    HarnessMark(harness: r.harness, size: 18)
+                    Circle().fill(word == "unknown" ? Color.card : Color.state(word)).stroke(Color.state(word), lineWidth: 1.5).frame(width: 7, height: 7)
+                        .padding(1.5).background(Color.card, in: Circle()).offset(x: 3, y: 3)
+                }.foregroundStyle(Color.state(word))
                 if !r.label.isEmpty { Text(r.label).fontWeight(.semibold).strikethrough(word == "ended") }
                 if !r.project.isEmpty { Text(r.project).font(.caption).fontWeight(.medium).padding(.horizontal, 6).padding(.vertical, 1).background(Color.line, in: RoundedRectangle(cornerRadius: 4)) }
                 Text(word.replacing("_", with: " ")).font(.footnote).fontWeight(.medium).foregroundStyle(Color.state(word))
@@ -151,11 +154,10 @@ struct SessionRow: View {
 /// The harness by its logo, Claude's, OpenAI's for codex, pi's, from the asset catalog; any other by name.
 struct HarnessMark: View {
     let harness: String
+    var size: CGFloat = 14
     var body: some View {
         if UIImage(named: harness) != nil {
-            Image(harness).resizable().scaledToFit().frame(width: 14, height: 14)
-                .foregroundStyle(harness == "claude" ? Color(red: 0.851, green: 0.467, blue: 0.341) : Color.primary)
-                .accessibilityLabel(harness)
+            Image(harness).resizable().scaledToFit().frame(width: size, height: size).accessibilityLabel(harness)
         } else {
             Text(harness).font(.footnote).foregroundStyle(Color.dim)
         }
