@@ -8,6 +8,12 @@ class Rosterd < Formula
   url "https://github.com/sbusso/rosterd/releases/download/v0.1.8/rosterd-0.1.8-aarch64-apple-darwin.tar.gz"
   sha256 "818660a0fc9ba9696aaf303700fb52ef08f3e4bb4eb03bbc92dddfd65bbbce4c"
   license "MIT"
+  # The bottle is what lets a Mac install without a compiler toolchain: `brew bottle` of the
+  # tarball install, uploaded next to it on the release.
+  bottle do
+    root_url "https://github.com/sbusso/rosterd/releases/download/v0.1.8"
+    sha256 arm64_tahoe: "f69a8b857a5f429c8ca8fbf505e2e0e87d7f802547c36d34a02d73eec359a97a"
+  end
   head do
     url "https://github.com/sbusso/rosterd.git", branch: "main"
     depends_on "rust" => :build
