@@ -834,6 +834,17 @@ mod tests {
         panic!("saw {} requests, wanted {n}", fake.seen.lock().unwrap().len());
     }
 
+    /// The fake sees a request before the bridge pops it from the queue; wait for the pop.
+    async fn queued_settles(b: &Bridge, n: usize) {
+        for _ in 0..200 {
+            if b.status().queued == n {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("queued {}, wanted {n}", b.status().queued);
+    }
+
     #[tokio::test]
     async fn claims_queued_while_down_arrive_in_seq_order_after_a_5xx() {
         let dir = state_dir("order");
@@ -878,7 +889,7 @@ mod tests {
         b.bind_attempt("B", "tok-B");
         let seen = wait_for(&fake, 1).await;
         assert_eq!(seen[0].path, "/api/v1/attempts/B/activity");
-        assert_eq!(b.status().queued, 1);
+        queued_settles(&b, 1).await;
 
         fake.script.lock().unwrap().push_back((422, json!({ "error": { "code": "validation" } })));
         b.bind_attempt("A", "tok-A");
@@ -886,7 +897,7 @@ mod tests {
         let seen = wait_for(&fake, 3).await;
         assert_eq!(seen[1].body["seq"], 1);
         assert_eq!(seen[2].body["seq"], 2);
-        assert_eq!(b.status().queued, 0);
+        queued_settles(&b, 0).await;
     }
 
     #[tokio::test]
