@@ -153,6 +153,7 @@ pub fn steps() -> Vec<Step> {
             },
         });
     }
+    steps.push(Step { name: "tray", inputs: &[], foreground: false, optional: false, check: check_tray, apply: apply_tray });
     steps.push(Step {
         name: "workspace",
         inputs: &["workspace url", "workspace agent token"],
@@ -263,7 +264,15 @@ fn apply_binaries(ctx: &Ctx, _: &[String], log: Log) -> Result<()> {
     for (name, body) in SCRIPTS {
         install_file(&ctx.bin_dir.join(name), body.as_bytes())?;
     }
-    log(format!("installed rosterd, rosterd-holder, rosterd-hook, rosterd-launch, rosterd-open into {}", ctx.bin_dir.display()));
+    // The tray is a desktop extra: the cross-built dist has none, a native build has one.
+    let tray = ctx.exe.with_file_name("rosterd-tray");
+    let with_tray = if tray.is_file() {
+        install_file(&ctx.bin_dir.join("rosterd-tray"), &std::fs::read(&tray)?)?;
+        ", rosterd-tray"
+    } else {
+        ""
+    };
+    log(format!("installed rosterd, rosterd-holder, rosterd-hook, rosterd-launch, rosterd-open{with_tray} into {}", ctx.bin_dir.display()));
     Ok(())
 }
 
@@ -544,6 +553,106 @@ fn apply_integration(ctx: &Ctx, target: Target, log: Log) -> Result<()> {
     integrate::install_at(target, &ctx.config, &ctx.paths)?;
     log(format!("rosterd integrate install {}", target.name()));
     Ok(())
+}
+
+// The menu bar tray, started at login: a LaunchAgent on macOS, an autostart entry on Linux.
+
+fn tray_bin(ctx: &Ctx) -> Option<PathBuf> {
+    [ctx.bin_dir.join("rosterd-tray"), ctx.exe.with_file_name("rosterd-tray")].into_iter().find(|p| p.is_file()).or_else(|| which(&ctx.paths.search_path, "rosterd-tray"))
+}
+
+#[cfg(target_os = "macos")]
+const TRAY_LABEL: &str = "com.rosterd.tray";
+
+#[cfg(target_os = "macos")]
+fn tray_domain() -> String {
+    format!("gui/{}", run_capture("id", &["-u"]).unwrap_or_default().trim())
+}
+
+#[cfg(target_os = "macos")]
+fn check_tray(ctx: &Ctx) -> State {
+    let loaded = Command::new("launchctl").args(["print", &format!("{}/{TRAY_LABEL}", tray_domain())]).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+    match (loaded, tray_bin(ctx)) {
+        (true, _) => State::Done(format!("LaunchAgent {TRAY_LABEL} loaded")),
+        (false, Some(_)) => State::Needed("start the menu bar tray at login".into()),
+        (false, None) => State::Unavailable("no rosterd-tray binary; a native build has one".into()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apply_tray(ctx: &Ctx, _: &[String], log: Log) -> Result<()> {
+    let bin = tray_bin(ctx).context("no rosterd-tray binary")?;
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{TRAY_LABEL}</string>
+  <key>ProgramArguments</key><array><string>{bin}</string></array>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>{home}/.local/bin:{home}/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+</dict>
+</plist>
+"#,
+        bin = bin.display(),
+        home = ctx.home.display()
+    );
+    let dir = ctx.home.join("Library").join("LaunchAgents");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{TRAY_LABEL}.plist"));
+    std::fs::write(&path, plist)?;
+    let domain = tray_domain();
+    let _ = Command::new("launchctl").args(["bootout", &format!("{domain}/{TRAY_LABEL}")]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let status = Command::new("launchctl").args(["bootstrap", &domain, &path.to_string_lossy()]).status()?;
+    if !status.success() {
+        bail!("launchctl bootstrap failed ({status}); the plist is at {}", path.display());
+    }
+    log(format!("tray running and at login ({})", path.display()));
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn tray_desktop(ctx: &Ctx) -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| ctx.home.join(".config")).join("autostart").join("rosterd-tray.desktop")
+}
+
+#[cfg(target_os = "linux")]
+fn check_tray(ctx: &Ctx) -> State {
+    let display = std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
+    match (tray_desktop(ctx).is_file(), tray_bin(ctx), display) {
+        (true, _, _) => State::Done("autostart entry present".into()),
+        (false, _, false) => State::Unavailable("no display; the tray is for a desktop".into()),
+        (false, Some(_), true) => State::Needed("start the tray at login".into()),
+        (false, None, true) => State::Unavailable("no rosterd-tray binary; a native build has one".into()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn apply_tray(ctx: &Ctx, _: &[String], log: Log) -> Result<()> {
+    let bin = tray_bin(ctx).context("no rosterd-tray binary")?;
+    let path = tray_desktop(ctx);
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::write(&path, format!("[Desktop Entry]\nType=Application\nName=rosterd tray\nExec={}\nX-GNOME-Autostart-enabled=true\n", bin.display()))?;
+    if run_capture("pgrep", &["-x", "rosterd-tray"]).is_none() {
+        let mut command = Command::new(&bin);
+        command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        command.spawn()?;
+    }
+    log(format!("tray running and at login ({})", path.display()));
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn check_tray(_: &Ctx) -> State {
+    State::Unavailable("no tray autostart for this OS".into())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn apply_tray(_: &Ctx, _: &[String], _: Log) -> Result<()> {
+    bail!("no tray autostart for this OS")
 }
 
 // The workspace credential, R8, and a swarm to join, R7.3: the two rows that ask for input.

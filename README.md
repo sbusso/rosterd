@@ -8,6 +8,7 @@ Its own repository and Cargo workspace; the workspace it reports to lives in its
 ```
 crates/proto     types shared by daemon and holder: Record, Snapshot, HolderState, Source
 crates/holder    rosterd-holder, R2.1: owns one ACP adapter's stdio, relays over a socket
+crates/tray      rosterd-tray: the roster in the menu bar (macOS, Linux), a native menu over the CLI
 crates/rosterd   the daemon
   src/config.rs     TOML config and platform paths, R10 R6
   src/identity.rs   Ed25519 node key and node_id, R7.1
@@ -55,9 +56,18 @@ cross-builds `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` with car
 Or run the binary once: `rosterd setup` opens a checklist screen with one row per thing the
 machine needs (binaries, PATH, config, service, daemon, then per harness the binary, its ACP
 adapter and the hooks or extension, then the optional workspace credential and swarm join).
-Space picks rows, enter runs them, `a` picks everything needed; `rosterd setup --yes`, or a
+Space picks rows, enter runs them, `a` picks everything needed; the `tray` row starts
+`rosterd-tray` at login (a LaunchAgent, an autostart entry); `rosterd setup --yes`, or a
 pipe, runs the needed rows headless. The screen is `crates/rosterd/src/setup/tui.rs`, generic
 over the rows: another tool brings its own `steps()`.
+
+The tray. `rosterd-tray` puts the roster in the menu bar: one row per session with its state,
+a submenu with allow, allow always and deny when one needs attention, a click jumps to the
+session (`rosterd open`), and the count of sessions needing attention sits beside the icon on
+macOS (the icon's colour on Linux). It is a menu over the CLI: `rosterd watch --json` feeds it and
+`rosterd allow|deny|open|ui` act, so it needs no socket, token or config of its own. Linux shows it
+where StatusNotifierItem trays are shown: KDE and most desktops; GNOME with the AppIndicator
+extension.
 
 Start. The service starts it; by hand, `rosterd daemon`. `rosterd status` prints the node, its
 listeners, swarm, bridge state, and the counts. The config lives in
@@ -84,6 +94,7 @@ rosterd allow KEY [--always] | deny KEY [--reason TEXT]
 rosterd spawn KEY --harness H --cwd DIR --task TASK [--name L]
 rosterd invite [--ttl MINUTES] | join ADDRESS --token T | revoke NODE_ID | leave
 rosterd integrate install|uninstall claude|codex|pi | integrate status
+rosterd ui                                 the roster page in the browser
 rosterd daemon [--config PATH] | setup [--yes] | doctor | version
 ```
 

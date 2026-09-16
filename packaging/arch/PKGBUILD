@@ -9,7 +9,7 @@ pkgdesc="One daemon per machine that knows every coding agent session on it"
 arch=('x86_64' 'aarch64')
 url="https://github.com/sbusso/rosterd"
 license=('MIT')
-depends=('gcc-libs' 'glibc' 'bash')
+depends=('gcc-libs' 'glibc' 'bash' 'gtk3' 'libayatana-appindicator')
 makedepends=('cargo')
 optdepends=('tailscale: the swarm listener'
             'systemd: the user unit and the per-user system unit')
@@ -40,7 +40,7 @@ check() {
 
 package() {
   cd "$pkgname-$pkgver"
-  install -Dm755 target/release/rosterd target/release/rosterd-holder -t "$pkgdir/usr/bin"
+  install -Dm755 target/release/rosterd target/release/rosterd-holder target/release/rosterd-tray -t "$pkgdir/usr/bin"
   install -Dm755 scripts/rosterd-hook scripts/rosterd-launch scripts/rosterd-open -t "$pkgdir/usr/bin"
   # The units name the packaged binary, not ~/.local/bin or /usr/local/bin.
   sed 's|%h/.local/bin/rosterd|/usr/bin/rosterd|' packaging/rosterd.service \

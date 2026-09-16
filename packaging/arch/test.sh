@@ -9,7 +9,7 @@ cd "$(dirname "$0")/../.."
 docker run --rm --platform linux/amd64 -v "$PWD:/repo:ro" -e MAKEPKG_FLAGS="${1-}" archlinux:base-devel bash -euo pipefail -c '
   # pacman 7 sandboxes downloads with seccomp, which the emulated kernel refuses.
   sed -i "s/^#DisableSandbox/DisableSandbox/" /etc/pacman.conf
-  pacman -Syu --noconfirm --needed rust >/dev/null
+  pacman -Syu --noconfirm --needed rust gtk3 libayatana-appindicator >/dev/null
   useradd -m build
   ver=$(sed -n "s/^pkgver=//p" /repo/packaging/arch/PKGBUILD)
   mkdir -p /build/src
@@ -20,6 +20,7 @@ docker run --rm --platform linux/amd64 -v "$PWD:/repo:ro" -e MAKEPKG_FLAGS="${1-
   su build -c "cd /build/src/rosterd-$ver && cargo fetch --locked && cd /build && makepkg -e $MAKEPKG_FLAGS"
   pacman -U --noconfirm /build/rosterd-*.pkg.tar*
   rosterd version
+  rosterd-tray --help 2>&1 | head -1 || true
   grep ExecStart /usr/lib/systemd/user/rosterd.service /usr/lib/systemd/system/rosterd-system@.service
   pacman -Ql rosterd
 '

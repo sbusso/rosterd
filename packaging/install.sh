@@ -27,7 +27,8 @@ bin="$HOME/.local/bin"
 mkdir -p "$bin"
 install -m755 "$from/rosterd" "$from/rosterd-holder" "$bin/"
 install -m755 scripts/rosterd-hook scripts/rosterd-launch scripts/rosterd-open "$bin/"
-echo "installed rosterd, rosterd-holder, rosterd-hook, rosterd-launch, rosterd-open into $bin"
+[ -x "$from/rosterd-tray" ] && install -m755 "$from/rosterd-tray" "$bin/"
+echo "installed rosterd, rosterd-holder, rosterd-hook, rosterd-launch, rosterd-open$([ -x "$from/rosterd-tray" ] && echo ', rosterd-tray') into $bin"
 case ":$PATH:" in *":$bin:"*) ;; *) echo "note: $bin is not on PATH; the hook must be reachable by the harness" ;; esac
 
 # The config directory as crates/rosterd/src/config.rs resolves it.

@@ -119,6 +119,8 @@ pub enum Command {
     },
     /// Jump to the session: tmux, herdr, or the /ui page.
     Open { key: String },
+    /// Open the roster page in the browser.
+    Ui,
     /// Answer the pending permission request with allow.
     Allow {
         key: String,

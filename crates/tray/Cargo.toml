@@ -1,0 +1,19 @@
+[package]
+name = "rosterd-tray"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The roster in the menu bar: a native tray menu over the rosterd CLI"
+
+[[bin]]
+name = "rosterd-tray"
+path = "src/main.rs"
+
+[dependencies]
+rosterd-proto.workspace = true
+serde_json.workspace = true
+tao = "0.37"
+tray-icon = { version = "0.25", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = "0.3"

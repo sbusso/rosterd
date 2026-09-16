@@ -78,6 +78,7 @@ pub async fn run(client: &Client, config: &Config, command: Command, json: bool)
             action(client, &key, Method::POST, "/name", Some(json!({ "name": label })), json, done).await
         }
         Command::Open { key } => open(client, config, &key).await,
+        Command::Ui => open_ui(config, "/ui"),
         Command::Allow { key, always } => answer(client, &key, if always { Choice::AllowAlways } else { Choice::Allow }, None, json).await,
         Command::Deny { key, reason } => answer(client, &key, Choice::Deny, reason, json).await,
         Command::Spawn { key, harness, cwd, task, name } => {
@@ -234,14 +235,7 @@ async fn open(client: &Client, config: &Config, key: &str) -> Out<()> {
     } else if let Some(t) = &record.tmux {
         ("tmux", format!("tmux attach -t {0} \\; select-window -t {0}:{1} \\; select-pane -t {2}", t.session, t.window_index, t.pane_id))
     } else if record.holder.is_some() || record.lane == rosterd_proto::Lane::Headless {
-        let token = std::fs::read_to_string(config_dir().join("loopback.token")).map(|t| t.trim().to_string()).unwrap_or_default();
-        let url = format!("http://127.0.0.1:{}/ui/sessions/{key}{}", config.node.loopback_port, if token.is_empty() { String::new() } else { format!("?token={token}") });
-        println!("{url}");
-        if display_present() {
-            let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-            std::process::Command::new(opener).arg(&url).status()?;
-        }
-        return Ok(());
+        return open_ui(config, &format!("/ui/sessions/{key}"));
     } else {
         return Err(Exit::user(format!("nothing to open for {key}: no tmux, herdr or holder handle")));
     };
@@ -252,6 +246,18 @@ async fn open(client: &Client, config: &Config, key: &str) -> Out<()> {
         return if status.success() { Ok(()) } else { Err(Exit::user(format!("rosterd-open exited with {status}"))) };
     }
     println!("{command}");
+    Ok(())
+}
+
+/// Prints the page's loopback URL with the token, and opens it when there is a display.
+fn open_ui(config: &Config, path: &str) -> Out<()> {
+    let token = std::fs::read_to_string(config_dir().join("loopback.token")).map(|t| t.trim().to_string()).unwrap_or_default();
+    let url = format!("http://127.0.0.1:{}{path}{}", config.node.loopback_port, if token.is_empty() { String::new() } else { format!("?token={token}") });
+    println!("{url}");
+    if display_present() {
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        std::process::Command::new(opener).arg(&url).status()?;
+    }
     Ok(())
 }
 

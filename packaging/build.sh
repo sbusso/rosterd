@@ -19,7 +19,9 @@ targets=("$@")
 copy() { # $1 target, $2 build dir
   mkdir -p "dist/$1"
   for b in "${bins[@]}"; do install -m755 "$2/$b" "dist/$1/$b"; done
-  echo "dist/$1: ${bins[*]}"
+  # The tray needs GTK on Linux, so only the native build has it.
+  [ -x "$2/rosterd-tray" ] && install -m755 "$2/rosterd-tray" "dist/$1/rosterd-tray"
+  echo "dist/$1: $(ls "dist/$1" | tr '\n' ' ')"
 }
 
 for t in "${targets[@]}"; do
@@ -29,7 +31,7 @@ for t in "${targets[@]}"; do
       copy "$native" "$out/release"
       ;;
     *)
-      cargo zigbuild --release --target "$t"
+      cargo zigbuild --release --target "$t" -p rosterd -p rosterd-holder
       copy "$t" "$out/$t/release"
       ;;
   esac

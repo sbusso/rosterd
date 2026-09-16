@@ -14,6 +14,7 @@ class Rosterd < Formula
   def install
     system "cargo", "install", *std_cargo_args(path: "crates/rosterd")
     system "cargo", "install", *std_cargo_args(path: "crates/holder")
+    system "cargo", "install", *std_cargo_args(path: "crates/tray")
     bin.install "scripts/rosterd-hook", "scripts/rosterd-launch", "scripts/rosterd-open"
     doc.install "README.md", "SPEC.md"
   end
@@ -32,7 +33,7 @@ class Rosterd < Formula
     <<~EOS
       Start it with `brew services start rosterd` (a LaunchAgent, gone at logout) or let
       `rosterd setup` install the LaunchDaemon with sudo; `rosterd setup` also installs the
-      harness hooks, the ACP adapters and the config.
+      harness hooks, the ACP adapters, the config and the menu bar tray (rosterd-tray) at login.
     EOS
   end
 
