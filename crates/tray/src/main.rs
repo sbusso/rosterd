@@ -268,7 +268,8 @@ fn row_text(r: &Record, now: i64) -> String {
     };
     let since = r.activity_at.unwrap_or(r.started_at).timestamp();
     let stale = if r.liveness == Liveness::Stale { " · stale" } else { "" };
-    format!("{label}  {}  {}{stale}", r.harness, age((now - since).max(0) as u64))
+    let cpu = r.load.map(|l| format!("{}%  ", l.cpu_pct)).unwrap_or_default();
+    format!("{label}  {}  {cpu}{}{stale}", r.harness, age((now - since).max(0) as u64))
 }
 
 fn plural(n: usize) -> &'static str {

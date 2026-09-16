@@ -27,7 +27,9 @@
   .state { font-size: 12px; font-weight: 500 } .ev { color: var(--dim); font-size: 12px }
   .proj { font-size: 11px; font-weight: 500; padding: 1px 7px; border-radius: 4px; background: var(--line); color: var(--fg) }
   .meta { grid-column: 2; color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
-  .acts { grid-column: 3; grid-row: 1 / span 2; display: flex; gap: 6px; align-items: center; justify-content: flex-end; flex-wrap: wrap }
+  .stats { grid-column: 3; display: flex; gap: 12px; justify-content: flex-end; color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap }
+  .stats svg { width: 12px; height: 12px; vertical-align: -2px; margin-right: 3px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round }
+  .acts { grid-column: 3; grid-row: 2; display: flex; gap: 6px; align-items: center; justify-content: flex-end; flex-wrap: wrap }
   .pend { grid-column: 2 / -1; border-left: 2px solid var(--needs_attention); padding: 4px 10px; margin: 4px 0 2px; display: flex; gap: 6px 10px; align-items: center; flex-wrap: wrap }
   .pend b { font-weight: 600 } .pend small { color: var(--dim) }
   button { font: inherit; font-size: 12px; cursor: pointer; background: #232327; color: var(--fg); border: 1px solid #36363c; border-radius: 6px; padding: 4px 10px }
@@ -103,6 +105,10 @@ const ws = () => { try { return JSON.parse(localStorage.getItem('rosterd.workspa
 const stateOf = (r) => (r.liveness === 'live' ? r.activity : r.liveness);
 const RANK = { needs_attention: 0, active: 1, idle: 2, unknown: 3, suspended: 4, stale: 4, ended: 5 };
 // The CLI's display name, R14.1: the name, else the cwd's last segment in brackets, else the pid.
+const CPU = '<svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1"/><path d="M6 1v3M10 1v3M6 12v3M10 12v3M1 6h3M1 10h3M12 6h3M12 10h3"/></svg>';
+const CLOCK = '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5V8l2.5 1.5"/></svg>';
+const mem = (mb) => mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
+const statsHtml = (r) => `<span>${esc(r.harness)}</span>${r.load ? `<span>${CPU}${r.load.cpu_pct}%</span><span>${mem(r.load.rss_mb)}</span>` : ''}<span>${CLOCK}${ago(r.started_at)}</span>`;
 const projOf = (r) => r.cwd ? r.cwd.replace(/\/+$/, '').split('/').pop() : '';
 const labelOf = (r) => `${r.name || !r.cwd ? `<span class="name">${esc(r.name || `pid ${r.pid}`)}</span>` : ''}${r.cwd ? `<span class="proj">${esc(projOf(r))}</span>` : ''}`;
 const driven = (r) => r.lane === 'headless' || !!r.holder;
@@ -135,8 +141,9 @@ function sessionHtml(r) {
     <span class="dot ${st}"></span>
     <div class="who">${labelOf(r)}<span class="state ${st}">${st.replace('_', ' ')}</span>
       <span class="ev">${esc(r.activity_event || '')}${r.activity_event ? ' · ' : ''}${when}${ended && r.ended_reason ? ` · ${esc(r.ended_reason)}` : ''}${r.conflict ? ' · <span class="err">attempt conflict</span>' : ''}</span></div>
+    <div class="stats">${statsHtml(r)}</div>
     <div class="acts">${acts}</div>
-    <div class="meta">${esc(r.harness)}${r.lane === 'headless' ? ' · headless' : ''} · pid ${r.pid}${r.attempt_id ? ` · attempt ${esc(r.attempt_id)}` : ''}${r.parent_attempt_id ? ` ← ${esc(r.parent_attempt_id)}` : ''}${r.cwd ? ` · ${esc(r.cwd)}` : ''}</div>
+    <div class="meta">${r.lane === 'headless' ? 'headless · ' : ''}pid ${r.pid}${r.attempt_id ? ` · attempt ${esc(r.attempt_id)}` : ''}${r.parent_attempt_id ? ` ← ${esc(r.parent_attempt_id)}` : ''}${r.cwd ? ` · ${esc(r.cwd)}` : ''}</div>
     ${pendingHtml(k)}</article>`;
 }
 function renderRoster() {
@@ -241,7 +248,7 @@ async function sessionPage() {
   try { const nodes = await api('/swarm/nodes'); state.local = (nodes.nodes || nodes).find((n) => n.state === 'local')?.node_id || state.local; } catch {}
   let last = null;
   const head = () => { const st = last ? stateOf(last) : 'unknown';
-    $('#hdr').innerHTML = `<a href="/ui">← roster</a> <b>${last ? labelOf(last) : esc(sessionKey)}</b> <span class="state ${st}">${st.replace('_', ' ')}</span><span class="sum">${esc(last?.harness || '')}</span><span class="st ${state.status === 'live' ? '' : 'bad'}">${esc(state.status)}</span>`;
+    $('#hdr').innerHTML = `<a href="/ui">← roster</a> <b>${last ? labelOf(last) : esc(sessionKey)}</b> <span class="state ${st}">${st.replace('_', ' ')}</span><span class="stats">${last ? statsHtml(last) : ''}</span><span class="st ${state.status === 'live' ? '' : 'bad'}">${esc(state.status)}</span>`;
     $('#recap').innerHTML = (last?.state?.last_recap ? `last recap: ${esc(last.state.last_recap)}` : '') + pendingHtml(sessionKey); };
   const refresh = async () => { try { last = await api(spath(sessionKey)); state.pending[sessionKey] = last.state?.pending || []; } catch (e) { state.status = e.message; } head(); };
   await refresh(); setInterval(refresh, 10000);

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rosterd_proto::{
-    Activity, Capabilities, EndedReason, Explain, FieldOrigin, HerdrHandle, HolderHandle, Lane, Liveness,
+    Activity, Capabilities, EndedReason, Explain, FieldOrigin, HerdrHandle, HolderHandle, Lane, Liveness, Load,
     PermissionPolicy, Record, RejectedClaim, Snapshot, Source, TmuxHandle, Usage,
 };
 use tokio::sync::{broadcast, watch};
@@ -447,6 +447,7 @@ impl Roster {
                 ended_at: None,
                 ended_reason: None,
                 usage: None,
+                load: None,
                 conflict: false,
                 permission_policy: None,
             },
@@ -582,6 +583,20 @@ impl Roster {
     /// Usage comes from ACP only, R3, so it has no precedence to check.
     pub fn set_usage(&self, session_key: &str, usage: Usage) -> Result<Record, RosterError> {
         self.update(session_key, |r| r.usage = Some(usage))
+    }
+
+    /// One scan pass's process load for every live session, published once when any changed.
+    pub fn set_load(&self, loads: &HashMap<String, Load>) {
+        let mut table = self.table.write().unwrap();
+        let mut changed = false;
+        for entry in table.entries.values_mut() {
+            let load = loads.get(&entry.record.session_key).copied();
+            changed |= entry.record.load != load;
+            entry.record.load = load;
+        }
+        if changed {
+            self.publish(&mut table);
+        }
     }
 
     /// Set by the runner alone, R5.3.

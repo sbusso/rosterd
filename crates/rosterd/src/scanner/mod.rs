@@ -15,7 +15,7 @@ use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, TimeZone, Utc};
-use rosterd_proto::{Activity, EndedReason, HerdrHandle, Lane, Liveness, Record, Source, TmuxHandle};
+use rosterd_proto::{Activity, EndedReason, HerdrHandle, Lane, Liveness, Load, Record, Source, TmuxHandle};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 use crate::config::Config;
@@ -47,9 +47,11 @@ struct ProcInfo {
     exe: Option<String>,
     cmd: Vec<String>,
     cwd: Option<String>,
-    /// CPU-milliseconds since the process was first seen, and the share of the last pass it used.
+    /// CPU-milliseconds since the process was first seen, the share of the last pass it used,
+    /// and resident memory.
     cpu_ms: u64,
     busy_pct: f32,
+    rss: u64,
 }
 
 /// The last pass, keyed by pid.
@@ -82,6 +84,7 @@ fn refresh_kind() -> ProcessRefreshKind {
         .with_exe(UpdateKind::OnlyIfNotSet)
         .with_cwd(UpdateKind::OnlyIfNotSet)
         .with_cpu()
+        .with_memory()
 }
 
 /// One enumeration into `TABLE`.
@@ -103,6 +106,7 @@ fn refresh(sys: &mut System) {
                 cmd: p.cmd().iter().map(|c| c.to_string_lossy().into_owned()).collect(),
                 cwd: p.cwd().map(|c| c.to_string_lossy().into_owned()),
                 cpu_ms,
+                rss: p.memory(),
                 busy_pct: match (before, elapsed_ms) {
                     (Some(before), Some(elapsed)) if elapsed > 0.0 => cpu_ms.saturating_sub(before) as f32 * 100.0 / elapsed,
                     _ => 0.0,
@@ -115,12 +119,14 @@ fn refresh(sys: &mut System) {
     *TABLE.write().unwrap() = table;
 }
 
-/// CPU share of a process and everything under it in the last pass.
-fn tree_busy_pct(table: &[(u32, ProcInfo)]) -> HashMap<u32, f32> {
-    let mut tree: HashMap<u32, f32> = HashMap::new();
-    for (pid, info) in table.iter().filter(|(_, i)| i.busy_pct > 0.0) {
+/// CPU share and resident memory of a process and everything under it, from the last pass.
+fn tree_load(table: &[(u32, ProcInfo)]) -> HashMap<u32, (f32, u64)> {
+    let mut tree: HashMap<u32, (f32, u64)> = HashMap::new();
+    for (pid, info) in table {
         for member in chain_of(*pid) {
-            *tree.entry(member).or_default() += info.busy_pct;
+            let t = tree.entry(member).or_default();
+            t.0 += info.busy_pct;
+            t.1 += info.rss;
         }
     }
     tree
@@ -246,14 +252,19 @@ async fn pass(roster: &Roster, names: &BTreeMap<String, String>) {
 
     // Activity from CPU for the sessions nothing better speaks for, R5.2. A claim by any other
     // source hands the record over to it: hook and adapter claims outrank a scan.
-    let tree = tree_busy_pct(&table);
+    let tree = tree_load(&table);
+    let loads: HashMap<String, Load> = live
+        .iter()
+        .filter_map(|r| tree.get(&r.pid).map(|(cpu, rss)| (r.session_key.clone(), Load { cpu_pct: cpu.round() as u16, rss_mb: rss >> 20 })))
+        .collect();
+    roster.set_load(&loads);
     let claims: Vec<(String, Activity, DateTime<Utc>)> = {
         let mut last_busy = LAST_BUSY.lock().unwrap();
         last_busy.retain(|key, _| live.iter().any(|r| &r.session_key == key));
         live.iter()
             .filter(|r| r.sources.iter().all(|s| *s == Source::Scan))
             .filter_map(|rec| {
-                let busy = tree.get(&rec.pid).is_some_and(|pct| *pct >= BUSY_PCT);
+                let busy = tree.get(&rec.pid).is_some_and(|(pct, _)| *pct >= BUSY_PCT);
                 let since = *last_busy.entry(rec.session_key.clone()).or_insert(now);
                 if busy {
                     last_busy.insert(rec.session_key.clone(), now);
@@ -527,6 +538,7 @@ mod tests {
             cwd: None,
             cpu_ms: 0,
             busy_pct: 0.0,
+            rss: 0,
         }
     }
 

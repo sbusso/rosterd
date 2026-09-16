@@ -156,6 +156,14 @@ pub struct Usage {
     pub raw: Option<serde_json::Value>,
 }
 
+/// What the session's process tree takes from the machine, from the last scan pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Load {
+    /// Share of one core, whole percent; more than 100 across threads.
+    pub cpu_pct: u16,
+    pub rss_mb: u64,
+}
+
 /// One session on one node, R3.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Record {
@@ -205,6 +213,8 @@ pub struct Record {
     pub ended_reason: Option<EndedReason>,
     #[serde(default)]
     pub usage: Option<Usage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load: Option<Load>,
     /// R5.4. A second live process claimed an attempt already bound elsewhere in the swarm.
     #[serde(default)]
     pub conflict: bool,
@@ -411,6 +421,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             usage: None,
+            load: None,
             conflict: false,
             permission_policy: None,
         });

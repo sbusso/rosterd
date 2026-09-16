@@ -82,6 +82,7 @@ mod tests {
             ended_at: None,
             ended_reason: None,
             usage: None,
+            load: None,
             conflict: false,
             permission_policy: None,
         }
