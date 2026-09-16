@@ -3,48 +3,55 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>rosterd</title>
 <style>
-  :root { color-scheme: dark; --bg: #111; --fg: #ddd; --dim: #888; --line: #2a2a2a; --card: #191919;
-    --active: #4caf50; --idle: #8899aa; --needs_attention: #ffb300; --unknown: #555; }
+  :root { color-scheme: dark; --bg: #0f0f10; --fg: #e4e4e7; --dim: #8b8b92; --line: #232326; --card: #17171a; --hover: #1c1c21;
+    --active: #4caf50; --idle: #8899aa; --needs_attention: #ffb300; --unknown: #6b6b73; --off: #55555c; --err: #ef5350; --link: #8ab4f8 }
   * { box-sizing: border-box }
-  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 -apple-system, system-ui, sans-serif }
-  header, footer { padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap }
-  footer { border: 0; border-top: 1px solid var(--line); color: var(--dim); font-size: 12px; margin-top: 24px; display: block }
-  header b { font-size: 16px } header .st { color: var(--dim); margin-left: auto }
-  a { color: #8ab4f8; text-decoration: none } button { font: inherit; cursor: pointer }
-  main, section { padding: 0 14px }
-  h2 { font-size: 13px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; margin: 18px 0 6px }
-  h2 small { text-transform: none; letter-spacing: 0; margin-left: 8px }
-  .s { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 6px 0 }
-  .s.stale, .s.ended, .peer-unreachable .s { opacity: .55 } .s.ended .name { text-decoration: line-through }
-  .row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap } .name { font-weight: 600 }
-  .act { font-size: 12px; padding: 1px 7px; border-radius: 10px; background: #222; border: 1px solid currentColor }
-  .act.active { color: var(--active) } .act.idle { color: var(--idle) } .act.needs_attention { color: var(--needs_attention) } .act.unknown { color: var(--unknown) }
-  .meta, small { color: var(--dim); font-size: 12px } .meta { word-break: break-all }
-  details { margin-top: 6px } summary { color: var(--dim); cursor: pointer; font-size: 12px }
-  .acts { display: flex; flex-direction: column; gap: 6px; margin-top: 6px }
-  form.p { display: flex; gap: 6px } form.p input { flex: 1; min-width: 0 }
-  input, textarea { font: inherit; background: #0d0d0d; color: var(--fg); border: 1px solid #333; border-radius: 6px; padding: 6px 8px }
-  button { background: #262626; color: var(--fg); border: 1px solid #3a3a3a; border-radius: 6px; padding: 5px 10px } button.warn { color: var(--needs_attention) }
-  .pend { border-left: 2px solid var(--needs_attention); padding-left: 8px } .pend .opts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px }
-  .copy { display: flex; gap: 6px } .copy input { flex: 1; font-family: ui-monospace, monospace; font-size: 12px }
-  pre#log { white-space: pre-wrap; word-break: break-word; font: 12px/1.4 ui-monospace, monospace; padding: 10px 14px; margin: 0; min-height: 40vh }
-  pre#log .tool { color: #8ab4f8 } #recap { padding: 0 14px; color: var(--dim); white-space: pre-wrap }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.45 -apple-system, system-ui, sans-serif }
+  a { color: var(--link); text-decoration: none }
+  header { position: sticky; top: 0; z-index: 1; background: var(--bg); padding: 10px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap }
+  header b { font-size: 15px } header .sum { color: var(--dim) } header .st { color: var(--dim); margin-left: auto; font-size: 12px }
+  header .st.bad { color: var(--err) }
+  main, section { padding: 0 16px }
+  h2 { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 20px 0 6px; display: flex; gap: 10px; align-items: baseline }
+  h2 small { text-transform: none; letter-spacing: 0; font-size: 12px }
+  .list { border: 1px solid var(--line); border-radius: 8px; background: var(--card); overflow: hidden }
+  .list > small { display: block; padding: 10px 12px; color: var(--dim) }
+  .s { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--line) }
+  .s:first-child { border-top: 0 } .s:hover { background: var(--hover) }
+  .s.ended, .s.suspended, .s.stale, .peer-unreachable .s { color: var(--dim) } .s.ended .name { text-decoration: line-through }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; grid-row: 1 / span 2 }
+  .dot.unknown { background: none; box-shadow: inset 0 0 0 1.5px currentColor }
+  .needs_attention { color: var(--needs_attention) } .active { color: var(--active) } .idle { color: var(--idle) } .unknown { color: var(--unknown) }
+  .ended, .suspended, .stale { color: var(--off) }
+  .who { display: flex; gap: 8px; align-items: baseline; min-width: 0; flex-wrap: wrap } .name { font-weight: 600; color: var(--fg) }
+  .state { font-size: 12px; font-weight: 500 } .ev { color: var(--dim); font-size: 12px }
+  .meta { grid-column: 2; color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+  .acts { grid-column: 3; grid-row: 1 / span 2; display: flex; gap: 6px; align-items: center; justify-content: flex-end; flex-wrap: wrap }
+  .pend { grid-column: 2 / -1; border-left: 2px solid var(--needs_attention); padding: 4px 10px; margin: 4px 0 2px; display: flex; gap: 6px 10px; align-items: center; flex-wrap: wrap }
+  .pend b { font-weight: 600 } .pend small { color: var(--dim) }
+  button { font: inherit; font-size: 12px; cursor: pointer; background: #232327; color: var(--fg); border: 1px solid #36363c; border-radius: 6px; padding: 4px 10px }
+  button:hover { background: #2b2b31 } button.go { background: #2a3a20; border-color: #3f5a2f } button.no { color: var(--err) }
+  input { font: inherit; font-size: 12px; background: #0d0d0f; color: var(--fg); border: 1px solid #333; border-radius: 6px; padding: 4px 8px }
+  form.p { display: flex; gap: 6px } form.p input { width: 180px }
+  .copy input { width: 260px; font-family: ui-monospace, monospace; font-size: 11px }
+  @media (max-width: 720px) { .s { grid-template-columns: 8px minmax(0, 1fr) } .acts { grid-column: 2; grid-row: auto; justify-content: flex-start } .meta { white-space: normal } form.p input { width: 120px } }
+  footer { padding: 14px 16px; margin-top: 28px; border-top: 1px solid var(--line); color: var(--dim); font-size: 12px }
+  pre#log { white-space: pre-wrap; word-break: break-word; font: 12px/1.4 ui-monospace, monospace; padding: 10px 16px; margin: 0; min-height: 40vh }
+  pre#log .tool { color: var(--link) } #recap { padding: 0 16px; color: var(--dim); white-space: pre-wrap }
   dialog { background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; max-width: 92vw }
-  dialog form { display: flex; flex-direction: column; gap: 8px; min-width: 260px } .err { color: #ef5350 }
+  dialog form { display: flex; flex-direction: column; gap: 8px; min-width: 260px } dialog input { width: auto } .err { color: var(--err) }
 </style>
 <header id="hdr"></header>
 <section id="attention"></section>
 <main id="roster"></main>
 <pre id="log" hidden></pre>
 <div id="recap" hidden></div>
-<footer>rosterd, R9. Actions need the loopback bearer: open this page once with <code>?token=&lt;loopback.token&gt;</code>
-  and it is kept for the tab. Over the Tailscale listener the page is served but the API needs node signing a browser cannot do; the
-  phone path today is a port forward to loopback (<code>ssh -L 8790:127.0.0.1:8790 node</code>, or a Tailscale serve of the same),
-  a per-user token is the upgrade.</footer>
+<footer>Actions use the loopback bearer: open once with <code>?token=&lt;loopback.token&gt;</code>, it is kept for the tab.
+  From another machine: <code>ssh -L 8790:127.0.0.1:8790 node</code>, then this page on localhost.</footer>
 <dialog id="ws"><form method="dialog">
   <b>Workspace upstream</b>
   <input id="wsUrl" placeholder="https://ws.example.ts.net"><input id="wsTok" placeholder="token" type="password">
-  <small>Polled every 15 s for what needs you; stored in this browser only.</small>
+  <small>Polled every 15 s; stored in this browser only.</small>
   <div style="display:flex;gap:6px;justify-content:flex-end"><button value="clear">clear</button><button value="save">save</button></div>
 </form></dialog>
 <script>
@@ -53,6 +60,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const ago = (t) => { if (!t) return ''; const s = Math.max(0, (Date.now() - new Date(t)) / 1000); return s < 60 ? `${s | 0}s` : s < 3600 ? `${(s / 60) | 0}m` : s < 86400 ? `${(s / 3600) | 0}h` : `${(s / 86400) | 0}d`; };
 const ms = (n) => ago(Date.now() - (n || 0));
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
 // The loopback bearer, R6: taken from ?token= once, kept for the tab, never in the URL after.
 const q = new URLSearchParams(location.search);
@@ -87,76 +95,87 @@ async function sse(path, onEvent, onStatus) {
   }
 }
 
-const state = { swarm: null, local: '', pending: {}, seen: {}, open: new Set(), drafts: {}, status: 'connecting', attention: [], decisions: {}, wsErr: '' };
+const state = { swarm: null, local: '', pending: {}, seen: {}, drafts: {}, status: 'connecting', attention: [], decisions: {}, wsErr: '' };
 const nodeOf = (key) => key.split(':')[0];
 // Session actions reach the owning node through this node, R7.5: local keys directly, peers under /swarm/{node_id}/.
 const spath = (key, suffix = '') => (nodeOf(key) === state.local ? `/sessions/${key}${suffix}` : `/swarm/${nodeOf(key)}/sessions/${key}${suffix}`);
 const ws = () => { try { return JSON.parse(localStorage.getItem('rosterd.workspace') || 'null'); } catch { return null; } };
 
 // ---------- roster page ----------
+// One word for a row, liveness first: ended, suspended and stale say more than the last activity did.
+const stateOf = (r) => (r.liveness === 'live' ? r.activity : r.liveness);
+const RANK = { needs_attention: 0, active: 1, idle: 2, unknown: 3, suspended: 4, stale: 4, ended: 5 };
+// The CLI's display name, R14.1: the name, else the cwd's last segment in brackets, else the pid.
+const nameOf = (r) => r.name || (r.cwd ? `[${r.cwd.replace(/\/+$/, '').split('/').pop()}]` : `pid ${r.pid}`);
+const driven = (r) => r.lane === 'headless' || !!r.holder;
 function openCommands(r) {
   const node = r.node || nodeOf(r.session_key);
-  if (r.lane === 'headless' || r.holder) return { link: `/ui/sessions/${r.session_key}`, label: 'conversation' };
+  if (driven(r)) return { link: `/ui/sessions/${r.session_key}`, label: 'conversation' };
   if (r.tmux) return { cmd: `ssh ${node} -t tmux attach -t ${r.tmux.session} \\\\; select-window -t ${r.tmux.session}:${r.tmux.window_index} \\\\; select-pane -t ${r.tmux.pane_id}` };
   if (r.herdr) { const s = r.herdr.session, t = r.herdr.agent_name ? `agent attach ${r.herdr.agent_name}` : `terminal session observe ${r.herdr.pane_id}`;
-    return { cmd: `herdr --remote ${node} --session ${s} ${t}`, link: `herdr://${node}/${r.herdr.agent_name ? 'agents/attach/' + r.herdr.agent_name : 'panes/observe/' + r.herdr.pane_id}?session=${s}`, label: 'herdr:// link' }; }
+    return { cmd: `herdr --remote ${node} --session ${s} ${t}`, link: `herdr://${node}/${r.herdr.agent_name ? 'agents/attach/' + r.herdr.agent_name : 'panes/observe/' + r.herdr.pane_id}?session=${s}`, label: 'herdr' }; }
   return {};
 }
+// ACP option kinds: allow_* are the go, reject_* the no; the gate of R16.2 uses allow, allow_always, deny.
+const optClass = (o) => (/allow/.test(o.kind || o.option_id) ? 'go' : /reject|deny/.test(o.kind || o.option_id) ? 'no' : '');
 function pendingHtml(key) {
-  return (state.pending[key] || []).map((p) => `<div class="pend"><div>${esc(p.tool)} <small>${esc(p.summary)} · ${ago(p.at)}</small></div>
-    <div class="opts">${p.options.map((o) => `<button data-perm="${esc(key)}" data-req='${esc(JSON.stringify(p.request_id))}' data-opt="${esc(o.option_id)}">${esc(o.name)}</button>`).join('')}
-    <button data-perm="${esc(key)}" data-req='${esc(JSON.stringify(p.request_id))}' class="warn">cancel</button></div></div>`).join('');
+  return (state.pending[key] || []).map((p) => `<div class="pend"><span><b>${esc(p.tool)}</b> <small>${esc(p.summary)} · ${ago(p.at)}</small></span>
+    ${p.options.map((o) => `<button class="${optClass(o)}" data-perm="${esc(key)}" data-req='${esc(JSON.stringify(p.request_id))}' data-opt="${esc(o.option_id)}">${esc(o.name)}</button>`).join('')}
+    <button data-perm="${esc(key)}" data-req='${esc(JSON.stringify(p.request_id))}'>cancel</button></div>`).join('');
 }
 function sessionHtml(r) {
-  const k = r.session_key, o = openCommands(r), ended = r.liveness === 'ended';
-  return `<article class="s ${r.liveness}" data-key="${esc(k)}">
-    <div class="row"><span class="name">${esc(r.name || r.harness)}</span><span class="act ${r.activity}">${r.activity.replace('_', ' ')}</span>
-      <small>${esc(r.activity_event || '')} ${r.activity_at ? ago(r.activity_at) : ''}${ended ? ` · ended ${esc(r.ended_reason || '')}` : ''}${r.conflict ? ' · <span class="err">attempt conflict</span>' : ''}</small></div>
-    <div class="meta">${esc(r.harness)} · ${r.lane} · pid ${r.pid}${r.attempt_id ? ` · attempt ${esc(r.attempt_id)}` : ''}${r.parent_attempt_id ? ` ← ${esc(r.parent_attempt_id)}` : ''}${r.cwd ? ` · ${esc(r.cwd)}` : ''}${r.sources?.length ? ` · ${r.sources.join('+')}` : ''}</div>
-    ${pendingHtml(k)}
-    ${ended ? '' : `<details ${state.open.has(k) ? 'open' : ''}><summary>actions</summary><div class="acts">
-      <form class="p" data-prompt="${esc(k)}"><input placeholder="prompt" value="${esc(state.drafts[k] || '')}"><button>send</button></form>
-      <div class="row"><button data-cancel="${esc(k)}">cancel turn</button><button data-state="${esc(k)}">refresh pending</button>
-        ${o.link ? `<a href="${esc(o.link)}">open ${esc(o.label)}</a>` : ''}</div>
-      ${o.cmd ? `<div class="copy"><input readonly value="${esc(o.cmd)}"><button data-copy="${esc(o.cmd)}">copy</button></div>` : ''}
-      ${!o.cmd && !o.link ? '<small>no runtime handle yet: the scanner fills tmux and herdr</small>' : ''}
-    </div></details>`}</article>`;
+  const k = r.session_key, o = openCommands(r), st = stateOf(r), ended = st === 'ended';
+  const when = r.activity_at ? ago(r.activity_at) : ago(r.started_at);
+  const acts = ended ? '' : [
+    o.link ? `<a href="${esc(o.link)}">open ${esc(o.label)}</a>` : '',
+    o.cmd ? `<span class="copy"><input readonly value="${esc(o.cmd)}"><button data-copy="${esc(o.cmd)}">copy</button></span>` : '',
+    driven(r) ? `<form class="p" data-prompt="${esc(k)}"><input placeholder="prompt" value="${esc(state.drafts[k] || '')}"><button>send</button></form>` : '',
+    driven(r) && st === 'active' ? `<button data-cancel="${esc(k)}">cancel turn</button>` : '',
+    st === 'suspended' ? `<button data-resume="${esc(k)}">resume</button>` : '',
+  ].join('');
+  return `<article class="s ${st}" data-key="${esc(k)}">
+    <span class="dot ${st}"></span>
+    <div class="who"><span class="name">${esc(nameOf(r))}</span><span class="state ${st}">${st.replace('_', ' ')}</span>
+      <span class="ev">${esc(r.activity_event || '')}${r.activity_event ? ' · ' : ''}${when}${ended && r.ended_reason ? ` · ${esc(r.ended_reason)}` : ''}${r.conflict ? ' · <span class="err">attempt conflict</span>' : ''}</span></div>
+    <div class="acts">${acts}</div>
+    <div class="meta" title="${esc(r.cwd || '')}">${esc(r.harness)} · ${r.lane} · pid ${r.pid}${r.attempt_id ? ` · attempt ${esc(r.attempt_id)}` : ''}${r.parent_attempt_id ? ` ← ${esc(r.parent_attempt_id)}` : ''}${r.cwd ? ` · ${esc(r.cwd)}` : ''}${r.sources?.length ? ` · ${r.sources.join('+')}` : ''}</div>
+    ${pendingHtml(k)}</article>`;
 }
 function renderRoster() {
-  const sw = state.swarm;
+  const sw = state.swarm, live = (sw?.records || []).filter((r) => r.liveness !== 'ended'), need = live.filter((r) => r.activity === 'needs_attention').length;
   $('#hdr').innerHTML = `<b>rosterd</b> <span>${esc((sw?.nodes || []).find((n) => n.state === 'local')?.name || '')}</span>
-    <a href="#" id="wsBtn">${ws()?.url ? 'workspace' : 'add workspace'}</a><span class="st">${esc(state.status)}</span>`;
+    <span class="sum">${sw ? plural(live.length, 'session') + (need ? ` · <span class="needs_attention">${need} need${need === 1 ? 's' : ''} attention</span>` : '') : ''}</span>
+    <a href="#" id="wsBtn">${ws()?.url ? 'workspace' : 'add workspace'}</a><span class="st ${state.status === 'live' ? '' : 'bad'}">${esc(state.status)}</span>`;
   if (!sw) return;
   const byNode = {};
   for (const r of sw.records) (byNode[r.node_id] ||= []).push(r);
   $('#roster').innerHTML = sw.nodes.map((n) => {
-    const recs = (byNode[n.node_id] || []).sort((a, b) => (a.activity === 'needs_attention' ? -1 : 1) - (b.activity === 'needs_attention' ? -1 : 1) || (b.activity_at || '').localeCompare(a.activity_at || ''));
+    const recs = (byNode[n.node_id] || []).sort((a, b) => RANK[stateOf(a)] - RANK[stateOf(b)] || (b.activity_at || b.started_at).localeCompare(a.activity_at || a.started_at));
     const health = n.revoked ? 'revoked' : n.state === 'local' ? 'this node' : `${n.state} ${ms(n.peer_age_ms)} ago`;
     return `<div class="peer-${n.state}"><h2>${esc(n.name)} <small>${health}${n.capabilities?.harnesses?.length ? ' · ' + n.capabilities.harnesses.join(', ') : ''}</small></h2>
-      ${recs.map(sessionHtml).join('') || '<small>no sessions</small>'}</div>`;
+      <div class="list">${recs.map(sessionHtml).join('') || '<small>no sessions</small>'}</div></div>`;
   }).join('');
-  // Pending permissions of headless sessions that need attention, refreshed when their claim sequence moves.
-  for (const r of sw.records) if (r.lane === 'headless' && r.activity === 'needs_attention' && state.seen[r.session_key] !== r.activity_seq) {
+  // Pending requests of sessions that need attention, refreshed when their claim sequence moves.
+  for (const r of sw.records) if (r.activity === 'needs_attention' && state.seen[r.session_key] !== r.activity_seq) {
     state.seen[r.session_key] = r.activity_seq; refreshPending(r.session_key);
   }
 }
 async function refreshPending(key) {
-  try { state.pending[key] = (await api(spath(key))).pending || []; } catch { state.pending[key] = []; }
+  try { state.pending[key] = (await api(spath(key))).state?.pending || []; } catch { state.pending[key] = []; }
   renderRoster();
 }
 async function renderAttention() {
   const w = ws(); const el = $('#attention');
   if (!w?.url) { el.innerHTML = ''; return; }
   const items = state.attention;
-  el.innerHTML = `<h2>workspace <small>${esc(w.url)}${state.wsErr ? ` · <span class="err">${esc(state.wsErr)}</span>` : ` · ${items.length} need you`}</small></h2>` +
-    items.map((it) => { const d = it.decisionId && state.decisions[it.decisionId];
-      return `<article class="s"><div class="row"><span class="name">${esc(it.taskTitle || it.kind)}</span><span class="act ${it.state}">${it.reason}</span>
-        <small>${it.agent ? esc(it.agent.name) + ' · ' : ''}${ago(it.since)}${it.signalCount > 1 ? ` · ×${it.signalCount}` : ''}</small></div>
-        <div class="row"><a href="${esc(w.url.replace(/\/$/, ''))}/${it.kind === 'attempt' ? 'inbox' : 'inbox'}">open in workspace</a>
-          ${it.decisionId && !d ? `<button data-decision="${esc(it.decisionId)}">rule</button>` : ''}</div>
-        ${d ? `<div class="pend"><div>${esc(d.title)}</div><small>${esc(d.summary)}</small><div class="opts">${(d.choices || []).map((c) => `<button data-rule="${esc(d.id)}" data-choice="${esc(c.id)}" title="${esc(c.description || '')}">${esc(c.label)}${c.recommended ? ' ★' : ''}</button>`).join('')}</div>
-          ${d.allowFreeText ? `<form class="p" data-rule-text="${esc(d.id)}" style="margin-top:6px"><input placeholder="or answer in words"><button>rule</button></form>` : ''}</div>` : ''}
-      </article>`; }).join('');
+  el.innerHTML = `<h2>workspace <small>${esc(w.url)}${state.wsErr ? ` · <span class="err">${esc(state.wsErr)}</span>` : ` · ${items.length} need you`}</small></h2><div class="list">` +
+    (items.map((it) => { const d = it.decisionId && state.decisions[it.decisionId];
+      return `<article class="s needs_attention"><span class="dot needs_attention"></span><div class="who"><span class="name">${esc(it.taskTitle || it.kind)}</span><span class="state needs_attention">${esc(it.reason)}</span>
+        <span class="ev">${it.agent ? esc(it.agent.name) + ' · ' : ''}${ago(it.since)}${it.signalCount > 1 ? ` · ×${it.signalCount}` : ''}</span></div>
+        <div class="acts"><a href="${esc(w.url.replace(/\/$/, ''))}/inbox">open in workspace</a>${it.decisionId && !d ? `<button data-decision="${esc(it.decisionId)}">rule</button>` : ''}</div>
+        ${d ? `<div class="pend"><span><b>${esc(d.title)}</b> <small>${esc(d.summary)}</small></span>${(d.choices || []).map((c) => `<button data-rule="${esc(d.id)}" data-choice="${esc(c.id)}" title="${esc(c.description || '')}">${esc(c.label)}${c.recommended ? ' ★' : ''}</button>`).join('')}
+          ${d.allowFreeText ? `<form class="p" data-rule-text="${esc(d.id)}"><input placeholder="or answer in words"><button>rule</button></form>` : ''}</div>` : ''}
+      </article>`; }).join('') || '<small>nothing needs you</small>') + '</div>';
 }
 async function pollAttention() {
   const w = ws(); if (!w?.url) return;
@@ -178,7 +197,7 @@ document.addEventListener('click', async (e) => {
   try {
     if (b.id === 'wsBtn') { e.preventDefault(); $('#wsUrl').value = ws()?.url || ''; $('#wsTok').value = ws()?.token || ''; $('#ws').showModal(); }
     else if (d.cancel) await api(spath(d.cancel, '/cancel'), {});
-    else if (d.state) await refreshPending(d.state);
+    else if (d.resume) await api(spath(d.resume, '/resume'), {});
     else if (d.perm) { await api(spath(d.perm, '/permission'), d.opt ? { request_id: JSON.parse(d.req), outcome: 'selected', option_id: d.opt } : { request_id: JSON.parse(d.req), outcome: 'cancelled' }); await refreshPending(d.perm); }
     else if (d.copy) { try { await navigator.clipboard.writeText(d.copy); b.textContent = 'copied'; } catch { b.previousElementSibling.select(); } }
     else if (d.decision) { state.decisions[d.decision] = await wsCall(`/decisions/${d.decision}`); renderAttention(); }
@@ -189,13 +208,12 @@ document.addEventListener('submit', async (e) => {
   const f = e.target; if (f.closest('dialog')) return; e.preventDefault();
   const input = f.querySelector('input'); const text = input.value.trim(); if (!text) return;
   try {
-    if (f.dataset.prompt) { await api(spath(f.dataset.prompt, '/prompt'), { prompt: text }); state.drafts[f.dataset.prompt] = ''; }
+    if (f.dataset.prompt) { await api(spath(f.dataset.prompt, '/prompt'), { prompt: text }); state.drafts[f.dataset.prompt] = ''; renderRoster(); }
     else if (f.dataset.ruleText) { await wsCall(`/decisions/${f.dataset.ruleText}/rule`, { text, surface: 'phone' }); delete state.decisions[f.dataset.ruleText]; pollAttention(); }
     else if (f.id === 'sendPrompt') { await api(spath(sessionKey, '/prompt'), { prompt: text }); input.value = ''; }
   } catch (err) { state.status = String(err.message || err); renderRoster(); }
 });
 document.addEventListener('input', (e) => { const f = e.target.closest('form[data-prompt]'); if (f) state.drafts[f.dataset.prompt] = e.target.value; });
-document.addEventListener('toggle', (e) => { const k = e.target.closest('article')?.dataset.key; if (k) e.target.open ? state.open.add(k) : state.open.delete(k); }, true);
 $('#ws').addEventListener('close', () => {
   if ($('#ws').returnValue === 'save') localStorage.setItem('rosterd.workspace', JSON.stringify({ url: $('#wsUrl').value.trim(), token: $('#wsTok').value.trim() }));
   else if ($('#ws').returnValue === 'clear') localStorage.removeItem('rosterd.workspace');
@@ -224,10 +242,12 @@ async function sessionPage() {
   state.local = nodeOf(sessionKey); // the key's node id: a peer's session goes through /swarm/{node_id}/, a local one directly.
   try { const nodes = await api('/swarm/nodes'); state.local = (nodes.nodes || nodes).find((n) => n.state === 'local')?.node_id || state.local; } catch {}
   let last = null;
-  const head = () => { $('#hdr').innerHTML = `<a href="/ui">← roster</a> <b>${esc(sessionKey)}</b> <span class="act ${last?.activity || 'unknown'}">${(last?.activity || '').replace('_', ' ')}</span><span class="st">${esc(state.status)}</span>`; };
-  const refresh = async () => { try { last = await api(spath(sessionKey)); $('#recap').textContent = last.last_recap ? `last recap: ${last.last_recap}` : ''; state.pending[sessionKey] = last.pending || []; } catch (e) { state.status = e.message; } head(); };
+  const head = () => { const st = last ? stateOf(last) : 'unknown';
+    $('#hdr').innerHTML = `<a href="/ui">← roster</a> <b>${esc(last ? nameOf(last) : sessionKey)}</b> <span class="state ${st}">${st.replace('_', ' ')}</span><span class="sum">${esc(last?.harness || '')}</span><span class="st ${state.status === 'live' ? '' : 'bad'}">${esc(state.status)}</span>`;
+    $('#recap').innerHTML = (last?.state?.last_recap ? `last recap: ${esc(last.state.last_recap)}` : '') + pendingHtml(sessionKey); };
+  const refresh = async () => { try { last = await api(spath(sessionKey)); state.pending[sessionKey] = last.state?.pending || []; } catch (e) { state.status = e.message; } head(); };
   await refresh(); setInterval(refresh, 10000);
-  $('#recap').insertAdjacentHTML('afterend', `<form class="p" id="sendPrompt" style="padding:10px 14px"><input placeholder="prompt"><button>send</button></form>`);
+  $('#recap').insertAdjacentHTML('afterend', `<form class="p" id="sendPrompt" style="padding:10px 16px"><input placeholder="prompt" style="flex:1;width:auto"><button>send</button></form>`);
   sse(spath(sessionKey, '/stream'), logLine, (s) => { state.status = s || 'live'; head(); });
 }
 
