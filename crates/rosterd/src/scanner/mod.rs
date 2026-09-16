@@ -25,9 +25,10 @@ use crate::roster::{Patch, Roster};
 const KEEP_ENDED: Duration = Duration::from_secs(600);
 /// Budget for one tmux or herdr call, R4.
 const HANDLE_TIMEOUT: Duration = Duration::from_millis(500);
-/// The harness names every node knows without config, R4.
-const BUILTIN: [(&str, &str); 4] =
-    [("claude", "claude"), ("codex", "codex"), ("claude-agent-acp", "claude"), ("codex-acp", "codex")];
+/// The harness names every node knows without config, R4. `ccd-cli` is the Claude desktop app's
+/// copy of Claude Code, laid out as `~/.claude/remote/ccd-cli/<version>`.
+const BUILTIN: [(&str, &str); 5] =
+    [("claude", "claude"), ("codex", "codex"), ("claude-agent-acp", "claude"), ("codex-acp", "codex"), ("ccd-cli", "claude")];
 const TMUX_FORMAT: &str =
     "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_tty}";
 
@@ -137,13 +138,21 @@ fn basename(path: &str) -> Option<String> {
 }
 
 /// The harness label of a process, from its name, exe, or first argument; the script argument
-/// of an interpreter counts too (`node .../claude`).
+/// of an interpreter counts too (`node .../claude`), and so does the directory of a binary that
+/// is only a version number (`ccd-cli/2.1.270`).
 fn harness_of(names: &BTreeMap<String, String>, info: &ProcInfo) -> Option<String> {
     let mut candidates = vec![info.name.clone()];
     candidates.extend(info.exe.as_deref().and_then(basename));
     candidates.extend(info.cmd.first().and_then(|c| basename(c)));
     if info.cmd.first().and_then(|c| basename(c)).is_some_and(|c| matches!(c.as_str(), "node" | "bun" | "deno")) {
         candidates.extend(info.cmd.get(1).and_then(|c| basename(c)));
+    }
+    for path in info.exe.iter().chain(info.cmd.first()) {
+        let path = Path::new(path);
+        let versioned = basename(&path.to_string_lossy()).is_some_and(|n| n.split('.').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())));
+        if versioned {
+            candidates.extend(path.parent().and_then(|d| basename(&d.to_string_lossy())));
+        }
     }
     candidates.iter().find_map(|c| names.get(c).cloned())
 }
@@ -445,6 +454,10 @@ mod tests {
         assert_eq!(harness_of(&names, &info("node", Some("/usr/bin/node"), &["node", "/home/u/.local/bin/claude"])).as_deref(), Some("claude"));
         assert_eq!(harness_of(&names, &info("x", Some("/opt/pi/pi-acp"), &[])).as_deref(), Some("pi"));
         assert_eq!(harness_of(&names, &info("pi", None, &[])).as_deref(), Some("pi"));
+        let ccd = "/Users/u/.claude/remote/ccd-cli/2.1.270";
+        assert_eq!(harness_of(&names, &info("2.1.270", Some(ccd), &[ccd, "--output-format", "stream-json"])).as_deref(), Some("claude"), "the desktop app's Claude Code");
+        assert_eq!(harness_of(&names, &info("2.1.270", Some("/opt/claude/2.1.270"), &[])).as_deref(), Some("claude"));
+        assert_eq!(harness_of(&names, &info("server", Some("/Users/u/projects/claude/server"), &[])), None, "a directory names the harness only for a versioned binary");
         assert_eq!(harness_of(&names, &info("zsh", Some("/bin/zsh"), &["-zsh"])), None);
         assert_eq!(harness_of(&names, &info("node", None, &["node", "server.js", "claude"])), None, "only the script argument counts");
     }
