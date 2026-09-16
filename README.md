@@ -33,110 +33,89 @@ Module ownership during the build: each module directory has one owner named in 
 comment. Public signatures in the stubs are the contract between modules; extend freely, change
 only after grepping callers.
 
-## Usage
-
-Install with a package manager:
+## Install
 
 ```
-brew tap sbusso/rosterd https://github.com/sbusso/rosterd && brew install --HEAD rosterd   # macOS, Formula/rosterd.rb
-makepkg -si -p packaging/arch/PKGBUILD                                                     # Arch, from the tag
+brew tap sbusso/rosterd https://github.com/sbusso/rosterd && brew install --HEAD rosterd   # macOS
+makepkg -si -p packaging/arch/PKGBUILD                                                     # Arch
 ```
 
-The formula is head only and the PKGBUILD has no checksum until the first tag;
-`packaging/arch/test.sh` builds and installs the Arch package in a container from this checkout.
+From source: `packaging/build.sh native` then `packaging/install.sh` (`--from dist/<target>` for a
+downloaded build). Cross builds need cargo zigbuild.
 
-Or from source: `packaging/build.sh native` writes `dist/<host>/rosterd`, `rosterd-holder` and
-`rosterd-tray`; with no argument it also cross-builds `x86_64-unknown-linux-gnu` and
-`aarch64-unknown-linux-gnu` with cargo zigbuild. `packaging/install.sh [--from dist/<target>]`
-copies them and the three scripts into `~/.local/bin`.
-
-Then, either way:
+Then:
 
 ```
 rosterd setup
 ```
 
-A checklist with one row per thing the machine needs: binaries on PATH, config, the service
-(a LaunchDaemon on macOS, a systemd user unit on Linux), the daemon, then per harness the binary,
-its ACP adapter and the hooks or extension, the tray at login, and two optional rows that ask for
-input, the workspace credential and a swarm to join. Space picks rows, enter runs them, `a` picks
-everything needed. `rosterd setup --yes`, or a pipe, runs the needed rows headless. The screen is
-`crates/rosterd/src/setup/tui.rs`, generic over the rows: another tool brings its own `steps()`.
+One row per thing the machine needs. Space picks, enter runs, `a` picks everything.
+`rosterd setup --yes` runs it headless.
 
-After that the roster lives in three places, all reading the same daemon.
+- binaries on PATH, config, the service (LaunchDaemon on macOS, systemd user unit on Linux), the daemon
+- per harness: the binary, its ACP adapter, the hooks or extension
+- the tray at login
+- optional: the workspace credential, a swarm to join
 
-**The menu bar.** `rosterd-tray` (started at login by the `tray` row) puts the roster under an
-icon: sessions grouped by state (needs attention, active, idle, unknown, suspended) with a coloured
-dot, the harness, the CPU share and the age of the last activity. A session that needs attention
-opens a submenu with Allow, Allow always and Deny; a click on any other row jumps to it (`rosterd
-open`: the tmux pane, the herdr pane, or the conversation view of a headless session). On macOS the
-count of sessions needing attention sits beside the icon; on Linux the icon's colour is the
-signal, shown wherever StatusNotifierItem trays are (KDE and most desktops; GNOME with the
-AppIndicator extension). "Open in browser" at the bottom opens the roster page. The tray is a menu
-over the CLI (`rosterd watch --json` feeds it, `rosterd allow|deny|open|ui` act), so it needs no
-socket, token or config of its own; what it cannot do, start, name or spawn a session, join a
-swarm, is the CLI or the page.
+## Using it
 
-**The roster page.** Every node serves one HTML page at `http://127.0.0.1:8790/ui`; `rosterd ui`
-or the tray's "Open in browser" opens it with `?token=<loopback.token>` once and the tab keeps the
-bearer. It shows the roster with the same states and actions as the tray, a project badge per
-row, and `/ui/sessions/<session_key>` renders the ACP stream of a headless session live with its
-last recap. "Add workspace" on the page stores a workspace URL and token in the browser and lists
-what needs you first. With `ui_listen = "tailscale"` in `[node]` the page and its API also
-answer on the node's Tailscale IP at the same port, so a phone or another machine on the tailnet
-opens `http://<tailscale-ip>:8790/ui?token=<loopback.token>` directly; the token is still the
-application boundary and Tailscale the network one.
+**Menu bar** (`rosterd-tray`)
 
-**The shell.** `rosterd status` prints the node, its listeners, swarm, bridge state and the
-counts; `rosterd list` the rows; `rosterd daemon` runs the daemon by hand. The config lives in
-`~/.config/rosterd/rosterd.toml` on Linux and `~/Library/Application Support/rosterd/rosterd.toml`
-on macOS (`ROSTERD_CONFIG_DIR` overrides), next to `node.key`, `loopback.token` and `swarm.json`.
+- sessions grouped by state: needs attention, active, idle, unknown, suspended
+- each row: name, harness, CPU share, age of the last activity
+- needs attention → Allow, Allow always, Deny
+- any other row → jumps to it: the tmux pane, the herdr pane, or the conversation view
+- Open in browser → the roster page
+- macOS: the attention count beside the icon. Linux: the icon colour (KDE and most desktops; GNOME needs the AppIndicator extension)
+
+**Roster page** (`rosterd ui`)
+
+- `http://127.0.0.1:8790/ui`, opened once with `?token=<loopback.token>`; the tab keeps it
+- the roster with the same states and actions as the tray, every node of the swarm
+- `/ui/sessions/<session_key>`: the live conversation of a headless session, with its last recap
+- Add workspace: a workspace URL and token, kept in the browser, to list what needs you first
+- `ui_listen = "tailscale"` in `[node]` serves it on the Tailscale IP too: `http://<tailscale-ip>:8790/ui?token=…` from a phone
+
+**Shell**
+
+- `rosterd status`: the node, listeners, swarm, bridge, counts
+- `rosterd list` / `rosterd watch`: the rows
+- `rosterd daemon`: run the daemon by hand
+- config: `~/.config/rosterd/rosterd.toml` (Linux), `~/Library/Application Support/rosterd/rosterd.toml` (macOS), next to `node.key`, `loopback.token`, `swarm.json`
+
+Starting, naming and spawning sessions, and joining a swarm, are CLI or page, not tray.
 
 ## Swarm
 
-A swarm is a set of nodes that answer for each other: `rosterd list --swarm` on any of them is the
-union roster, and an action on a session owned elsewhere is proxied to its owner. No leader, no
-shared database; each node keeps its own roster plus the last snapshot it heard from every peer,
-R7.
+Nodes that answer for each other: `rosterd list --swarm` anywhere is the union roster, and an
+action on a session owned elsewhere is proxied to its owner. No leader, no shared database.
 
-What it needs. Every machine on the same tailnet, with `listen = "tailscale"` and the same
-`port` (8791 by default) in `[node]`, the defaults `rosterd setup` writes. Nothing listens
-elsewhere; a node refuses to start with any other interface, R7.6. Tailscale ACLs stay the network
-boundary, the swarm key is the application boundary, and a node needs both to be heard.
+Needs: every machine on the same tailnet, `listen = "tailscale"` and the same `port` (8791) in
+`[node]`. These are the setup defaults. Nothing listens on any other interface.
 
-Create and join. There is no create step: the first `rosterd invite` on a node that is in no
-swarm creates one and signs the node in. So, on a node already running:
+There is no create step. The first `rosterd invite` creates the swarm.
 
 ```
-rosterd invite            # prints a single-use token, good for one hour (--ttl MINUTES)
-```
+# on a running node
+rosterd invite                                   # single-use token, one hour (--ttl MINUTES)
 
-On the new machine, either the `swarm` row of `rosterd setup` (it asks for the peer address and
-the token) or:
-
-```
+# on the new machine (or the `swarm` row of rosterd setup)
 rosterd join <peer tailscale ip>:8791 --token <invite>
 ```
 
-The joiner presents the invite with its hello; the admitting node verifies it, returns the swarm
-id, the swarm key sealed to the joiner's key and the current membership, and the joiner greets
-every member. Membership is gossiped from there, so the invite can come from any node, and
-discovery of who is up runs on `tailscale status`: every online peer is probed for `/node/hello`
-and admitted when its hello carries the swarm key. `[swarm] static_peers = ["100.64.0.12:8791"]`
-is the fallback when Tailscale is absent.
-
-Then:
+Membership gossips from there; discovery runs on `tailscale status`. `[swarm] static_peers` is
+the fallback without Tailscale.
 
 ```
-rosterd nodes             # membership and health, including unreachable peers with their age
+rosterd nodes             # membership and health
 rosterd list --swarm      # every session on every node
-rosterd list --node NAME  # one node, proxied through this one
-rosterd revoke NODE_ID    # removes a node everywhere
-rosterd leave             # takes this node out
+rosterd list --node NAME  # one node
+rosterd revoke NODE_ID    # remove a node everywhere
+rosterd leave             # take this node out
 ```
 
-The tray shows the local node; the roster page follows `/swarm/events`, so it shows every node.
-Windows joins as a headless-only node: hooks, no tmux or herdr handles.
+Tailscale ACLs are the network boundary, the swarm key the application boundary. Windows joins
+headless only: hooks, no tmux or herdr handles.
 
 ## CLI
 
