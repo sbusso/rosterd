@@ -109,6 +109,7 @@ const CPU = '<svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx=
 const CLOCK = '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5V8l2.5 1.5"/></svg>';
 const mem = (mb) => mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
 const statsHtml = (r) => `<span>${esc(r.harness)}</span>${r.load ? `<span>${CPU}${r.load.cpu_pct}%</span><span>${mem(r.load.rss_mb)}</span>` : ''}<span>${CLOCK}${ago(r.started_at)}</span>`;
+const tilde = (p) => p.replace(/^(\/Users\/[^/]+|\/home\/[^/]+|\/root)(?=\/|$)/, '~');
 const projOf = (r) => r.cwd ? r.cwd.replace(/\/+$/, '').split('/').pop() : '';
 const labelOf = (r) => `${r.name || !r.cwd ? `<span class="name">${esc(r.name || `pid ${r.pid}`)}</span>` : ''}${r.cwd ? `<span class="proj">${esc(projOf(r))}</span>` : ''}`;
 const driven = (r) => r.lane === 'headless' || !!r.holder;
@@ -143,7 +144,7 @@ function sessionHtml(r) {
       <span class="ev">${esc(r.activity_event || '')}${r.activity_event ? ' · ' : ''}${when}${ended && r.ended_reason ? ` · ${esc(r.ended_reason)}` : ''}${r.conflict ? ' · <span class="err">attempt conflict</span>' : ''}</span></div>
     <div class="stats">${statsHtml(r)}</div>
     <div class="acts">${acts}</div>
-    <div class="meta">${r.lane === 'headless' ? 'headless · ' : ''}pid ${r.pid}${r.attempt_id ? ` · attempt ${esc(r.attempt_id)}` : ''}${r.parent_attempt_id ? ` ← ${esc(r.parent_attempt_id)}` : ''}${r.cwd ? ` · ${esc(r.cwd)}` : ''}</div>
+    <div class="meta">${[r.lane === 'headless' ? 'headless' : '', r.attempt_id ? `attempt ${esc(r.attempt_id)}${r.parent_attempt_id ? ` ← ${esc(r.parent_attempt_id)}` : ''}` : '', r.cwd ? esc(tilde(r.cwd)) : ''].filter(Boolean).join(' · ')}</div>
     ${pendingHtml(k)}</article>`;
 }
 function renderRoster() {
