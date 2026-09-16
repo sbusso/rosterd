@@ -13,7 +13,7 @@ pub fn display_name(record: &Record) -> String {
     }
     match record.cwd.as_deref().and_then(|cwd| std::path::Path::new(cwd).file_name()).and_then(|f| f.to_str()) {
         Some(base) => format!("[{base}]"),
-        None => record.session_key.clone(),
+        None => record.origin.clone().unwrap_or_else(|| record.session_key.clone()),
     }
 }
 

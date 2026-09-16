@@ -28,7 +28,7 @@ struct Record: Decodable, Identifiable {
     var word: String { liveness == "live" ? activity : liveness }
     var driven: Bool { lane == "headless" || holder != nil }
     var project: String { (cwd ?? "").split(separator: "/").last.map(String.init) ?? "" }
-    var label: String { name ?? (cwd == nil ? "pid \(pid)" : "") }
+    var label: String { name ?? (project.isEmpty ? (origin ?? "") : "") }
     var when: Date { activityAt ?? startedAt }
 }
 

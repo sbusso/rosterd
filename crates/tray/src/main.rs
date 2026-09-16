@@ -275,20 +275,20 @@ fn rank(r: &Record) -> u8 {
     }
 }
 
-/// `label  harness  age`: the CLI's display name (R14.1: the name, else the cwd's last segment in
-/// brackets), then how long since the last activity, or since the start when nothing was heard.
+/// `label  harness  age`: the display name (the name, else the cwd's last segment in brackets,
+/// else where the session sits; never a pid), then how long since the last activity, or since
+/// the start when nothing was heard.
 fn row_text(r: &Record, now: i64) -> String {
-    let label = match r.name.as_deref().filter(|n| !n.is_empty()) {
-        Some(name) => name.to_string(),
-        None => match r.cwd.as_deref().and_then(|cwd| std::path::Path::new(cwd).file_name()).and_then(|f| f.to_str()) {
-            Some(base) => format!("[{base}]"),
-            None => format!("pid {}", r.pid),
-        },
+    let base = r.cwd.as_deref().and_then(|cwd| std::path::Path::new(cwd).file_name()).and_then(|f| f.to_str());
+    let label = match (r.name.as_deref().filter(|n| !n.is_empty()), base) {
+        (Some(name), _) => name.to_string(),
+        (None, Some(base)) => format!("[{base}]"),
+        (None, None) => r.origin.clone().unwrap_or_default(),
     };
     let since = r.activity_at.unwrap_or(r.started_at).timestamp();
     let stale = if r.liveness == Liveness::Stale { " · stale" } else { "" };
     let cpu = r.load.map(|l| format!("{}%  ", l.cpu_pct)).unwrap_or_default();
-    format!("{label}  {}  {cpu}{}{stale}", r.harness, age((now - since).max(0) as u64))
+    format!("{label}  {}  {cpu}{}{stale}", r.harness, age((now - since).max(0) as u64)).trim_start().to_string()
 }
 
 fn plural(n: usize) -> &'static str {
