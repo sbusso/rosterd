@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# rosterd-launch, R4 and R5.1: starts a harness in the interactive lane with the workspace
+# variables and the rosterd MCP server in its environment, registered with the local daemon
+# as source launcher before the harness runs.
+#
+#   rosterd-launch [--attempt <id> --token <t>] [--url <workspace url>] [--name <n>]
+#                  [--harness claude|codex] [--socket <path>] [--dry-run] -- <harness command...>
+#
+#   rosterd-launch --attempt 01J... --token wst_... -- claude --model opus
+#   rosterd-launch --harness codex -- codex
+#   rosterd-launch -- claude                       no attempt: the roster sees it, the workspace does not
+#
+# Exports WORKSPACE_URL (from --url, the environment, or the daemon's /status), WORKSPACE_ATTEMPT_ID,
+# WORKSPACE_ATTEMPT_TOKEN, ROSTERD_SOCKET and ROSTERD_HARNESS, registers {source: launcher, pid: $$,
+# ...} with the daemon, then execs the harness: same pid, so the registration names the process the
+# scanner will find, and signals and the tty stay the harness's own. tmux and herdr handles are the
+# scanner's, not the launcher's. Without a daemon it still starts the harness (fail open, R4).
+set -u
+
+attempt='' token='' url="${WORKSPACE_URL-}" name='' harness='' socket="${ROSTERD_SOCKET-}" dry=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --attempt) attempt=$2; shift 2 ;;
+    --token) token=$2; shift 2 ;;
+    --url) url=$2; shift 2 ;;
+    --name) name=$2; shift 2 ;;
+    --harness) harness=$2; shift 2 ;;
+    --socket) socket=$2; shift 2 ;;
+    --dry-run) dry=1; shift ;;
+    --self-test) self_test=1; shift ;;
+    --) shift; break ;;
+    -h | --help) sed -n '2,20p' "$0"; exit 0 ;;
+    *) echo "rosterd-launch: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+if [ "${self_test-0}" = 1 ]; then
+  out=$("$0" --dry-run --attempt 01JATTEMPT --token wst_secret --url https://ws.example --name writer --socket /tmp/rosterd-test.sock -- claude --model opus)
+  fails=0
+  for want in 'export WORKSPACE_URL=https://ws.example' 'export WORKSPACE_ATTEMPT_ID=01JATTEMPT' 'export WORKSPACE_ATTEMPT_TOKEN=wst_secret' \
+    'export ROSTERD_SOCKET=/tmp/rosterd-test.sock' 'export ROSTERD_HARNESS=claude' \
+    'register {"source":"launcher","pid":' '"harness":"claude","lane":"interactive","name":"writer","attempt_id":"01JATTEMPT","attempt_token":"wst_secret","cwd":"' \
+    'exec claude --model opus'; do
+    case "$out" in *"$want"*) ;; *) echo "FAIL: missing [$want] in: $out"; fails=$((fails + 1)) ;; esac
+  done
+  out=$("$0" --dry-run --harness codex --socket /tmp/rosterd-test.sock --)
+  case "$out" in *'exec codex'*) ;; *) echo "FAIL: bare --harness codex should exec codex: $out"; fails=$((fails + 1)) ;; esac
+  case "$out" in *'"attempt_id":null,"attempt_token":null'*) ;; *) echo "FAIL: no attempt should register nulls: $out"; fails=$((fails + 1)) ;; esac
+  [ "$fails" = 0 ] && echo "rosterd-launch self-test: ok" || { echo "rosterd-launch self-test: $fails failed"; exit 1; }
+  exit 0
+fi
+[ -n "$attempt" ] && [ -z "$token" ] && { echo "rosterd-launch: --attempt needs --token" >&2; exit 2; }
+
+cmd=("$@")
+[ ${#cmd[@]} -gt 0 ] || cmd=("${harness:-claude}")
+[ -n "$harness" ] || harness=$(basename "${cmd[0]}")
+
+# The daemon socket, R6: the override, the platform default, then /tmp for a daemon launchd or
+# started without the shell's TMPDIR, then /run/rosterd for the system unit. First one that exists wins.
+if [ -z "$socket" ]; then
+  tmp=${TMPDIR:-/tmp}
+  for c in "${XDG_RUNTIME_DIR-}/rosterd.sock" "${tmp%/}/rosterd.sock" /tmp/rosterd.sock /run/rosterd/rosterd.sock; do
+    case "$c" in /*) [ -S "$c" ] && { socket=$c; break; } ;; esac
+  done
+  [ -n "$socket" ] || socket=${tmp%/}/rosterd.sock
+fi
+# The config directory as crates/rosterd/src/config.rs resolves it (dirs::config_dir).
+config_dir=${ROSTERD_CONFIG_DIR-}
+if [ -z "$config_dir" ]; then
+  case "$(uname)" in
+    Darwin) config_dir="$HOME/Library/Application Support/rosterd" ;;
+    *) config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/rosterd" ;;
+  esac
+fi
+
+jstr() { # a JSON string literal, or null when empty
+  [ -n "$1" ] || { printf 'null'; return; }
+  printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+}
+daemon() { # $1 method, $2 path, $3 body; empty output when the daemon is not there
+  [ "$dry" = 1 ] && [ "$1" = GET ] && return 0
+  [ -S "$socket" ] || return 0
+  curl -sS --max-time 2 --unix-socket "$socket" -X "$1" -H 'Content-Type: application/json' ${3:+--data "$3"} "http://rosterd$2" 2>/dev/null || true
+}
+jq_or() { # $1 json, $2 jq filter, $3 default
+  local v=''
+  command -v jq >/dev/null 2>&1 && [ -n "$1" ] && v=$(printf '%s' "$1" | jq -r "$2 // empty" 2>/dev/null)
+  printf '%s' "${v:-$3}"
+}
+
+status=$(daemon GET /status)
+[ -n "$url" ] || url=$(jq_or "$status" '.workspace.url // .workspace_url' '')
+[ -n "$url" ] || url=$(sed -n 's/^[[:space:]]*url[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$config_dir/rosterd.toml" 2>/dev/null | head -n1)
+port=$(jq_or "$status" '.loopback_port // .node.loopback_port // .loopback.port' '')
+[ -n "$port" ] || port=$(sed -n 's/^[[:space:]]*loopback_port[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' "$config_dir/rosterd.toml" 2>/dev/null | head -n1)
+[ -n "$port" ] || port=8790
+
+export ROSTERD_SOCKET="$socket" ROSTERD_HARNESS="$harness"
+[ -n "$url" ] && export WORKSPACE_URL="$url"
+[ -n "$attempt" ] && export WORKSPACE_ATTEMPT_ID="$attempt" WORKSPACE_ATTEMPT_TOKEN="$token"
+
+# Register first with this shell's pid: exec below keeps pid and start time, so the record is the
+# harness's. The answer carries the session key the MCP server identifies the caller by.
+body="{\"source\":\"launcher\",\"pid\":$$,\"harness\":$(jstr "$harness"),\"lane\":\"interactive\",\"name\":$(jstr "$name"),\"attempt_id\":$(jstr "$attempt"),\"attempt_token\":$(jstr "$token"),\"cwd\":$(jstr "$PWD")}"
+if [ "$dry" = 1 ]; then
+  for v in WORKSPACE_URL WORKSPACE_ATTEMPT_ID WORKSPACE_ATTEMPT_TOKEN ROSTERD_SOCKET ROSTERD_HARNESS; do
+    eval "[ -n \"\${$v-}\" ] && echo \"export $v=\$$v\""
+  done
+  echo "register $body"
+  echo "exec ${cmd[*]}"
+  exit 0
+fi
+record=$(daemon POST /register "$body")
+session_key=$(jq_or "$record" '.session_key // .record.session_key' '')
+
+# The rosterd MCP server, R6, over loopback with the bearer of <config dir>/loopback.token.
+# ponytail: the temp file is left behind (exec has no after); it is 0600 and the tmpdir reaper's.
+loopback_token=$(cat "$config_dir/loopback.token" 2>/dev/null || true)
+if [ -n "$loopback_token" ]; then
+  mcp_url="http://127.0.0.1:$port/mcp"
+  case "$harness" in
+    claude)
+      mcp_file="${TMPDIR:-/tmp}/rosterd-mcp-$$.json"
+      headers="\"Authorization\":\"Bearer $loopback_token\"${session_key:+,\"X-Rosterd-Session\":\"$session_key\"}"
+      (umask 077; printf '{"mcpServers":{"rosterd":{"type":"http","url":"%s","headers":{%s}}}}\n' "$mcp_url" "$headers" >"$mcp_file")
+      cmd+=(--mcp-config "$mcp_file")
+      ;;
+    codex)
+      export ROSTERD_LOOPBACK_TOKEN="$loopback_token"
+      cmd+=(-c "mcp_servers.rosterd.url=\"$mcp_url\"" -c 'mcp_servers.rosterd.bearer_token_env_var="ROSTERD_LOOPBACK_TOKEN"')
+      [ -n "$session_key" ] && cmd+=(-c "mcp_servers.rosterd.http_headers={\"X-Rosterd-Session\"=\"$session_key\"}")
+      ;;
+  esac
+fi
+
+exec "${cmd[@]}"

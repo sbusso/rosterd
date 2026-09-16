@@ -1,0 +1,50 @@
+[workspace]
+resolver = "3"
+members = ["crates/proto", "crates/holder", "crates/rosterd"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+rosterd-proto = { path = "crates/proto" }
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+tokio-stream = { version = "0.1", features = ["sync", "io-util"] }
+futures = "0.3"
+bytes = "1"
+axum = { version = "0.8", features = ["json", "macros"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+hyper = "1"
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.14"
+ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+sysinfo = "0.39"
+rmcp = { version = "3", features = ["server", "transport-streamable-http-server", "macros"] }
+ulid = "1"
+dirs = "6"
+libc = "0.2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

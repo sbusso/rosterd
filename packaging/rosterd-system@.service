@@ -1,0 +1,22 @@
+# rosterd, R11: the system unit for a server with lingering off, one instance per user:
+#   sudo install -m644 packaging/rosterd-system@.service /etc/systemd/system/
+#   sudo install -m755 dist/<target>/rosterd dist/<target>/rosterd-holder /usr/local/bin/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rosterd-system@$USER
+# No XDG_RUNTIME_DIR without a login session, so the socket is pinned under /run/rosterd, which
+# the hook, launcher and CLI probe as a candidate, R6.
+[Unit]
+Description=rosterd for %i, the roster daemon and swarm node
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+User=%i
+ExecStart=/usr/local/bin/rosterd daemon
+RuntimeDirectory=rosterd
+Environment=ROSTERD_SOCKET=/run/rosterd/rosterd.sock
+Environment=RUST_LOG=info
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

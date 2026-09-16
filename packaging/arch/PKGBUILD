@@ -1,0 +1,50 @@
+# Maintainer: Stéphane Busso <stephane.busso@gmail.com>
+# rosterd, R11: the Arch package. Fill sha256sums at the tag with `makepkg -g`; until then the
+# tarball does not exist and the package builds from a checkout with `makepkg -e` over a
+# pre-extracted src/rosterd-$pkgver (see packaging/arch/test.sh).
+pkgname=rosterd
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="One daemon per machine that knows every coding agent session on it"
+arch=('x86_64' 'aarch64')
+url="https://github.com/sbusso/rosterd"
+license=('MIT')
+depends=('gcc-libs' 'glibc' 'bash')
+makedepends=('cargo')
+optdepends=('tailscale: the swarm listener'
+            'systemd: the user unit and the per-user system unit')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo test --frozen --release
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 target/release/rosterd target/release/rosterd-holder -t "$pkgdir/usr/bin"
+  install -Dm755 scripts/rosterd-hook scripts/rosterd-launch scripts/rosterd-open -t "$pkgdir/usr/bin"
+  # The units name the packaged binary, not ~/.local/bin or /usr/local/bin.
+  sed 's|%h/.local/bin/rosterd|/usr/bin/rosterd|' packaging/rosterd.service \
+    | install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/user/rosterd.service"
+  sed 's|/usr/local/bin/rosterd|/usr/bin/rosterd|' packaging/rosterd-system@.service \
+    | install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/system/rosterd-system@.service"
+  install -Dm644 README.md SPEC.md -t "$pkgdir/usr/share/doc/$pkgname"
+  install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname"
+}

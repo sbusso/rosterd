@@ -1,0 +1,18 @@
+# rosterd, R2 and R11: the systemd user unit for a desktop. packaging/install.sh puts it in
+# ~/.config/systemd/user and enables it; by hand:
+#   install -Dm644 packaging/rosterd.service ~/.config/systemd/user/rosterd.service
+#   systemctl --user daemon-reload && systemctl --user enable --now rosterd
+# The socket lands in $XDG_RUNTIME_DIR, which systemd --user sets, so shells find it, R6.
+[Unit]
+Description=rosterd, the roster daemon and swarm node
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/rosterd daemon
+Restart=always
+RestartSec=2
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target

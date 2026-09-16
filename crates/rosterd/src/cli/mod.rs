@@ -1,0 +1,374 @@
+//! `rosterd <command>`, R14: every command but `daemon` is a client of the local socket of R6.
+//! `--json` prints the API body byte for byte; without it a table or a short text. Exit codes,
+//! R14.2: 0 ok, 1 user error, 2 daemon unreachable, 3 swarm peer needed and unreachable.
+//!
+//! OWNER: the cli agent.
+
+mod client;
+mod list;
+mod resolve;
+mod session;
+
+use std::path::Path;
+
+use clap::{Args, Subcommand, ValueEnum};
+use reqwest::Method;
+use rosterd_proto::NodeHealth;
+use serde_json::{Value, json};
+
+use crate::config::Config;
+use crate::node::VERSION;
+pub use client::{Client, Exit, Out};
+use client::{emit, parse, table};
+
+/// R14.1: none is this node, `--node` one named node, `--swarm` every node the local one knows.
+#[derive(Args, Debug, Clone, Default)]
+pub struct Scope {
+    /// One named node in the swarm.
+    #[arg(long, conflicts_with = "swarm")]
+    pub node: Option<String>,
+    /// Every node, including unreachable ones with their age.
+    #[arg(long)]
+    pub swarm: bool,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum Policy {
+    Auto,
+    Attention,
+    Decision,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
+#[value(rename_all = "snake_case")]
+pub enum Wait {
+    Idle,
+    NeedsAttention,
+    Ended,
+}
+
+// R14.3, in the spec's order.
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// One row per session.
+    List {
+        #[command(flatten)]
+        scope: Scope,
+    },
+    /// The table again on every change; Ctrl+C stops.
+    Watch {
+        #[command(flatten)]
+        scope: Scope,
+    },
+    /// Node, version, listeners, swarm, bridge, holders, sources.
+    Status,
+    /// Swarm membership and health.
+    Nodes,
+    /// One session in full, never the transcript.
+    Read { key: String },
+    /// Which source set each field and when, and which claims were rejected.
+    Explain { key: String },
+    /// Create a headless session for a workspace attempt, R5.1.
+    Start {
+        #[arg(long)]
+        harness: String,
+        #[arg(long)]
+        cwd: String,
+        /// The workspace attempt this session works on; required.
+        #[arg(long)]
+        attempt: Option<String>,
+        #[arg(long)]
+        parent_attempt: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        policy: Option<Policy>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        effort: Option<String>,
+        /// K=V, repeatable.
+        #[arg(long = "env", value_name = "K=V")]
+        env: Vec<String>,
+    },
+    /// Send one turn; with --wait return when the session reaches that activity.
+    Prompt {
+        key: String,
+        text: String,
+        #[arg(long)]
+        wait: Option<Wait>,
+        /// Seconds; on timeout exit 1 with the current activity.
+        #[arg(long, default_value_t = 600)]
+        timeout: u64,
+    },
+    /// ACP cancel; the session stays live.
+    Cancel { key: String },
+    /// End the holder.
+    Stop { key: String },
+    /// R15: stop the holder, keep the session to resume.
+    Suspend { key: String },
+    /// R15: bring a suspended session back under a new key.
+    Resume { key: String },
+    /// Set the display name, or clear it.
+    Name {
+        key: String,
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        label: Option<String>,
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Jump to the session: tmux, herdr, or the /ui page.
+    Open { key: String },
+    /// Answer the pending permission request with allow.
+    Allow {
+        key: String,
+        /// The allow-always option when the harness offers it.
+        #[arg(long)]
+        always: bool,
+    },
+    /// Answer the pending permission request with deny.
+    Deny {
+        key: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// A child attempt for TASK under the session's task, and a child session bound to it, R5.4.
+    Spawn {
+        key: String,
+        #[arg(long)]
+        harness: String,
+        #[arg(long)]
+        cwd: String,
+        #[arg(long)]
+        task: String,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Mint a single use invite, R7.3.
+    Invite {
+        /// Minutes the invite stays valid.
+        #[arg(long, default_value_t = 60)]
+        ttl: u64,
+    },
+    /// Join the swarm through a peer with an invite.
+    Join {
+        address: String,
+        #[arg(long)]
+        token: String,
+    },
+    /// Sign and gossip a revocation.
+    Revoke { node_id: String },
+    /// Revoke this node and clear its swarm config.
+    Leave,
+    /// Hook declarations and the pi extension, R16.
+    Integrate {
+        #[command(subcommand)]
+        action: Integrate,
+    },
+    /// Run the service.
+    #[command(alias = "serve")]
+    Daemon,
+    /// One line per check, pass or a fix command; changes nothing.
+    Doctor,
+    /// Install or repair everything on this machine: a checklist screen, or `--yes` for the needed rows headless.
+    Setup {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Print the version
+    Version,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Integrate {
+    Install { target: crate::integrate::Target },
+    Uninstall { target: crate::integrate::Target },
+    /// Per harness: binary, version, adapter commit, hooks or extension installed and current.
+    Status,
+}
+
+/// Runs every command but `daemon`. `json` is the global `--json`.
+pub async fn run(command: Command, config_path: &Path, json: bool) -> Out<()> {
+    let config = Config::load(config_path)?;
+    // Local commands first: they never need the daemon, R14.3.
+    match &command {
+        Command::Version => {
+            if json {
+                return emit(&json!({ "version": VERSION }).to_string());
+            }
+            println!("rosterd {VERSION}");
+            return Ok(());
+        }
+        Command::Doctor => return doctor(&config, json),
+        Command::Setup { yes } => {
+            return match crate::setup::run(config, config_path, *yes)? {
+                true => Ok(()),
+                false => Err(Exit::user("setup incomplete")),
+            };
+        }
+        Command::Integrate { action } => return integrate(action, &config, json),
+        _ => {}
+    }
+    let client = Client::new(&config);
+    match command {
+        Command::List { scope } => list::list(&client, &scope, json).await,
+        Command::Watch { scope } => list::watch(&client, &scope, json).await,
+        Command::Status => status(&client, json).await,
+        Command::Nodes => nodes(&client, json).await,
+        Command::Invite { ttl } => {
+            let body = client.call(Method::POST, "/node/invite", Some(json!({ "ttl_minutes": ttl }))).await?;
+            if json {
+                return emit(&body);
+            }
+            let invite = parse::<Value>(&body)?;
+            println!("{}", invite["invite"].as_str().unwrap_or_default());
+            Ok(())
+        }
+        Command::Join { address, token } => {
+            let body = client.call(Method::POST, "/node/join", Some(json!({ "peer": address, "token": token }))).await?;
+            if json {
+                return emit(&body);
+            }
+            let members = parse::<Value>(&body)?;
+            println!("swarm {}", members["swarm_id"].as_str().unwrap_or("-"));
+            for member in members["members"].as_array().into_iter().flatten() {
+                println!("  {}  {}", member["name"].as_str().unwrap_or("-"), member["node_id"].as_str().unwrap_or("-"));
+            }
+            Ok(())
+        }
+        Command::Revoke { node_id } => {
+            let body = client.call(Method::POST, "/node/revoke", Some(json!({ "node_id": node_id }))).await?;
+            if json {
+                return emit(&body);
+            }
+            println!("revoked {node_id}");
+            Ok(())
+        }
+        Command::Leave => {
+            let body = client.call(Method::POST, "/swarm/leave", None).await?;
+            if json {
+                return emit(&body);
+            }
+            println!("left the swarm");
+            Ok(())
+        }
+        Command::Version | Command::Doctor | Command::Setup { .. } | Command::Integrate { .. } | Command::Daemon => {
+            unreachable!("handled above")
+        }
+        other => session::run(&client, &config, other, json).await,
+    }
+}
+
+/// `status`: GET /status plus the reachability of /swarm/nodes, the swarm id of /node/members
+/// and the holder count of /snapshot, none of which /status carries yet.
+async fn status(client: &Client, json: bool) -> Out<()> {
+    let body = client.call(Method::GET, "/status", None).await?;
+    if json {
+        return emit(&body);
+    }
+    let status = parse::<Value>(&body)?;
+    let text = |key: &str| status[key].as_str().map(str::to_string).unwrap_or_else(|| status[key].to_string());
+    let count = |path: &[&str]| path.iter().fold(&status, |v, k| &v[*k]).as_u64().unwrap_or(0);
+    let bridge = &status["bridge"];
+    let bridge_state = match (bridge["configured"].as_bool(), bridge["connected"].as_bool()) {
+        (Some(false), _) => "not configured".to_string(),
+        (_, Some(true)) => "connected".to_string(),
+        _ => "reconnecting".to_string(),
+    };
+    let sources = status["sources"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")).unwrap_or_default();
+    println!("node      {} ({})", text("node"), text("node_id"));
+    println!("version   {}", text("version"));
+    println!("socket    {}", text("socket"));
+    println!("loopback  127.0.0.1:{}", text("loopback_port"));
+    println!("listen    {}", text("listen"));
+    println!("swarm     {}", status["swarm_id"].as_str().unwrap_or("none"));
+    println!("peers     {} ({} reachable, {} unreachable)", count(&["peers", "total"]), count(&["peers", "reachable"]), count(&["peers", "unreachable"]));
+    println!("bridge    {bridge_state}, queue {}", bridge["queued"].as_u64().unwrap_or(0));
+    println!("sessions  {}", text("sessions"));
+    println!("holders   {} ({} suspended)", count(&["holders"]), count(&["suspended"]));
+    println!("sources   {sources}");
+    Ok(())
+}
+
+async fn nodes(client: &Client, json: bool) -> Out<()> {
+    let body = client.call(Method::GET, "/swarm/nodes", None).await?;
+    if json {
+        return emit(&body);
+    }
+    let nodes = parse::<Vec<NodeHealth>>(&body)?;
+    print!("{}", nodes_table(&nodes));
+    Ok(())
+}
+
+fn nodes_table(nodes: &[NodeHealth]) -> String {
+    let rows = nodes
+        .iter()
+        .map(|node| {
+            let state = match node.state {
+                rosterd_proto::PeerState::Local => "local",
+                rosterd_proto::PeerState::Reachable => "reachable",
+                rosterd_proto::PeerState::Unreachable => "unreachable",
+            };
+            let cells = vec![
+                node.name.clone(),
+                node.node_id.clone(),
+                node.address.clone().unwrap_or_else(|| "-".into()),
+                node.version.clone().unwrap_or_else(|| "-".into()),
+                node.capabilities.harnesses.join(","),
+                state.into(),
+                resolve::age(node.peer_age_ms / 1000),
+                if node.revoked { "yes" } else { "" }.into(),
+            ];
+            (cells, false)
+        })
+        .collect::<Vec<_>>();
+    table(&["NAME", "NODE_ID", "ADDRESS", "VERSION", "HARNESSES", "STATE", "AGE", "REVOKED"], &rows)
+}
+
+/// `doctor`, R14.3: `pass  name: detail` or `FIX   name: detail → fix`; exit 1 when any fails.
+fn doctor(config: &Config, json: bool) -> Out<()> {
+    let checks = crate::doctor::run(config);
+    if json {
+        return emit(&serde_json::to_string_pretty(&checks)?);
+    }
+    for check in &checks {
+        match (check.ok, &check.fix) {
+            (true, _) => println!("pass  {}: {}", check.name, check.detail),
+            (false, Some(fix)) => println!("FIX   {}: {} → {fix}", check.name, check.detail),
+            (false, None) => println!("FIX   {}: {}", check.name, check.detail),
+        }
+    }
+    let failed = checks.iter().filter(|c| !c.ok).count();
+    if failed > 0 { Err(Exit::user(format!("{failed} check(s) failed"))) } else { Ok(()) }
+}
+
+fn integrate(action: &Integrate, config: &Config, json: bool) -> Out<()> {
+    match action {
+        Integrate::Install { target } => crate::integrate::install(*target, config)?,
+        Integrate::Uninstall { target } => crate::integrate::uninstall(*target, config)?,
+        Integrate::Status => {
+            let statuses = crate::integrate::status(config);
+            if json {
+                return emit(&serde_json::to_string_pretty(&statuses)?);
+            }
+            let rows = statuses
+                .iter()
+                .map(|s| {
+                    let dash = || "-".to_string();
+                    let cells = vec![
+                        s.harness.clone(),
+                        s.binary.clone().unwrap_or_else(dash),
+                        s.version.clone().unwrap_or_else(dash),
+                        s.adapter.clone().unwrap_or_else(dash),
+                        s.adapter_commit.clone().unwrap_or_else(dash),
+                        if s.installed { "yes" } else { "no" }.into(),
+                        if s.current { "yes" } else { "no" }.into(),
+                    ];
+                    (cells, false)
+                })
+                .collect::<Vec<_>>();
+            print!("{}", table(&["HARNESS", "BINARY", "VERSION", "ADAPTER", "COMMIT", "INSTALLED", "CURRENT"], &rows));
+        }
+    }
+    Ok(())
+}
