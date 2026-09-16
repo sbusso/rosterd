@@ -13,6 +13,14 @@ class Rosterd < Formula
     depends_on "rust" => :build
   end
 
+  # The bottle is what lets a Mac install without a compiler toolchain: `brew bottle` of the
+  # tarball install, uploaded next to it on the release.
+  bottle do
+    root_url "https://github.com/sbusso/rosterd/releases/download/v0.1.0"
+    rebuild 1
+    sha256 arm64_tahoe: "4ecd6e8be7d2a357fe24613bfc155212dea4a15e9f5ee9f0c15569ce84d251bd"
+  end
+
   def install
     if build.head?
       system "cargo", "install", *std_cargo_args(path: "crates/rosterd")
