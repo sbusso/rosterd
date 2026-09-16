@@ -13,6 +13,8 @@ depends=('gcc-libs' 'glibc' 'bash')
 makedepends=('cargo')
 optdepends=('tailscale: the swarm listener'
             'systemd: the user unit and the per-user system unit')
+# rustc links with rust-lld, which cannot read GCC LTO objects: aws-lc-sys's C ends up undefined.
+options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 

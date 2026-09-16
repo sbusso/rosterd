@@ -5,10 +5,11 @@
 #   packaging/arch/test.sh [--nocheck]
 set -euo pipefail
 cd "$(dirname "$0")/../.."
-image=archlinux:base-devel
-case "$(uname -m)" in arm64 | aarch64) image=agners/archlinuxarm ;; esac
-docker run --rm -v "$PWD:/repo:ro" -e MAKEPKG_FLAGS="${1-}" "$image" bash -euo pipefail -c '
-  pacman -Syu --noconfirm --needed base-devel rust >/dev/null
+# The official image is x86_64 only; on Apple silicon Docker runs it under Rosetta, a few minutes.
+docker run --rm --platform linux/amd64 -v "$PWD:/repo:ro" -e MAKEPKG_FLAGS="${1-}" archlinux:base-devel bash -euo pipefail -c '
+  # pacman 7 sandboxes downloads with seccomp, which the emulated kernel refuses.
+  sed -i "s/^#DisableSandbox/DisableSandbox/" /etc/pacman.conf
+  pacman -Syu --noconfirm --needed rust >/dev/null
   useradd -m build
   ver=$(sed -n "s/^pkgver=//p" /repo/packaging/arch/PKGBUILD)
   mkdir -p /build/src
@@ -17,7 +18,7 @@ docker run --rm -v "$PWD:/repo:ro" -e MAKEPKG_FLAGS="${1-}" "$image" bash -euo p
   chown -R build /build
   # -e: the tarball does not exist yet, so the pre-extracted tree stands in; prepare() is skipped.
   su build -c "cd /build/src/rosterd-$ver && cargo fetch --locked && cd /build && makepkg -e $MAKEPKG_FLAGS"
-  pacman -U --noconfirm /build/rosterd-*.pkg.tar.zst
+  pacman -U --noconfirm /build/rosterd-*.pkg.tar*
   rosterd version
   grep ExecStart /usr/lib/systemd/user/rosterd.service /usr/lib/systemd/system/rosterd-system@.service
   pacman -Ql rosterd
