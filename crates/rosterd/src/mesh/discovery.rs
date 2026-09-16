@@ -23,9 +23,24 @@ async fn tailscale(args: &[&str]) -> Option<String> {
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// `tailscale ip -4`.
+/// `tailscale ip -4`, or without the CLI on PATH (the Mac app keeps its own), the address the
+/// kernel would route to MagicDNS from: connecting a UDP socket sends nothing and names the
+/// local side, which is the Tailscale IP whenever the tailnet route is up.
 pub async fn tailscale_ip() -> Option<IpAddr> {
-    tailscale(&["ip", "-4"]).await?.lines().find_map(|line| line.trim().parse().ok())
+    let from_cli = tailscale(&["ip", "-4"]).await.and_then(|out| out.lines().find_map(|line| line.trim().parse().ok()));
+    from_cli.or_else(routed_ip)
+}
+
+fn routed_ip() -> Option<IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("100.100.100.100:53").ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    is_tailscale(ip).then_some(ip)
+}
+
+/// The CGNAT range Tailscale hands out, 100.64.0.0/10.
+fn is_tailscale(ip: IpAddr) -> bool {
+    matches!(ip, IpAddr::V4(v4) if v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]))
 }
 
 /// The first Tailscale IP of every online peer.
@@ -61,6 +76,14 @@ mod tests {
         });
         assert_eq!(parse_status(&status), vec!["100.64.0.12".parse::<IpAddr>().unwrap()]);
         assert!(parse_status(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn routed_ip_is_a_tailnet_address_or_nothing() {
+        assert!(is_tailscale("100.102.99.55".parse().unwrap()));
+        assert!(!is_tailscale("100.200.0.1".parse().unwrap()));
+        assert!(!is_tailscale("192.168.1.2".parse().unwrap()));
+        assert!(routed_ip().is_none_or(is_tailscale));
     }
 
     #[tokio::test]

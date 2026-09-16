@@ -229,7 +229,14 @@ pub fn hostname() -> String {
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                 .filter(|h| !h.is_empty())
         })
+        .map(|h| short(&h))
         .unwrap_or_else(|| "node".into())
+}
+
+/// The host part alone: `MacBook-Pro-2.local` and `box.example.net` name the node `MacBook-Pro-2`
+/// and `box`, as `hostname -s` would.
+fn short(hostname: &str) -> String {
+    hostname.split('.').next().unwrap_or(hostname).to_string()
 }
 
 /// Ensures `path`'s parent exists and, on Unix, that the file is 0600, R10.
@@ -249,6 +256,12 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_node_name_is_the_host_part() {
+        assert_eq!(short("MacBook-Pro-2.local"), "MacBook-Pro-2");
+        assert_eq!(short("omarchy64"), "omarchy64");
+    }
 
     #[test]
     fn parses_the_spec_example_and_refuses_other_interfaces() {
