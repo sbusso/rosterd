@@ -5,8 +5,8 @@
 class Rosterd < Formula
   desc "One daemon per machine that knows every coding agent session on it"
   homepage "https://github.com/sbusso/rosterd"
-  url "https://github.com/sbusso/rosterd/releases/download/v0.1.0/rosterd-0.1.0-aarch64-apple-darwin.tar.gz"
-  sha256 "863d7ce5148cca59afa9da78802d4792eca6d9cce474b6f45780309ff5d945e4"
+  url "https://github.com/sbusso/rosterd/releases/download/v0.1.1/rosterd-0.1.1-aarch64-apple-darwin.tar.gz"
+  sha256 "ea6ac5538c64cf51d3fade77d832113b76cb92c082f20e43eda25a29f42aac87"
   license "MIT"
   bottle do
     root_url "https://github.com/sbusso/rosterd/releases/download/v0.1.0"
