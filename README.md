@@ -59,6 +59,10 @@ One row per thing the machine needs. Space picks, enter runs, `a` picks everythi
 
 ## Using it
 
+States come from hooks and ACP. A session only the process scan knows is active while its process
+tree uses the CPU and idle after a minute without; a hook or ACP claim takes over as soon as one
+arrives, R4.
+
 **Menu bar** (`rosterd-tray`)
 
 - sessions grouped by state: needs attention, active, idle, unknown, suspended
@@ -72,6 +76,7 @@ One row per thing the machine needs. Space picks, enter runs, `a` picks everythi
 
 - `http://127.0.0.1:8790/ui`, opened once with `?token=<loopback.token>`; the tab keeps it
 - the roster with the same states and actions as the tray, every node of the swarm
+- each row: project badge, state and its age, the folder with `~` for home; on the right the harness, CPU share, memory and uptime of the process tree, then the actions
 - `/ui/sessions/<session_key>`: the live conversation of a headless session, with its last recap
 - Add workspace: a workspace URL and token, kept in the browser, to list what needs you first
 - `ui_listen = "tailscale"` in `[node]` serves it on the Tailscale IP too: `http://<tailscale-ip>:8790/ui?token=…` from a phone
