@@ -23,6 +23,7 @@ crates/rosterd   the daemon
 scripts/         hook, launcher, opener
 skill/           SKILL.md, the CLI summary agents load, R14.4
 ui/              the single page client served at /ui, R9
+ios/             the phone app, paired by the page's QR
 packaging/       systemd unit, launchd plist, build script
 ```
 
@@ -39,6 +40,10 @@ only after grepping callers.
 brew tap sbusso/rosterd https://github.com/sbusso/rosterd && brew install --HEAD rosterd   # macOS
 makepkg -si -p packaging/arch/PKGBUILD                                                     # Arch
 ```
+
+On macOS that is the whole install: the daemon runs as a LaunchAgent and keeps the menu bar
+tray beside it; `brew services stop rosterd` is the off switch. The harness hooks and ACP
+adapters are `rosterd setup`, since they edit `~/.claude` and `~/.codex`.
 
 From source: `packaging/build.sh native` then `packaging/install.sh` (`--from dist/<target>` for a
 downloaded build). Cross builds need cargo zigbuild.
@@ -79,7 +84,13 @@ arrives, R4.
 - each row: project badge, state and its age, the folder with `~` for home; on the right the harness, CPU share, memory and uptime of the process tree, then the actions
 - `/ui/sessions/<session_key>`: the live conversation of a headless session, with its last recap
 - Add workspace: a workspace URL and token, kept in the browser, to list what needs you first
-- `ui_listen = "tailscale"` in `[node]` serves it on the Tailscale IP too: `http://<tailscale-ip>:8790/ui?token=…` from a phone
+- also on the Tailscale IP (`ui_listen = "tailscale"`, the default): `http://<tailscale-ip>:8790/ui?token=…` from another machine on the tailnet
+
+**Phone** (`ios/`)
+
+- a SwiftUI app, the roster page on a phone: same rows, states and actions, the conversation of a headless session
+- pairing: `pair phone` on the roster page shows a QR of a `rosterd://pair` link with the Tailscale address and the bearer; the app scans it (or the Camera app opens it). Needs the phone on the tailnet
+- build: open `ios/Rosterd.xcodeproj` in Xcode, run on a device; `swiftc Rosterd/Models.swift check/main.swift` is the decode check
 
 **Shell**
 

@@ -255,6 +255,7 @@ mod tests {
         let mut config = Config::default();
         config.node.name = "gibson".into();
         config.node.listen = "off".into();
+        config.node.ui_listen = "loopback".into();
         config.node.socket = Some(dir.join("rosterd.sock"));
         config.node.loopback_port = {
             let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -571,6 +572,14 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(listed["result"]["structuredContent"]["records"][0]["name"], "coordinator");
+    }
+
+    #[tokio::test]
+    async fn pair_refuses_a_loopback_only_page() {
+        let h = start("pair").await;
+        let refused = h.socket.get("http://rosterd/pair").send().await.unwrap();
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        assert!(refused.json::<Value>().await.unwrap()["error"].as_str().unwrap().contains("ui_listen"));
     }
 
     #[test]

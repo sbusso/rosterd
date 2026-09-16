@@ -35,6 +35,10 @@ pub struct NodeConfig {
     pub ui_listen: String,
     /// Overrides the platform default socket path, R6.
     pub socket: Option<PathBuf>,
+    /// The daemon runs `rosterd-tray` beside itself when it has a GUI session (a LaunchAgent, a
+    /// shell), so one service is the daemon and the menu bar. A LaunchDaemon has no GUI; the
+    /// setup's tray row covers it.
+    pub tray: bool,
 }
 
 impl Default for NodeConfig {
@@ -44,8 +48,9 @@ impl Default for NodeConfig {
             port: 8791,
             listen: "tailscale".into(),
             loopback_port: 8790,
-            ui_listen: "loopback".into(),
+            ui_listen: "tailscale".into(),
             socket: None,
+            tray: true,
         }
     }
 }

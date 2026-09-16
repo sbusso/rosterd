@@ -108,12 +108,40 @@ async fn serve(config_path: PathBuf) -> Result<()> {
     });
 
     tokio::spawn(scanner::run(config.clone(), roster.clone()));
+    if config.node.tray && gui_session() {
+        tokio::spawn(keep_tray());
+    }
     tokio::spawn(mesh.clone().run());
     tokio::spawn(bridge.clone().run());
     if let Err(error) = runner.recover().await {
         tracing::error!(%error, "holder recovery failed; the roster still answers, R2");
     }
     api::serve(node).await
+}
+
+/// Whether a menu bar can be shown from here: macOS says `Aqua` for a login session, `System`
+/// for a LaunchDaemon; Linux needs a display.
+fn gui_session() -> bool {
+    if cfg!(target_os = "macos") {
+        std::process::Command::new("launchctl").arg("managername").output().map(|o| o.stdout.starts_with(b"Aqua")).unwrap_or(false)
+    } else {
+        std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
+    }
+}
+
+/// `rosterd-tray` beside this binary, restarted when it exits; without the binary nothing runs.
+async fn keep_tray() {
+    let Some(tray) = std::env::current_exe().ok().map(|exe| exe.with_file_name("rosterd-tray")).filter(|p| p.is_file()) else { return };
+    loop {
+        match tokio::process::Command::new(&tray).spawn() {
+            Ok(mut child) => {
+                let status = child.wait().await;
+                tracing::warn!(?status, "tray exited");
+            }
+            Err(error) => tracing::warn!(%error, "tray failed to start"),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
 }
 
 /// The loopback bearer token, R6: created once, mode 0600, read by local clients.

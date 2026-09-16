@@ -19,21 +19,27 @@ class Rosterd < Formula
     doc.install "README.md", "SPEC.md"
   end
 
-  # A LaunchAgent for this login. The adapters live where bun put them, so PATH names that too.
+  # A LaunchAgent for this login: the daemon, which runs the menu bar tray beside itself. The
+  # adapters live where bun put them and Tailscale in its app, so PATH names both.
   service do
     run [opt_bin/"rosterd", "daemon"]
     keep_alive true
-    environment_variables PATH:     "#{Dir.home}/.local/bin:#{Dir.home}/.bun/bin:#{std_service_path_env}",
+    environment_variables PATH:     "#{Dir.home}/.local/bin:#{Dir.home}/.bun/bin:#{std_service_path_env}:/Applications/Tailscale.app/Contents/MacOS",
                           RUST_LOG: "info"
     log_path var/"log/rosterd.log"
     error_log_path var/"log/rosterd.log"
   end
 
+  # `brew install rosterd` is the whole install: the service starts here, and an upgrade
+  # restarts it. `brew services stop rosterd` is the off switch.
+  def post_install
+    system "brew", "services", "restart", name
+  end
+
   def caveats
     <<~EOS
-      Start it with `brew services start rosterd` (a LaunchAgent, gone at logout) or let
-      `rosterd setup` install the LaunchDaemon with sudo; `rosterd setup` also installs the
-      harness hooks, the ACP adapters, the config and the menu bar tray (rosterd-tray) at login.
+      Running as a LaunchAgent with the menu bar tray; the roster page is `rosterd ui`.
+      Harness hooks and ACP adapters are `rosterd setup` (they edit ~/.claude and ~/.codex).
     EOS
   end
 
