@@ -37,13 +37,15 @@ only after grepping callers.
 ## Install
 
 ```
-brew tap sbusso/rosterd https://github.com/sbusso/rosterd && brew install --HEAD rosterd   # macOS
-makepkg -si -p packaging/arch/PKGBUILD                                                     # Arch
+brew tap sbusso/rosterd https://github.com/sbusso/rosterd && brew trust sbusso/rosterd
+brew install --HEAD rosterd && brew services start rosterd   # macOS
+makepkg -si -p packaging/arch/PKGBUILD                       # Arch
 ```
 
 On macOS that is the whole install: the daemon runs as a LaunchAgent and keeps the menu bar
-tray beside it; `brew services stop rosterd` is the off switch. The harness hooks and ACP
-adapters are `rosterd setup`, since they edit `~/.claude` and `~/.codex`.
+tray beside it (Homebrew's sandbox keeps a formula out of launchd, hence the `services start`);
+`brew services stop rosterd` is the off switch. The harness hooks and ACP adapters are
+`rosterd setup`, since they edit `~/.claude` and `~/.codex`.
 
 From source: `packaging/build.sh native` then `packaging/install.sh` (`--from dist/<target>` for a
 downloaded build). Cross builds need cargo zigbuild.

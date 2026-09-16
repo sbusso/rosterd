@@ -30,15 +30,13 @@ class Rosterd < Formula
     error_log_path var/"log/rosterd.log"
   end
 
-  # `brew install rosterd` is the whole install: the service starts here, and an upgrade
-  # restarts it. `brew services stop rosterd` is the off switch.
-  def post_install
-    system "brew", "services", "restart", name
-  end
-
+  # Homebrew's post-install sandbox keeps a formula out of launchd, so the service is
+  # `brew services start`; the daemon brings the menu bar tray up itself.
   def caveats
     <<~EOS
-      Running as a LaunchAgent with the menu bar tray; the roster page is `rosterd ui`.
+      Start it, menu bar tray included:
+        brew services start rosterd
+      The roster page is `rosterd ui`.
       Harness hooks and ACP adapters are `rosterd setup` (they edit ~/.claude and ~/.codex).
     EOS
   end
