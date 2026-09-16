@@ -20,15 +20,16 @@ const APP: &str = "rosterd";
 const SECTIONS: [&str; 5] = ["Needs attention", "Active", "Idle", "Unknown", "Suspended"];
 
 enum UserEvent {
-    Snapshot(Snapshot),
-    /// The watch ended: the daemon is down or unreachable; the text is its last word.
-    Down(String),
+    View(View),
     Menu(MenuEvent),
+    /// A menu started or stopped tracking the mouse (macOS).
+    Tracking(bool),
 }
 
 enum View {
     Waiting,
     Roster(Snapshot),
+    /// The watch ended: the daemon is down or unreachable; the text is its last word.
     Down(String),
 }
 
@@ -49,9 +50,14 @@ fn main() {
     let feed = event_loop.create_proxy();
     let bin = rosterd.clone();
     thread::spawn(move || follow(&bin, &feed));
+    #[cfg(target_os = "macos")]
+    watch_tracking(event_loop.create_proxy());
 
     let mut tray: Option<TrayIcon> = None;
     let mut view = View::Waiting;
+    // Replacing the menu while it is open closes it (muda cancels tracking when the old NSMenu
+    // drops), so a view that arrives then waits for the menu to close.
+    let (mut open, mut pending) = (false, false);
     event_loop.run(move |event, _, flow| {
         *flow = ControlFlow::Wait;
         match event {
@@ -73,18 +79,11 @@ fn main() {
                     rl.wake_up();
                 }
             }
-            Event::UserEvent(UserEvent::Snapshot(s)) => {
-                view = View::Roster(s);
-                if let Some(t) = &tray {
-                    render(t, &view);
-                }
+            Event::UserEvent(UserEvent::View(v)) => {
+                view = v;
+                pending = true;
             }
-            Event::UserEvent(UserEvent::Down(m)) => {
-                view = View::Down(m);
-                if let Some(t) = &tray {
-                    render(t, &view);
-                }
-            }
+            Event::UserEvent(UserEvent::Tracking(tracking)) => open = tracking,
             Event::UserEvent(UserEvent::Menu(e)) => {
                 if e.id.as_ref() == "quit" {
                     tray.take();
@@ -95,7 +94,27 @@ fn main() {
             }
             _ => {}
         }
+        if let (true, false, Some(t)) = (pending, open, &tray) {
+            render(t, &view);
+            pending = false;
+        }
     })
+}
+
+/// AppKit says when any menu starts and stops tracking the mouse.
+#[cfg(target_os = "macos")]
+fn watch_tracking(feed: EventLoopProxy<UserEvent>) {
+    use objc2_app_kit::{NSMenuDidBeginTrackingNotification, NSMenuDidEndTrackingNotification};
+    use objc2_foundation::{NSNotification, NSNotificationCenter};
+    let center = NSNotificationCenter::defaultCenter();
+    for (name, tracking) in [(unsafe { NSMenuDidBeginTrackingNotification }, true), (unsafe { NSMenuDidEndTrackingNotification }, false)] {
+        let feed = feed.clone();
+        let block = block2::RcBlock::new(move |_: std::ptr::NonNull<NSNotification>| {
+            let _ = feed.send_event(UserEvent::Tracking(tracking));
+        });
+        // The center holds the observer; it lives as long as the process.
+        std::mem::forget(unsafe { center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block) });
+    }
 }
 
 /// The sibling `rosterd` of this binary, else the one on PATH.
@@ -110,21 +129,21 @@ fn follow(rosterd: &PathBuf, feed: &EventLoopProxy<UserEvent>) {
         let mut child = match child {
             Ok(c) => c,
             Err(e) => {
-                let _ = feed.send_event(UserEvent::Down(format!("cannot run {}: {e}", rosterd.display())));
+                let _ = feed.send_event(UserEvent::View(View::Down(format!("cannot run {}: {e}", rosterd.display()))));
                 thread::sleep(Duration::from_secs(5));
                 continue;
             }
         };
         for line in BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
             if let Ok(snapshot) = serde_json::from_str::<Snapshot>(&line) {
-                let _ = feed.send_event(UserEvent::Snapshot(snapshot));
+                let _ = feed.send_event(UserEvent::View(View::Roster(snapshot)));
             }
         }
         let mut err = String::new();
         let _ = child.stderr.take().unwrap().read_to_string(&mut err);
         let _ = child.wait();
         let why = err.lines().last().map(|l| l.trim_start_matches("rosterd: ").to_string()).unwrap_or_else(|| "watch ended".into());
-        let _ = feed.send_event(UserEvent::Down(why));
+        let _ = feed.send_event(UserEvent::View(View::Down(why)));
         thread::sleep(Duration::from_secs(2));
     }
 }
@@ -226,7 +245,7 @@ fn render(tray: &TrayIcon, view: &View) {
     }
     let _ = menu.append_items(&[
         &PredefinedMenuItem::separator(),
-        &MenuItem::with_id("ui", format!("Open {APP}"), true, None),
+        &MenuItem::with_id("ui", "Open in browser", true, None),
         &MenuItem::with_id("quit", "Quit", true, None),
     ]);
     tray.set_menu(Some(Box::new(menu)));

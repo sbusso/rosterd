@@ -44,36 +44,96 @@ makepkg -si -p packaging/arch/PKGBUILD                                          
 
 The formula is head only and the PKGBUILD has no checksum until the first tag;
 `packaging/arch/test.sh` builds and installs the Arch package in a container from this checkout.
-Either way, `rosterd setup` afterwards for the service, hooks, adapters and config.
 
-Or from source. `packaging/build.sh native` writes `dist/<host>/rosterd` and `rosterd-holder`;
-`packaging/install.sh` copies them and the three scripts into `~/.local/bin`, writes a default
-`rosterd.toml` when there is none, and installs the service: the systemd user unit on Linux,
-the LaunchDaemon on macOS (asks for sudo once, R11). `packaging/build.sh` with no argument also
-cross-builds `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` with cargo zigbuild;
-`install.sh --from dist/<target>` installs a downloaded directory.
+Or from source: `packaging/build.sh native` writes `dist/<host>/rosterd`, `rosterd-holder` and
+`rosterd-tray`; with no argument it also cross-builds `x86_64-unknown-linux-gnu` and
+`aarch64-unknown-linux-gnu` with cargo zigbuild. `packaging/install.sh [--from dist/<target>]`
+copies them and the three scripts into `~/.local/bin`.
 
-Or run the binary once: `rosterd setup` opens a checklist screen with one row per thing the
-machine needs (binaries, PATH, config, service, daemon, then per harness the binary, its ACP
-adapter and the hooks or extension, then the optional workspace credential and swarm join).
-Space picks rows, enter runs them, `a` picks everything needed; the `tray` row starts
-`rosterd-tray` at login (a LaunchAgent, an autostart entry); `rosterd setup --yes`, or a
-pipe, runs the needed rows headless. The screen is `crates/rosterd/src/setup/tui.rs`, generic
-over the rows: another tool brings its own `steps()`.
+Then, either way:
 
-The tray. `rosterd-tray` puts the roster in the menu bar: sessions grouped by state (needs
-attention, active, idle, unknown, suspended) with a coloured dot, the harness and the age of the
-last activity; a submenu with allow, allow always and deny when one needs attention; a click jumps
-to the session (`rosterd open`); and the count of sessions needing attention sits beside the icon on
-macOS (the icon's colour on Linux). It is a menu over the CLI: `rosterd watch --json` feeds it and
-`rosterd allow|deny|open|ui` act, so it needs no socket, token or config of its own. Linux shows it
-where StatusNotifierItem trays are shown: KDE and most desktops; GNOME with the AppIndicator
-extension.
+```
+rosterd setup
+```
 
-Start. The service starts it; by hand, `rosterd daemon`. `rosterd status` prints the node, its
-listeners, swarm, bridge state, and the counts. The config lives in
+A checklist with one row per thing the machine needs: binaries on PATH, config, the service
+(a LaunchDaemon on macOS, a systemd user unit on Linux), the daemon, then per harness the binary,
+its ACP adapter and the hooks or extension, the tray at login, and two optional rows that ask for
+input, the workspace credential and a swarm to join. Space picks rows, enter runs them, `a` picks
+everything needed. `rosterd setup --yes`, or a pipe, runs the needed rows headless. The screen is
+`crates/rosterd/src/setup/tui.rs`, generic over the rows: another tool brings its own `steps()`.
+
+After that the roster lives in three places, all reading the same daemon.
+
+**The menu bar.** `rosterd-tray` (started at login by the `tray` row) puts the roster under an
+icon: sessions grouped by state (needs attention, active, idle, unknown, suspended) with a coloured
+dot, the harness, the CPU share and the age of the last activity. A session that needs attention
+opens a submenu with Allow, Allow always and Deny; a click on any other row jumps to it (`rosterd
+open`: the tmux pane, the herdr pane, or the conversation view of a headless session). On macOS the
+count of sessions needing attention sits beside the icon; on Linux the icon's colour is the
+signal, shown wherever StatusNotifierItem trays are (KDE and most desktops; GNOME with the
+AppIndicator extension). "Open in browser" at the bottom opens the roster page. The tray is a menu
+over the CLI (`rosterd watch --json` feeds it, `rosterd allow|deny|open|ui` act), so it needs no
+socket, token or config of its own; what it cannot do, start, name or spawn a session, join a
+swarm, is the CLI or the page.
+
+**The roster page.** Every node serves one HTML page at `http://127.0.0.1:8790/ui`; `rosterd ui`
+or the tray's "Open in browser" opens it with `?token=<loopback.token>` once and the tab keeps the
+bearer. It shows the roster with the same states and actions as the tray, a project badge per
+row, and `/ui/sessions/<session_key>` renders the ACP stream of a headless session live with its
+last recap. "Add workspace" on the page stores a workspace URL and token in the browser and lists
+what needs you first. Over Tailscale the same page works from a phone.
+
+**The shell.** `rosterd status` prints the node, its listeners, swarm, bridge state and the
+counts; `rosterd list` the rows; `rosterd daemon` runs the daemon by hand. The config lives in
 `~/.config/rosterd/rosterd.toml` on Linux and `~/Library/Application Support/rosterd/rosterd.toml`
 on macOS (`ROSTERD_CONFIG_DIR` overrides), next to `node.key`, `loopback.token` and `swarm.json`.
+
+## Swarm
+
+A swarm is a set of nodes that answer for each other: `rosterd list --swarm` on any of them is the
+union roster, and an action on a session owned elsewhere is proxied to its owner. No leader, no
+shared database; each node keeps its own roster plus the last snapshot it heard from every peer,
+R7.
+
+What it needs. Every machine on the same tailnet, with `listen = "tailscale"` and the same
+`port` (8791 by default) in `[node]`, the defaults `rosterd setup` writes. Nothing listens
+elsewhere; a node refuses to start with any other interface, R7.6. Tailscale ACLs stay the network
+boundary, the swarm key is the application boundary, and a node needs both to be heard.
+
+Create and join. There is no create step: the first `rosterd invite` on a node that is in no
+swarm creates one and signs the node in. So, on a node already running:
+
+```
+rosterd invite            # prints a single-use token, good for one hour (--ttl MINUTES)
+```
+
+On the new machine, either the `swarm` row of `rosterd setup` (it asks for the peer address and
+the token) or:
+
+```
+rosterd join <peer tailscale ip>:8791 --token <invite>
+```
+
+The joiner presents the invite with its hello; the admitting node verifies it, returns the swarm
+id, the swarm key sealed to the joiner's key and the current membership, and the joiner greets
+every member. Membership is gossiped from there, so the invite can come from any node, and
+discovery of who is up runs on `tailscale status`: every online peer is probed for `/node/hello`
+and admitted when its hello carries the swarm key. `[swarm] static_peers = ["100.64.0.12:8791"]`
+is the fallback when Tailscale is absent.
+
+Then:
+
+```
+rosterd nodes             # membership and health, including unreachable peers with their age
+rosterd list --swarm      # every session on every node
+rosterd list --node NAME  # one node, proxied through this one
+rosterd revoke NODE_ID    # removes a node everywhere
+rosterd leave             # takes this node out
+```
+
+The roster page and the tray show the local node; the page reads `/swarm/snapshot` for the rest.
+Windows joins as a headless-only node: hooks, no tmux or herdr handles.
 
 ## CLI
 
@@ -131,17 +191,8 @@ source `launcher`, and execs the harness with the rosterd MCP server in its conf
 (`--mcp-config` for Claude Code, `-c mcp_servers.rosterd.*` for Codex). Without `--attempt`
 the roster sees the session and the workspace does not.
 
-Join a swarm. On a node already in it, `rosterd invite [--ttl MINUTES]` mints a single-use
-token good for an hour. On the new node, `rosterd join <tailscale ip>:8791 --token <invite>`.
-`rosterd nodes` lists membership and health, `rosterd list --swarm` the union roster, `rosterd
-revoke <node_id>` removes a node everywhere, `rosterd leave` takes this node out, R7.3.
-
-UI. Every node serves the single page at `http://127.0.0.1:8790/ui`; open it once with
-`?token=<contents of loopback.token>` and the page keeps the bearer for the tab.
-`/ui/sessions/<session_key>` is the conversation view of a headless session. The page's
-"add workspace" stores a workspace URL and token in the browser and lists what needs you first.
-`rosterd-open --handle '<runtime handle json>'` jumps to a session from a shell: tmux, herdr, or
-the conversation view.
+Open. `rosterd-open --handle '<runtime handle json>'` jumps to a session from a shell: tmux, herdr,
+or the conversation view; `rosterd open KEY` resolves the handle first.
 
 Environment.
 

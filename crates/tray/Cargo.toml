@@ -18,3 +18,6 @@ tray-icon = { version = "0.25", default-features = false, features = ["libappind
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-foundation = "0.3"
+objc2-foundation = { version = "0.3", features = ["NSNotification", "NSOperation", "NSString", "block2"] }
+objc2-app-kit = { version = "0.3", features = ["NSMenu"] }
+block2 = "0.6"
