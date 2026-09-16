@@ -38,8 +38,10 @@ only after grepping callers.
 
 ```
 brew tap sbusso/rosterd https://github.com/sbusso/rosterd && brew trust sbusso/rosterd
-brew install --HEAD rosterd && brew services start rosterd   # macOS
-makepkg -si -p packaging/arch/PKGBUILD                       # Arch
+brew install rosterd && brew services start rosterd          # macOS, the release bottle
+tar xzf rosterd-<ver>-x86_64-unknown-linux-gnu.tar.gz \
+  && rosterd-<ver>/packaging/install.sh --from rosterd-<ver>/dist/x86_64-unknown-linux-gnu   # Linux, the release tarball
+makepkg -si -p packaging/arch/PKGBUILD                       # Arch, from source
 ```
 
 On macOS that is the whole install: the daemon runs as a LaunchAgent and keeps the menu bar
