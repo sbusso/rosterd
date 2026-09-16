@@ -212,7 +212,8 @@ fn render(tray: &TrayIcon, view: &View) {
     // macOS: a template icon plus a count beside it; Linux: the colour is the signal.
     #[cfg(target_os = "macos")]
     {
-        let _ = tray.set_icon(Some(dot(if shade == Shade::Down { Shade::Down } else { Shade::Idle })));
+        // `set_icon` drops the template flag (tray-icon 0.25 passes false), which paints black on black.
+        let _ = tray.set_icon_with_as_template(Some(dot(if shade == Shade::Down { Shade::Down } else { Shade::Idle })), true);
         tray.set_title(if attention > 0 { Some(format!("⚠ {attention}")) } else { None });
     }
     #[cfg(not(target_os = "macos"))]
