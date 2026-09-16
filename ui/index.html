@@ -25,6 +25,7 @@
   .ended, .suspended, .stale { color: var(--off) }
   .who { display: flex; gap: 8px; align-items: baseline; min-width: 0; flex-wrap: wrap } .name { font-weight: 600; color: var(--fg) }
   .state { font-size: 12px; font-weight: 500 } .ev { color: var(--dim); font-size: 12px }
+  .proj { font-size: 11px; font-weight: 500; padding: 1px 7px; border-radius: 4px; background: var(--line); color: var(--fg) }
   .meta { grid-column: 2; color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
   .acts { grid-column: 3; grid-row: 1 / span 2; display: flex; gap: 6px; align-items: center; justify-content: flex-end; flex-wrap: wrap }
   .pend { grid-column: 2 / -1; border-left: 2px solid var(--needs_attention); padding: 4px 10px; margin: 4px 0 2px; display: flex; gap: 6px 10px; align-items: center; flex-wrap: wrap }
@@ -102,7 +103,8 @@ const ws = () => { try { return JSON.parse(localStorage.getItem('rosterd.workspa
 const stateOf = (r) => (r.liveness === 'live' ? r.activity : r.liveness);
 const RANK = { needs_attention: 0, active: 1, idle: 2, unknown: 3, suspended: 4, stale: 4, ended: 5 };
 // The CLI's display name, R14.1: the name, else the cwd's last segment in brackets, else the pid.
-const nameOf = (r) => r.name || (r.cwd ? `[${r.cwd.replace(/\/+$/, '').split('/').pop()}]` : `pid ${r.pid}`);
+const projOf = (r) => r.cwd ? r.cwd.replace(/\/+$/, '').split('/').pop() : '';
+const labelOf = (r) => `${r.name || !r.cwd ? `<span class="name">${esc(r.name || `pid ${r.pid}`)}</span>` : ''}${r.cwd ? `<span class="proj">${esc(projOf(r))}</span>` : ''}`;
 const driven = (r) => r.lane === 'headless' || !!r.holder;
 function openCommands(r) {
   const node = r.node || nodeOf(r.session_key);
@@ -131,7 +133,7 @@ function sessionHtml(r) {
   ].join('');
   return `<article class="s ${st}" data-key="${esc(k)}">
     <span class="dot ${st}"></span>
-    <div class="who"><span class="name">${esc(nameOf(r))}</span><span class="state ${st}">${st.replace('_', ' ')}</span>
+    <div class="who">${labelOf(r)}<span class="state ${st}">${st.replace('_', ' ')}</span>
       <span class="ev">${esc(r.activity_event || '')}${r.activity_event ? ' · ' : ''}${when}${ended && r.ended_reason ? ` · ${esc(r.ended_reason)}` : ''}${r.conflict ? ' · <span class="err">attempt conflict</span>' : ''}</span></div>
     <div class="acts">${acts}</div>
     <div class="meta">${esc(r.harness)}${r.lane === 'headless' ? ' · headless' : ''} · pid ${r.pid}${r.attempt_id ? ` · attempt ${esc(r.attempt_id)}` : ''}${r.parent_attempt_id ? ` ← ${esc(r.parent_attempt_id)}` : ''}${r.cwd ? ` · ${esc(r.cwd)}` : ''}</div>
@@ -239,7 +241,7 @@ async function sessionPage() {
   try { const nodes = await api('/swarm/nodes'); state.local = (nodes.nodes || nodes).find((n) => n.state === 'local')?.node_id || state.local; } catch {}
   let last = null;
   const head = () => { const st = last ? stateOf(last) : 'unknown';
-    $('#hdr').innerHTML = `<a href="/ui">← roster</a> <b>${esc(last ? nameOf(last) : sessionKey)}</b> <span class="state ${st}">${st.replace('_', ' ')}</span><span class="sum">${esc(last?.harness || '')}</span><span class="st ${state.status === 'live' ? '' : 'bad'}">${esc(state.status)}</span>`;
+    $('#hdr').innerHTML = `<a href="/ui">← roster</a> <b>${last ? labelOf(last) : esc(sessionKey)}</b> <span class="state ${st}">${st.replace('_', ' ')}</span><span class="sum">${esc(last?.harness || '')}</span><span class="st ${state.status === 'live' ? '' : 'bad'}">${esc(state.status)}</span>`;
     $('#recap').innerHTML = (last?.state?.last_recap ? `last recap: ${esc(last.state.last_recap)}` : '') + pendingHtml(sessionKey); };
   const refresh = async () => { try { last = await api(spath(sessionKey)); state.pending[sessionKey] = last.state?.pending || []; } catch (e) { state.status = e.message; } head(); };
   await refresh(); setInterval(refresh, 10000);

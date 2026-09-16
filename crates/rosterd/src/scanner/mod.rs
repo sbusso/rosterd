@@ -11,10 +11,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, RwLock};
-use std::time::Duration;
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
-use chrono::{TimeZone, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use rosterd_proto::{Activity, EndedReason, HerdrHandle, Lane, Liveness, Record, Source, TmuxHandle};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
@@ -31,6 +31,13 @@ const BUILTIN: [(&str, &str); 5] =
     [("claude", "claude"), ("codex", "codex"), ("claude-agent-acp", "claude"), ("codex-acp", "codex"), ("ccd-cli", "claude")];
 const TMUX_FORMAT: &str =
     "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_tty}";
+/// CPU activity, the claim a scan-only session gets when no hook or adapter speaks for it: the
+/// process tree used at least this share of one pass, or has been under it for `QUIET`.
+/// ponytail: sampled on a 2s pass an idle Claude Code sits at 0.5–2.5%, a working one spikes to
+/// 4–12% every few seconds and drops below 1% while it waits on the API; raise QUIET before
+/// lowering the share if a long think shows as idle.
+const BUSY_PCT: f32 = 4.0;
+const QUIET: chrono::Duration = chrono::Duration::seconds(60);
 
 #[derive(Debug, Clone)]
 struct ProcInfo {
@@ -40,10 +47,17 @@ struct ProcInfo {
     exe: Option<String>,
     cmd: Vec<String>,
     cwd: Option<String>,
+    /// CPU-milliseconds since the process was first seen, and the share of the last pass it used.
+    cpu_ms: u64,
+    busy_pct: f32,
 }
 
 /// The last pass, keyed by pid.
 static TABLE: LazyLock<RwLock<HashMap<u32, ProcInfo>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
+/// When the last pass sampled, for the CPU share.
+static SAMPLED_AT: Mutex<Option<Instant>> = Mutex::new(None);
+/// When each live session's tree was last busy, or first seen; pruned with the live set.
+static LAST_BUSY: LazyLock<Mutex<HashMap<String, DateTime<Utc>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Runs forever. Identity is pid plus start time on every platform, R4.
 pub async fn run(config: Arc<Config>, roster: Arc<Roster>) {
@@ -67,15 +81,20 @@ fn refresh_kind() -> ProcessRefreshKind {
         .with_cmd(UpdateKind::OnlyIfNotSet)
         .with_exe(UpdateKind::OnlyIfNotSet)
         .with_cwd(UpdateKind::OnlyIfNotSet)
+        .with_cpu()
 }
 
 /// One enumeration into `TABLE`.
 fn refresh(sys: &mut System) {
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind());
+    let elapsed_ms = SAMPLED_AT.lock().unwrap().replace(Instant::now()).map(|t| t.elapsed().as_millis() as f32);
+    let prev = TABLE.read().unwrap();
     let table = sys
         .processes()
         .iter()
         .map(|(pid, p)| {
+            let cpu_ms = p.accumulated_cpu_time();
+            let before = prev.get(&pid.as_u32()).filter(|b| b.start_ticks == p.start_time()).map(|b| b.cpu_ms);
             let info = ProcInfo {
                 ppid: p.parent().map(|p| p.as_u32()),
                 start_ticks: p.start_time(),
@@ -83,11 +102,39 @@ fn refresh(sys: &mut System) {
                 exe: p.exe().map(|e| e.to_string_lossy().into_owned()),
                 cmd: p.cmd().iter().map(|c| c.to_string_lossy().into_owned()).collect(),
                 cwd: p.cwd().map(|c| c.to_string_lossy().into_owned()),
+                cpu_ms,
+                busy_pct: match (before, elapsed_ms) {
+                    (Some(before), Some(elapsed)) if elapsed > 0.0 => cpu_ms.saturating_sub(before) as f32 * 100.0 / elapsed,
+                    _ => 0.0,
+                },
             };
             (pid.as_u32(), info)
         })
         .collect();
+    drop(prev);
     *TABLE.write().unwrap() = table;
+}
+
+/// CPU share of a process and everything under it in the last pass.
+fn tree_busy_pct(table: &[(u32, ProcInfo)]) -> HashMap<u32, f32> {
+    let mut tree: HashMap<u32, f32> = HashMap::new();
+    for (pid, info) in table.iter().filter(|(_, i)| i.busy_pct > 0.0) {
+        for member in chain_of(*pid) {
+            *tree.entry(member).or_default() += info.busy_pct;
+        }
+    }
+    tree
+}
+
+/// The activity a scan-only session's CPU share earns, R5.2 fallback: busy is active now, quiet
+/// for `QUIET` is idle since the tree was last busy. None when the record already says so.
+fn cpu_activity(current: Activity, busy: bool, last_busy: DateTime<Utc>, now: DateTime<Utc>) -> Option<(Activity, DateTime<Utc>)> {
+    match (busy, current) {
+        (true, Activity::Active) | (false, Activity::Idle) => None,
+        (true, _) => Some((Activity::Active, now)),
+        (false, _) if now - last_busy >= QUIET => Some((Activity::Idle, last_busy)),
+        _ => None,
+    }
 }
 
 /// The platform start time of a live process, the `start_ticks` half of a session key. None when
@@ -186,13 +233,39 @@ async fn pass(roster: &Roster, names: &BTreeMap<String, String>) {
 
     // Liveness: a pid that is gone ended the session, R2.2. Idle at the time means it exited;
     // anything else is a crash. `end` keeps an earlier reason (a holder's exit, a DELETE).
-    let live: Vec<Record> =
+    let mut live: Vec<Record> =
         roster.snapshot().records.iter().filter(|r| r.liveness != Liveness::Ended).cloned().collect();
-    for rec in &live {
-        if !is_alive(rec.pid, rec.start_ticks) {
-            let reason = if rec.activity == Activity::Idle { EndedReason::Exit } else { EndedReason::Crash };
-            let _ = roster.end(&rec.session_key, reason, now);
+    live.retain(|rec| {
+        if is_alive(rec.pid, rec.start_ticks) {
+            return true;
         }
+        let reason = if rec.activity == Activity::Idle { EndedReason::Exit } else { EndedReason::Crash };
+        let _ = roster.end(&rec.session_key, reason, now);
+        false
+    });
+
+    // Activity from CPU for the sessions nothing better speaks for, R5.2. A claim by any other
+    // source hands the record over to it: hook and adapter claims outrank a scan.
+    let tree = tree_busy_pct(&table);
+    let claims: Vec<(String, Activity, DateTime<Utc>)> = {
+        let mut last_busy = LAST_BUSY.lock().unwrap();
+        last_busy.retain(|key, _| live.iter().any(|r| &r.session_key == key));
+        live.iter()
+            .filter(|r| r.sources.iter().all(|s| *s == Source::Scan))
+            .filter_map(|rec| {
+                let busy = tree.get(&rec.pid).is_some_and(|pct| *pct >= BUSY_PCT);
+                let since = *last_busy.entry(rec.session_key.clone()).or_insert(now);
+                if busy {
+                    last_busy.insert(rec.session_key.clone(), now);
+                }
+                cpu_activity(rec.activity, busy, since, now).map(|(activity, at)| (rec.session_key.clone(), activity, at))
+            })
+            .collect()
+    };
+    // No event name: what the tree did is not known, only that it did something; `explain`
+    // carries the source.
+    for (key, activity, at) in claims {
+        let _ = roster.claim(Source::Scan, &key, activity, "", at);
     }
 
     // parent_session_key from the process tree when the parent is also a harness, R3.
@@ -432,6 +505,18 @@ async fn herdr_call(_socket: &Path, method: &str, _params: serde_json::Value) ->
 mod tests {
     use super::*;
 
+    #[test]
+    fn cpu_share_claims_active_now_and_idle_since_the_last_busy_pass() {
+        let t0 = Utc.timestamp_opt(1_000, 0).unwrap();
+        let later = t0 + QUIET;
+        assert_eq!(cpu_activity(Activity::Unknown, true, t0, t0), Some((Activity::Active, t0)));
+        assert_eq!(cpu_activity(Activity::Active, true, t0, later), None);
+        assert_eq!(cpu_activity(Activity::Active, false, t0, t0 + chrono::Duration::seconds(5)), None);
+        assert_eq!(cpu_activity(Activity::Active, false, t0, later), Some((Activity::Idle, t0)));
+        assert_eq!(cpu_activity(Activity::Unknown, false, t0, later), Some((Activity::Idle, t0)));
+        assert_eq!(cpu_activity(Activity::Idle, false, t0, later), None);
+    }
+
     fn info(name: &str, exe: Option<&str>, cmd: &[&str]) -> ProcInfo {
         ProcInfo {
             ppid: None,
@@ -440,6 +525,8 @@ mod tests {
             exe: exe.map(Into::into),
             cmd: cmd.iter().map(|c| c.to_string()).collect(),
             cwd: None,
+            cpu_ms: 0,
+            busy_pct: 0.0,
         }
     }
 
