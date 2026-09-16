@@ -264,6 +264,9 @@ pub struct Snapshot {
     pub seq: u64,
     #[serde(default)]
     pub capabilities: Capabilities,
+    /// When the node's daemon started; peers show it as uptime.
+    #[serde(default)]
+    pub up_since: Option<DateTime<Utc>>,
     pub records: Vec<Record>,
 }
 
@@ -276,6 +279,7 @@ impl Snapshot {
             generated_at: Utc::now(),
             seq: 0,
             capabilities: Capabilities::default(),
+            up_since: None,
             records: Vec::new(),
         }
     }
@@ -300,6 +304,12 @@ pub struct NodeHealth {
     pub state: PeerState,
     /// Milliseconds since the last complete snapshot arrived; 0 for the local node.
     pub peer_age_ms: u64,
+    /// Milliseconds since the node was last heard from, a hello or a snapshot; none when never.
+    #[serde(default)]
+    pub seen_ms: Option<u64>,
+    /// Milliseconds the node's daemon has been up, from its last snapshot.
+    #[serde(default)]
+    pub uptime_ms: Option<u64>,
     #[serde(default)]
     pub version: Option<String>,
     #[serde(default)]
@@ -416,6 +426,7 @@ mod tests {
             parent_attempt_id: None,
             parent_session_key: None,
             cwd: None,
+            origin: None,
             tty: None,
             tmux: None,
             herdr: None,

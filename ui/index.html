@@ -163,7 +163,7 @@ function renderRoster() {
   for (const r of sw.records) (byNode[r.node_id] ||= []).push(r);
   $('#roster').innerHTML = sw.nodes.map((n) => {
     const recs = (byNode[n.node_id] || []).sort((a, b) => RANK[stateOf(a)] - RANK[stateOf(b)] || (b.activity_at || b.started_at).localeCompare(a.activity_at || a.started_at));
-    const health = n.revoked ? 'revoked' : n.state === 'local' ? 'this node' : `${n.state} ${ms(n.peer_age_ms)} ago`;
+    const health = n.revoked ? 'revoked' : n.state === 'local' ? 'this node' : `${n.state}${n.seen_ms == null ? '' : ` ${ms(n.seen_ms)} ago`}${n.uptime_ms == null ? '' : ` · up ${ms(n.uptime_ms)}`}`;
     return `<div class="peer-${n.state}"><h2>${esc(n.name)} <small>${health}${n.capabilities?.harnesses?.length ? ' · ' + n.capabilities.harnesses.map(harnessHtml).join(' ') : ''}</small></h2>
       <div class="list">${recs.map(sessionHtml).join('') || '<small>no sessions</small>'}</div></div>`;
   }).join('');

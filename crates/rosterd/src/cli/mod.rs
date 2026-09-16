@@ -319,13 +319,14 @@ fn nodes_table(nodes: &[NodeHealth]) -> String {
                 node.version.clone().unwrap_or_else(|| "-".into()),
                 node.capabilities.harnesses.join(","),
                 state.into(),
-                rosterd_proto::age(node.peer_age_ms / 1000),
+                node.seen_ms.map(|ms| rosterd_proto::age(ms / 1000)).unwrap_or_else(|| "-".into()),
+                node.uptime_ms.map(|ms| rosterd_proto::age(ms / 1000)).unwrap_or_else(|| "-".into()),
                 if node.revoked { "yes" } else { "" }.into(),
             ];
             (cells, false)
         })
         .collect::<Vec<_>>();
-    table(&["NAME", "NODE_ID", "ADDRESS", "VERSION", "HARNESSES", "STATE", "AGE", "REVOKED"], &rows)
+    table(&["NAME", "NODE_ID", "ADDRESS", "VERSION", "HARNESSES", "STATE", "SEEN", "UP", "REVOKED"], &rows)
 }
 
 /// `doctor`, R14.3: `pass  name: detail` or `FIX   name: detail → fix`; exit 1 when any fails.

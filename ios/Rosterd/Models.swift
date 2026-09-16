@@ -8,7 +8,7 @@ struct SwarmSnapshot: Decodable {
 }
 
 struct NodeHealth: Decodable, Identifiable {
-    var nodeId: String, name: String, state: String, peerAgeMs: Int, revoked: Bool
+    var nodeId: String, name: String, state: String, peerAgeMs: Int, seenMs: Int?, uptimeMs: Int?, revoked: Bool
     var capabilities: Capabilities?
     var id: String { nodeId }
 }

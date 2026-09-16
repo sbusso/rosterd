@@ -88,9 +88,12 @@ pub struct PeerAuth {
 }
 
 /// The last complete snapshot of one peer, R7.4.
+#[derive(Default)]
 struct Peer {
     snapshot: Option<Snapshot>,
     received_at: Option<DateTime<Utc>>,
+    /// The last hello or snapshot from the node.
+    seen_at: Option<DateTime<Utc>>,
     reachable: bool,
     unreachable_since: Option<DateTime<Utc>>,
 }
@@ -368,6 +371,8 @@ impl Mesh {
             address: state.advertised.clone(),
             state: PeerState::Local,
             peer_age_ms: 0,
+            seen_ms: Some(0),
+            uptime_ms: local.up_since.map(|since| age_ms(now, Some(since))),
             version: Some(self.version.into()),
             capabilities: local.capabilities.clone(),
             revoked: false,
@@ -382,6 +387,8 @@ impl Mesh {
                 address: state.address_of(&member.node_id),
                 state: if peer.is_some_and(|p| p.reachable) { PeerState::Reachable } else { PeerState::Unreachable },
                 peer_age_ms: peer.map(|p| age_ms(now, p.received_at)).unwrap_or(0),
+                seen_ms: peer.and_then(|p| p.seen_at).map(|at| age_ms(now, Some(at))),
+                uptime_ms: peer.and_then(|p| p.snapshot.as_ref()?.up_since).map(|since| age_ms(now, Some(since))),
                 version: heard.map(|h| h.1.clone()).or_else(|| member.version.clone()),
                 capabilities: peer.and_then(|p| p.snapshot.as_ref()).map(|s| s.capabilities.clone()).unwrap_or_default(),
                 revoked: member.revoked,
@@ -774,6 +781,7 @@ impl Mesh {
                     heard.insert(hello.node_id.clone(), fresh);
                     bumped = true;
                 }
+                peers.entry(hello.node_id.clone()).or_insert_with(Peer::default).seen_at = Some(Utc::now());
             }
         }
         drop(state);
@@ -813,14 +821,10 @@ impl Mesh {
             return;
         }
         let now = Utc::now();
-        let peer = state.peers.entry(snapshot.node_id.clone()).or_insert_with(|| Peer {
-            snapshot: None,
-            received_at: None,
-            reachable: true,
-            unreachable_since: None,
-        });
+        let peer = state.peers.entry(snapshot.node_id.clone()).or_insert_with(|| Peer { reachable: true, ..Peer::default() });
         peer.snapshot = Some(snapshot);
         peer.received_at = Some(now);
+        peer.seen_at = Some(now);
         peer.reachable = true;
         peer.unreachable_since = None;
         drop(state);
@@ -833,10 +837,7 @@ impl Mesh {
             if !reachable {
                 return;
             }
-            state.peers.insert(
-                node_id.to_string(),
-                Peer { snapshot: None, received_at: None, reachable: false, unreachable_since: None },
-            );
+            state.peers.insert(node_id.to_string(), Peer::default());
         }
         let peer = state.peers.get_mut(node_id).expect("present");
         if peer.reachable == reachable {
@@ -852,7 +853,7 @@ impl Mesh {
     fn peer_for_test(&self, node_id: &str, snapshot: Snapshot, received_at: DateTime<Utc>, unreachable_since: Option<DateTime<Utc>>) {
         self.lock().peers.insert(
             node_id.into(),
-            Peer { snapshot: Some(snapshot), received_at: Some(received_at), reachable: unreachable_since.is_none(), unreachable_since },
+            Peer { snapshot: Some(snapshot), received_at: Some(received_at), seen_at: Some(received_at), reachable: unreachable_since.is_none(), unreachable_since },
         );
     }
 }
@@ -969,6 +970,7 @@ mod tests {
     fn snapshot_with_record(node: &str, node_id: &str, attempt: &str) -> Snapshot {
         let mut snapshot = Snapshot::empty(node, node_id);
         snapshot.seq = 1;
+        snapshot.up_since = Some(Utc::now());
         snapshot.records.push(
             serde_json::from_value::<Record>(json!({
                 "node": node, "node_id": node_id, "session_key": format!("{node_id}:42:7"), "pid": 42, "start_ticks": 7,
@@ -1046,6 +1048,8 @@ mod tests {
             a.swarm_snapshot().records.len() == 1 && b.swarm_snapshot().records.len() == 1
         })
         .await;
+        let seen = a.nodes().into_iter().find(|n| n.node_id == b.identity.node_id).unwrap();
+        assert!(seen.seen_ms.is_some() && seen.uptime_ms.is_some(), "{seen:?}");
         let on_a = a.swarm_snapshot();
         assert!(on_a.nodes.iter().all(|n| n.state != PeerState::Unreachable));
         let from_b = on_a.records.iter().find(|r| r.peer_state == PeerState::Reachable).unwrap();

@@ -28,7 +28,8 @@ struct RosterView: View {
                         } header: {
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
                                 Text(node.name).textCase(.uppercase)
-                                Text(node.revoked ? "revoked" : node.state == "local" ? "this node" : "\(node.state) \(ago(Date(timeIntervalSinceNow: -Double(node.peerAgeMs) / 1000))) ago").textCase(nil)
+                                Text(node.revoked ? "revoked" : node.state == "local" ? "this node" : node.state + (node.seenMs.map { " \(ago(Date(timeIntervalSinceNow: -Double($0) / 1000))) ago" } ?? "")).textCase(nil)
+                                if let up = node.uptimeMs { Text("· up \(ago(Date(timeIntervalSinceNow: -Double(up) / 1000)))").textCase(nil) }
                                 if let h = node.capabilities?.harnesses, !h.isEmpty { Text("·"); ForEach(h, id: \.self) { HarnessMark(harness: $0) } }
                             }.font(.caption).foregroundStyle(Color.dim)
                         }

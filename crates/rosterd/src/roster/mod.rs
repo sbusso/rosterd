@@ -240,12 +240,16 @@ pub struct Roster {
     ancestors: AncestorLookup,
     /// The seq map after each accepted claim or ending; `persist_seqs` writes it, debounced.
     seqs: watch::Sender<Arc<HashMap<String, u64>>>,
+    /// When this daemon started; every snapshot carries it as the node's uptime.
+    up_since: DateTime<Utc>,
 }
 
 impl Roster {
     pub fn new(node: &str, node_id: &str, capabilities: Capabilities) -> Arc<Roster> {
+        let up_since = Utc::now();
         let mut snapshot = Snapshot::empty(node, node_id);
         snapshot.capabilities = capabilities.clone();
+        snapshot.up_since = Some(up_since);
         let (snapshot, _) = watch::channel(Arc::new(snapshot));
         let (events, _) = broadcast::channel(1024);
         let (seqs, _) = watch::channel(Arc::new(HashMap::new()));
@@ -257,6 +261,7 @@ impl Roster {
             table: RwLock::new(Table { capabilities, ..Table::default() }),
             ancestors: Arc::new(scanner::ancestors),
             seqs,
+            up_since,
         })
     }
 
@@ -302,7 +307,7 @@ impl Roster {
     pub fn with_ancestor_lookup(self: Arc<Self>, lookup: AncestorLookup) -> Arc<Roster> {
         let Roster { node, node_id, snapshot, events, table, seqs, .. } =
             Arc::try_unwrap(self).unwrap_or_else(|_| panic!("roster already shared"));
-        Arc::new(Roster { node, node_id, snapshot, events, table, ancestors: lookup, seqs })
+        Arc::new(Roster { node, node_id, snapshot, events, table, ancestors: lookup, seqs, up_since: Utc::now() })
     }
 
     pub fn key_of(&self, pid: u32, start_ticks: u64) -> String {
@@ -711,6 +716,7 @@ impl Roster {
             generated_at: Utc::now(),
             seq: table.seq,
             capabilities: table.capabilities.clone(),
+            up_since: Some(self.up_since),
             records,
         };
         self.snapshot.send_replace(Arc::new(snapshot));
