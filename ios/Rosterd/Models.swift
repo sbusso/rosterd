@@ -18,7 +18,7 @@ struct Capabilities: Decodable { var harnesses: [String]? }
 struct Record: Decodable, Identifiable {
     var sessionKey: String, nodeId: String, pid: Int, startedAt: Date, harness: String, lane: String
     var name: String?, activity: String, activityEvent: String?, activityAt: Date?, activitySeq: Int
-    var attemptId: String?, parentAttemptId: String?, cwd: String?
+    var attemptId: String?, parentAttemptId: String?, cwd: String?, origin: String?
     var liveness: String, endedReason: String?, conflict: Bool
     var load: Load?, holder: Holder?
     var state: SessionState?

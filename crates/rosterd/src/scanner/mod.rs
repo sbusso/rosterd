@@ -215,6 +215,7 @@ async fn pass(roster: &Roster, names: &BTreeMap<String, String>) {
     let mut table: Vec<(u32, ProcInfo)> = TABLE.read().unwrap().iter().map(|(p, i)| (*p, i.clone())).collect();
     // Parents before children, so a nested harness finds its root already in the roster.
     table.sort_by_key(|(pid, info)| (info.start_ticks, *pid));
+    let by_pid: HashMap<u32, &ProcInfo> = table.iter().map(|(p, i)| (*p, i)).collect();
 
     // Strays: every harness pid the roster has not seen. The roster's collapse rule decides
     // whether it becomes a record, R3.
@@ -230,6 +231,7 @@ async fn pass(roster: &Roster, names: &BTreeMap<String, String>) {
             harness: Some(harness),
             lane: Some(Lane::Interactive),
             cwd: info.cwd.clone(),
+            origin: origin_of(*pid, &by_pid),
             ..Patch::default()
         };
         if let Err(error) = roster.apply(Source::Scan, patch) {
@@ -340,6 +342,34 @@ async fn pass(roster: &Roster, names: &BTreeMap<String, String>) {
 }
 
 /// A pid then its ancestors, nearest first.
+/// What a harness process sits under, from its ancestors, so a stray can be found: the app
+/// bundle that owns it, the Claude desktop app's session server, or the remote login it came in
+/// through (`login -h <host>` on macOS, sshd elsewhere). ponytail: three shapes; add one when a
+/// stray shows up without one.
+fn origin_of(pid: u32, table: &HashMap<u32, &ProcInfo>) -> Option<String> {
+    let mut cur = table.get(&pid)?.ppid?;
+    for _ in 0..64 {
+        let p = table.get(&cur)?;
+        let exe = p.exe.as_deref().or(p.cmd.first().map(String::as_str)).unwrap_or("");
+        if let Some((bundle, _)) = exe.split_once(".app/") {
+            return Some(bundle.rsplit('/').next().unwrap_or(bundle).to_string());
+        }
+        if exe.contains("/.claude/remote/srv/") {
+            return Some("Claude app".into());
+        }
+        if exe.ends_with("/login")
+            && let Some(host) = p.cmd.iter().position(|a| a == "-h").and_then(|i| p.cmd.get(i + 1))
+        {
+            return Some(format!("ssh from {host}"));
+        }
+        if p.name.starts_with("sshd") {
+            return Some("ssh".into());
+        }
+        cur = p.ppid?;
+    }
+    None
+}
+
 fn chain_of(pid: u32) -> Vec<u32> {
     let mut chain = vec![pid];
     chain.extend(ancestors(pid));
@@ -559,6 +589,22 @@ mod tests {
         assert_eq!(harness_of(&names, &info("server", Some("/Users/u/projects/claude/server"), &[])), None, "a directory names the harness only for a versioned binary");
         assert_eq!(harness_of(&names, &info("zsh", Some("/bin/zsh"), &["-zsh"])), None);
         assert_eq!(harness_of(&names, &info("node", None, &["node", "server.js", "claude"])), None, "only the script argument counts");
+    }
+
+    #[test]
+    fn the_origin_is_the_app_or_login_above_a_stray() {
+        let at = |mut p: ProcInfo, ppid: u32| { p.ppid = Some(ppid); p };
+        let login = at(info("login", Some("/usr/bin/login"), &["/usr/bin/login", "-f", "-h", "100.116.21.113", "mato"]), 1);
+        let codex = at(info("node", None, &["node", "codex", "app-server", "proxy"]), 20);
+        let chatgpt = at(info("ChatGPT", Some("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"), &[]), 1);
+        let inner = at(info("codex", Some("/Applications/ChatGPT.app/Contents/Resources/codex"), &[]), 30);
+        let srv = at(info("server", Some("/Users/mato/.claude/remote/srv/abc/server"), &[]), 1);
+        let cli = at(info("ccd-cli", None, &["/Users/mato/.claude/remote/ccd-cli/2.1.271"]), 40);
+        let table: HashMap<u32, &ProcInfo> = [(20, &login), (21, &codex), (30, &chatgpt), (31, &inner), (40, &srv), (41, &cli)].into_iter().collect();
+        assert_eq!(origin_of(21, &table).as_deref(), Some("ssh from 100.116.21.113"));
+        assert_eq!(origin_of(31, &table).as_deref(), Some("ChatGPT"));
+        assert_eq!(origin_of(41, &table).as_deref(), Some("Claude app"));
+        assert_eq!(origin_of(20, &table), None);
     }
 
     #[test]

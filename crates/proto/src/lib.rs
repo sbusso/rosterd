@@ -197,6 +197,9 @@ pub struct Record {
     pub parent_session_key: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
+    /// What a scanned session sits under: the app that owns it or the login it came in through.
+    #[serde(default)]
+    pub origin: Option<String>,
     #[serde(default)]
     pub tty: Option<String>,
     #[serde(default)]

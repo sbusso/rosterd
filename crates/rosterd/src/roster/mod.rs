@@ -35,6 +35,7 @@ pub struct Patch {
     pub parent_attempt_id: Option<String>,
     pub parent_session_key: Option<String>,
     pub cwd: Option<String>,
+    pub origin: Option<String>,
     pub tty: Option<String>,
     pub tmux: Option<TmuxHandle>,
     pub herdr: Option<HerdrHandle>,
@@ -84,6 +85,7 @@ enum Field {
     ParentAttemptId,
     ParentSessionKey,
     Cwd,
+    Origin,
     Tty,
     Tmux,
     Herdr,
@@ -92,7 +94,7 @@ enum Field {
 
 impl Field {
     /// Declaration order, the order `explain` lists them in.
-    const ALL: [Field; 14] = [
+    const ALL: [Field; 15] = [
         Field::StartedAt,
         Field::Harness,
         Field::SessionId,
@@ -103,6 +105,7 @@ impl Field {
         Field::ParentAttemptId,
         Field::ParentSessionKey,
         Field::Cwd,
+        Field::Origin,
         Field::Tty,
         Field::Tmux,
         Field::Herdr,
@@ -122,6 +125,7 @@ impl Field {
             Field::ParentAttemptId => "parent_attempt_id",
             Field::ParentSessionKey => "parent_session_key",
             Field::Cwd => "cwd",
+            Field::Origin => "origin",
             Field::Tty => "tty",
             Field::Tmux => "tmux",
             Field::Herdr => "herdr",
@@ -141,6 +145,7 @@ impl Field {
             Field::ParentAttemptId => serde_json::to_value(&record.parent_attempt_id),
             Field::ParentSessionKey => serde_json::to_value(&record.parent_session_key),
             Field::Cwd => serde_json::to_value(&record.cwd),
+            Field::Origin => serde_json::to_value(&record.origin),
             Field::Tty => serde_json::to_value(&record.tty),
             Field::Tmux => serde_json::to_value(&record.tmux),
             Field::Herdr => serde_json::to_value(&record.herdr),
@@ -439,6 +444,7 @@ impl Roster {
                 parent_attempt_id: None,
                 parent_session_key: None,
                 cwd: None,
+                origin: None,
                 tty: None,
                 tmux: None,
                 herdr: None,
@@ -475,6 +481,7 @@ impl Roster {
         changed |= fill(origins, source, now, Field::ParentAttemptId, &mut record.parent_attempt_id, patch.parent_attempt_id);
         changed |= fill(origins, source, now, Field::ParentSessionKey, &mut record.parent_session_key, patch.parent_session_key);
         changed |= fill(origins, source, now, Field::Cwd, &mut record.cwd, patch.cwd);
+        changed |= fill(origins, source, now, Field::Origin, &mut record.origin, patch.origin);
         changed |= fill(origins, source, now, Field::Tty, &mut record.tty, patch.tty);
         changed |= fill(origins, source, now, Field::Tmux, &mut record.tmux, patch.tmux);
         changed |= fill(origins, source, now, Field::Herdr, &mut record.herdr, patch.herdr);

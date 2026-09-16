@@ -126,11 +126,12 @@ fn rows_table(rows: &[SwarmRecord]) -> String {
             };
             // A suspended session has no process: its session_id stands where the pid would, R14.3.
             let pid = if r.liveness == Liveness::Suspended { r.session_id.clone().unwrap_or_else(|| "-".into()) } else { r.pid.to_string() };
-            let cells = vec![display_name(r), r.harness.clone(), activity_word(r).into(), updated(r), lane.into(), node_cell(row), pid];
+            let origin = r.origin.clone().unwrap_or_else(|| "-".into());
+            let cells = vec![display_name(r), r.harness.clone(), activity_word(r).into(), updated(r), lane.into(), origin, node_cell(row), pid];
             (cells, row.peer_state == PeerState::Unreachable)
         })
         .collect::<Vec<_>>();
-    table(&["NAME", "HARNESS", "ACTIVITY", "UPDATED", "LANE", "NODE", "PID"], &cells)
+    table(&["NAME", "HARNESS", "ACTIVITY", "UPDATED", "LANE", "ORIGIN", "NODE", "PID"], &cells)
 }
 
 /// `--swarm`: per node counts of the four words and the node's reachability.

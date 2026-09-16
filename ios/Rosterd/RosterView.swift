@@ -117,7 +117,7 @@ struct SessionRow: View {
                 if r.conflict { Text("attempt conflict").font(.footnote).foregroundStyle(Color.err) }
             }
             Stats(record: r)
-            let meta = [r.lane == "headless" ? "headless" : nil, r.attemptId.map { "attempt \($0)" + (r.parentAttemptId.map { " ← \($0)" } ?? "") }, r.cwd.map(tilde)].compactMap { $0 }
+            let meta = [r.lane == "headless" ? "headless" : nil, r.attemptId.map { "attempt \($0)" + (r.parentAttemptId.map { " ← \($0)" } ?? "") }, r.origin, r.cwd.map(tilde)].compactMap { $0 }
             if !meta.isEmpty { Text(meta.joined(separator: " · ")).font(.footnote).foregroundStyle(Color.dim) }
             ForEach(pending) { p in PendingView(key: r.sessionKey, pending: p, local: local, fail: fail, refresh: refresh) }
             if word != "ended" {
@@ -147,7 +147,7 @@ struct SessionRow: View {
     }
 }
 
-/// The harness by its logo, Claude's and OpenAI's for codex, from the asset catalog; any other by name.
+/// The harness by its logo, Claude's, OpenAI's for codex, pi's, from the asset catalog; any other by name.
 struct HarnessMark: View {
     let harness: String
     var body: some View {

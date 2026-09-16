@@ -810,6 +810,7 @@ mod tests {
             parent_attempt_id: None,
             parent_session_key: None,
             cwd: None,
+            origin: None,
             tty: None,
             tmux: None,
             herdr: None,
