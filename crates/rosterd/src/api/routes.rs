@@ -427,6 +427,7 @@ async fn pair(State(node): State<Arc<Node>>) -> Result<Json<Value>, ApiError> {
     let svg = qrcode::QrCode::new(link.as_bytes())
         .map_err(|error| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
         .render::<qrcode::render::svg::Color>()
+        .quiet_zone(false)
         .min_dimensions(240, 240)
         .build();
     Ok(Json(json!({ "link": link, "svg": svg })))

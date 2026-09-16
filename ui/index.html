@@ -41,14 +41,16 @@
   pre#log .tool { color: var(--link) } #recap { padding: 0 16px; color: var(--dim); white-space: pre-wrap }
   dialog { background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; max-width: 92vw }
   dialog form { display: flex; flex-direction: column; gap: 8px; min-width: 260px } dialog input { width: auto } .err { color: var(--err) }
-  #qrSvg svg { display: block; width: 240px; height: 240px; border-radius: 6px }
+  #qr form { max-width: 280px; align-items: stretch } #qrSvg { background: #fff; padding: 12px; border-radius: 6px; line-height: 0 }
+  #qrSvg svg { width: 100%; height: auto } #qrLink { font: 11px/1.4 ui-monospace, monospace; word-break: break-all; display: block }
+  #qr .row { display: flex; gap: 6px; justify-content: flex-end }
 </style>
 <header id="hdr"></header>
 <section id="attention"></section>
 <main id="roster"></main>
 <pre id="log" hidden></pre>
 <div id="recap" hidden></div>
-<dialog id="qr"><form method="dialog"><div id="qrSvg"></div><button>close</button></form></dialog>
+<dialog id="qr"><form method="dialog"><div id="qrSvg"></div><a id="qrLink"></a><div class="row"><button type="button" id="qrCopy">copy link</button><button>close</button></div></form></dialog>
 <dialog id="ws"><form method="dialog">
   <b>Workspace upstream</b>
   <input id="wsUrl" placeholder="https://ws.example.ts.net"><input id="wsTok" placeholder="token" type="password">
@@ -201,7 +203,8 @@ document.addEventListener('click', async (e) => {
   const b = e.target.closest('button, a'); if (!b) return;
   const d = b.dataset;
   try {
-    if (b.id === 'qrBtn') { e.preventDefault(); $('#qrSvg').innerHTML = (await api('/pair')).svg; $('#qr').showModal(); }
+    if (b.id === 'qrBtn') { e.preventDefault(); const p = await api('/pair'); $('#qrSvg').innerHTML = p.svg; $('#qrLink').textContent = p.link; $('#qrLink').href = p.link; $('#qr').showModal(); }
+    if (b.id === 'qrCopy') { await navigator.clipboard.writeText($('#qrLink').textContent); b.textContent = 'copied'; }
     else if (b.id === 'wsBtn') { e.preventDefault(); $('#wsUrl').value = ws()?.url || ''; $('#wsTok').value = ws()?.token || ''; $('#ws').showModal(); }
     else if (d.cancel) await api(spath(d.cancel, '/cancel'), {});
     else if (d.resume) await api(spath(d.resume, '/resume'), {});
