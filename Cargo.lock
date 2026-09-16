@@ -3225,7 +3225,7 @@ dependencies = [
 
 [[package]]
 name = "rosterd"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "axum",
@@ -3270,7 +3270,7 @@ dependencies = [
 
 [[package]]
 name = "rosterd-holder"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3286,7 +3286,7 @@ dependencies = [
 
 [[package]]
 name = "rosterd-proto"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "chrono",
  "serde",
@@ -3295,7 +3295,7 @@ dependencies = [
 
 [[package]]
 name = "rosterd-tray"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "block2",
  "objc2-app-kit",
