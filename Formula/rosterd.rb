@@ -1,22 +1,28 @@
-# rosterd, R11: the Homebrew formula, built from source with cargo.
+# rosterd, R11: the Homebrew formula. The release tarball carries the binaries, so
 #   brew tap sbusso/rosterd https://github.com/sbusso/rosterd
-#   brew install --HEAD rosterd
-# Head only until the first tag; then add `url` and `sha256` for the release tarball above `head`
-# and `brew install rosterd` works without --HEAD.
+#   brew install rosterd
+# unpacks and needs no rust; `--HEAD` builds main from source.
 class Rosterd < Formula
   desc "One daemon per machine that knows every coding agent session on it"
   homepage "https://github.com/sbusso/rosterd"
+  url "https://github.com/sbusso/rosterd/releases/download/v0.1.0/rosterd-0.1.0-aarch64-apple-darwin.tar.gz"
+  sha256 "863d7ce5148cca59afa9da78802d4792eca6d9cce474b6f45780309ff5d945e4"
   license "MIT"
-  head "https://github.com/sbusso/rosterd.git", branch: "main"
-
-  depends_on "rust" => :build
+  head do
+    url "https://github.com/sbusso/rosterd.git", branch: "main"
+    depends_on "rust" => :build
+  end
 
   def install
-    system "cargo", "install", *std_cargo_args(path: "crates/rosterd")
-    system "cargo", "install", *std_cargo_args(path: "crates/holder")
-    system "cargo", "install", *std_cargo_args(path: "crates/tray")
+    if build.head?
+      system "cargo", "install", *std_cargo_args(path: "crates/rosterd")
+      system "cargo", "install", *std_cargo_args(path: "crates/holder")
+      system "cargo", "install", *std_cargo_args(path: "crates/tray")
+    else
+      bin.install Dir["dist/aarch64-apple-darwin/*"]
+    end
     bin.install "scripts/rosterd-hook", "scripts/rosterd-launch", "scripts/rosterd-open"
-    doc.install "README.md", "SPEC.md"
+    doc.install "README.md", "SPEC.md" if build.head?
   end
 
   # A LaunchAgent for this login: the daemon, which runs the menu bar tray beside itself. The
@@ -24,7 +30,8 @@ class Rosterd < Formula
   service do
     run [opt_bin/"rosterd", "daemon"]
     keep_alive true
-    environment_variables PATH:     "#{Dir.home}/.local/bin:#{Dir.home}/.bun/bin:#{std_service_path_env}:/Applications/Tailscale.app/Contents/MacOS",
+    environment_variables PATH:     "#{Dir.home}/.local/bin:#{Dir.home}/.bun/bin:#{std_service_path_env}:" \
+                                    "/Applications/Tailscale.app/Contents/MacOS",
                           RUST_LOG: "info"
     log_path var/"log/rosterd.log"
     error_log_path var/"log/rosterd.log"
