@@ -102,6 +102,8 @@ struct SwarmState {
     advertised: Option<String>,
     /// Addresses discovery confirmed, per node id; fresher than the signed record's.
     learned: HashMap<String, String>,
+    /// Name and version from the last hello, per node id; the signed record keeps the join-time ones.
+    heard: HashMap<String, (String, String)>,
     peers: HashMap<String, Peer>,
     /// Minted, unused invite nonces with their expiry in unix seconds, R7.3 single use.
     nonces: HashMap<String, i64>,
@@ -373,13 +375,14 @@ impl Mesh {
         let Some(membership) = &state.membership else { return nodes };
         for member in membership.members.values().filter(|m| m.node_id != self.identity.node_id) {
             let peer = state.peers.get(&member.node_id);
+            let heard = state.heard.get(&member.node_id);
             nodes.push(NodeHealth {
                 node_id: member.node_id.clone(),
-                name: member.name.clone(),
+                name: heard.map_or(member.name.clone(), |h| h.0.clone()),
                 address: state.address_of(&member.node_id),
                 state: if peer.is_some_and(|p| p.reachable) { PeerState::Reachable } else { PeerState::Unreachable },
                 peer_age_ms: peer.map(|p| age_ms(now, p.received_at)).unwrap_or(0),
-                version: member.version.clone(),
+                version: heard.map(|h| h.1.clone()).or_else(|| member.version.clone()),
                 capabilities: peer.and_then(|p| p.snapshot.as_ref()).map(|s| s.capabilities.clone()).unwrap_or_default(),
                 revoked: member.revoked,
             });
@@ -446,7 +449,8 @@ impl Mesh {
             return Err(MeshError::Revoked(node_id.into()));
         }
         verify_signed(headers, &member.public_key, method, path, body, Self::now_secs()).map_err(unauthorized)?;
-        Ok(PeerAuth { node_id: member.node_id.clone(), name: member.name.clone() })
+        let name = state.heard.get(node_id).map_or(member.name.clone(), |h| h.0.clone());
+        Ok(PeerAuth { node_id: member.node_id.clone(), name })
     }
 
     /// Sends a session action to the owning node with this node's signature and returns its
@@ -658,7 +662,7 @@ impl Mesh {
     /// Signs a revocation for `node_id`, drops its snapshot at once, gossips it from here on.
     pub fn revoke(&self, node_id: &str) -> Result<(), MeshError> {
         let mut state = self.lock();
-        let SwarmState { membership, peers, learned, .. } = &mut *state;
+        let SwarmState { membership, peers, learned, heard, .. } = &mut *state;
         let membership = membership.as_mut().ok_or(MeshError::NoSwarm)?;
         if node_id == self.identity.node_id {
             return Err(MeshError::Other(anyhow::anyhow!("a node cannot revoke itself")));
@@ -669,6 +673,7 @@ impl Mesh {
         membership.save(&self.file)?;
         peers.remove(node_id);
         learned.remove(node_id);
+        heard.remove(node_id);
         drop(state);
         self.bump();
         Ok(())
@@ -737,7 +742,7 @@ impl Mesh {
         hello.verify().map_err(|e| MeshError::Unauthorized(e.to_string()))?;
         let mut state = self.lock();
         let mut bumped = false;
-        let SwarmState { membership, learned, peers, .. } = &mut *state;
+        let SwarmState { membership, learned, heard, peers, .. } = &mut *state;
         if let Some(membership) = membership {
             if hello.swarm_id.as_deref() == Some(membership.swarm_id.as_str()) {
                 let changed = membership.merge(&hello.members);
@@ -747,6 +752,7 @@ impl Mesh {
                         if membership.member(node_id).is_some_and(|m| m.revoked) {
                             peers.remove(node_id);
                             learned.remove(node_id);
+                            heard.remove(node_id);
                         }
                     }
                     bumped = true;
@@ -761,6 +767,13 @@ impl Mesh {
             {
                 learned.insert(hello.node_id.clone(), address);
                 bumped = true;
+            }
+            if membership.is_active(&hello.node_id) {
+                let fresh = (hello.name.clone(), hello.version.clone());
+                if heard.get(&hello.node_id) != Some(&fresh) {
+                    heard.insert(hello.node_id.clone(), fresh);
+                    bumped = true;
+                }
             }
         }
         drop(state);
@@ -1018,6 +1031,11 @@ mod tests {
         assert_eq!(a.nodes().len(), 2);
         assert_eq!(b.nodes().len(), 2);
         assert_eq!(Membership::load(&dir_b.join("swarm.json")).unwrap().unwrap().members.len(), 2);
+        // A later hello carries the peer's current name and version, not the signed record's.
+        let renamed = Hello { name: "wintermute-2".into(), version: "0.2.0-test".into(), ..b.hello().unwrap() }.sign(&b.identity).unwrap();
+        a.absorb_hello(&renamed, None).unwrap();
+        let seen = a.nodes().into_iter().find(|n| n.node_id == b.identity.node_id).unwrap();
+        assert_eq!((seen.name.as_str(), seen.version.as_deref()), ("wintermute-2", Some("0.2.0-test")));
         // Single use: the same invite is refused the second time.
         assert!(matches!(b.join(&a_addr.to_string(), &token).await, Err(MeshError::Unauthorized(_))));
 
