@@ -47,6 +47,9 @@ struct ProcInfo {
     exe: Option<String>,
     cmd: Vec<String>,
     cwd: Option<String>,
+    /// The far end of the ssh login the process runs under, from SSH_CONNECTION (Tailscale SSH
+    /// sets it too); the login process itself is root's and out of reach.
+    ssh_client: Option<String>,
     /// CPU-milliseconds since the process was first seen, the share of the last pass it used,
     /// and resident memory.
     cpu_ms: u64,
@@ -83,6 +86,7 @@ fn refresh_kind() -> ProcessRefreshKind {
         .with_cmd(UpdateKind::OnlyIfNotSet)
         .with_exe(UpdateKind::OnlyIfNotSet)
         .with_cwd(UpdateKind::OnlyIfNotSet)
+        .with_environ(UpdateKind::OnlyIfNotSet)
         .with_cpu()
         .with_memory()
 }
@@ -105,6 +109,9 @@ fn refresh(sys: &mut System) {
                 exe: p.exe().map(|e| e.to_string_lossy().into_owned()),
                 cmd: p.cmd().iter().map(|c| c.to_string_lossy().into_owned()).collect(),
                 cwd: p.cwd().map(|c| c.to_string_lossy().into_owned()),
+                ssh_client: p.environ().iter().find_map(|e| {
+                    e.to_str()?.strip_prefix("SSH_CONNECTION=")?.split_whitespace().next().map(str::to_string)
+                }),
                 cpu_ms,
                 rss: p.memory(),
                 busy_pct: match (before, elapsed_ms) {
@@ -342,32 +349,23 @@ async fn pass(roster: &Roster, names: &BTreeMap<String, String>) {
 }
 
 /// A pid then its ancestors, nearest first.
-/// What a harness process sits under, from its ancestors, so a stray can be found: the app
-/// bundle that owns it, the Claude desktop app's session server, or the remote login it came in
-/// through (`login -h <host>` on macOS, sshd elsewhere). ponytail: three shapes; add one when a
-/// stray shows up without one.
+/// What a harness process sits under, so a stray can be found: the app above it (a bundle, or
+/// the Claude desktop app's session server) and the ssh login it runs under, either or both.
+/// ponytail: three shapes; add one when a stray shows up without one.
 fn origin_of(pid: u32, table: &HashMap<u32, &ProcInfo>) -> Option<String> {
-    let mut cur = table.get(&pid)?.ppid?;
-    for _ in 0..64 {
-        let p = table.get(&cur)?;
+    let me = table.get(&pid)?;
+    let ssh = me.ssh_client.as_ref().map(|client| format!("ssh from {client}"));
+    let app = std::iter::successors(me.ppid, |pid| table.get(pid)?.ppid).take(64).filter_map(|pid| table.get(&pid)).find_map(|p| {
         let exe = p.exe.as_deref().or(p.cmd.first().map(String::as_str)).unwrap_or("");
         if let Some((bundle, _)) = exe.split_once(".app/") {
             return Some(bundle.rsplit('/').next().unwrap_or(bundle).to_string());
         }
-        if exe.contains("/.claude/remote/srv/") {
-            return Some("Claude app".into());
-        }
-        if exe.ends_with("/login")
-            && let Some(host) = p.cmd.iter().position(|a| a == "-h").and_then(|i| p.cmd.get(i + 1))
-        {
-            return Some(format!("ssh from {host}"));
-        }
-        if p.name.starts_with("sshd") {
-            return Some("ssh".into());
-        }
-        cur = p.ppid?;
+        exe.contains("/.claude/remote/srv/").then(|| "Claude app".to_string())
+    });
+    match (app, ssh) {
+        (Some(app), Some(ssh)) => Some(format!("{app} via {ssh}")),
+        (app, ssh) => app.or(ssh),
     }
-    None
 }
 
 fn chain_of(pid: u32) -> Vec<u32> {
@@ -566,6 +564,7 @@ mod tests {
             exe: exe.map(Into::into),
             cmd: cmd.iter().map(|c| c.to_string()).collect(),
             cwd: None,
+            ssh_client: None,
             cpu_ms: 0,
             busy_pct: 0.0,
             rss: 0,
@@ -591,19 +590,37 @@ mod tests {
         assert_eq!(harness_of(&names, &info("node", None, &["node", "server.js", "claude"])), None, "only the script argument counts");
     }
 
+    /// The check against this machine: `cargo test -p rosterd print_live_origins -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn print_live_origins() {
+        let mut sys = System::new();
+        refresh(&mut sys);
+        let table = TABLE.read().unwrap();
+        let by_pid: HashMap<u32, &ProcInfo> = table.iter().map(|(p, i)| (*p, i)).collect();
+        let names = harness_names(&Config::default());
+        for (pid, info) in table.iter() {
+            if harness_of(&names, info).is_some() {
+                println!("{pid}\t{:?}\t{:?}", info.cwd, origin_of(*pid, &by_pid));
+            }
+        }
+    }
+
     #[test]
     fn the_origin_is_the_app_or_login_above_a_stray() {
         let at = |mut p: ProcInfo, ppid: u32| { p.ppid = Some(ppid); p };
-        let login = at(info("login", Some("/usr/bin/login"), &["/usr/bin/login", "-f", "-h", "100.116.21.113", "mato"]), 1);
-        let codex = at(info("node", None, &["node", "codex", "app-server", "proxy"]), 20);
+        let login = at(info("login", None, &[]), 1);
+        let mut codex = at(info("node", None, &["node", "codex", "app-server", "proxy"]), 20);
+        codex.ssh_client = Some("100.116.21.113".into());
         let chatgpt = at(info("ChatGPT", Some("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"), &[]), 1);
         let inner = at(info("codex", Some("/Applications/ChatGPT.app/Contents/Resources/codex"), &[]), 30);
         let srv = at(info("server", Some("/Users/mato/.claude/remote/srv/abc/server"), &[]), 1);
-        let cli = at(info("ccd-cli", None, &["/Users/mato/.claude/remote/ccd-cli/2.1.271"]), 40);
+        let mut cli = at(info("ccd-cli", None, &["/Users/mato/.claude/remote/ccd-cli/2.1.271"]), 40);
+        cli.ssh_client = Some("100.116.21.113".into());
         let table: HashMap<u32, &ProcInfo> = [(20, &login), (21, &codex), (30, &chatgpt), (31, &inner), (40, &srv), (41, &cli)].into_iter().collect();
         assert_eq!(origin_of(21, &table).as_deref(), Some("ssh from 100.116.21.113"));
         assert_eq!(origin_of(31, &table).as_deref(), Some("ChatGPT"));
-        assert_eq!(origin_of(41, &table).as_deref(), Some("Claude app"));
+        assert_eq!(origin_of(41, &table).as_deref(), Some("Claude app via ssh from 100.116.21.113"));
         assert_eq!(origin_of(20, &table), None);
     }
 
