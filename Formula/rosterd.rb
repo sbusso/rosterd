@@ -8,12 +8,8 @@ class Rosterd < Formula
   url "https://github.com/sbusso/rosterd/releases/download/v0.1.1/rosterd-0.1.1-aarch64-apple-darwin.tar.gz"
   sha256 "ea6ac5538c64cf51d3fade77d832113b76cb92c082f20e43eda25a29f42aac87"
   license "MIT"
-  bottle do
-    root_url "https://github.com/sbusso/rosterd/releases/download/v0.1.0"
-    rebuild 1
-    sha256 arm64_tahoe: "4ecd6e8be7d2a357fe24613bfc155212dea4a15e9f5ee9f0c15569ce84d251bd"
-  end
-
+  # The bottle is what lets a Mac install without a compiler toolchain: `brew bottle` of the
+  # tarball install, uploaded next to it on the release.
   bottle do
     root_url "https://github.com/sbusso/rosterd/releases/download/v0.1.1"
     sha256 arm64_tahoe: "3b3bd417c926c636219e1f8df05dffd6635ee84eac5cd0dd8589a532348c939a"
@@ -23,12 +19,6 @@ class Rosterd < Formula
     url "https://github.com/sbusso/rosterd.git", branch: "main"
     depends_on "rust" => :build
   end
-
-  # The bottle is what lets a Mac install without a compiler toolchain: `brew bottle` of the
-  # tarball install, uploaded next to it on the release.
-
-  # The bottle is what lets a Mac install without a compiler toolchain: `brew bottle` of the
-  # tarball install, uploaded next to it on the release.
 
   def install
     if build.head?
