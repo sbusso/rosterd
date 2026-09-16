@@ -36,18 +36,19 @@
   button:hover { background: #2b2b31 } button.go { background: #2a3a20; border-color: #3f5a2f } button.no { color: var(--err) }
   input { font: inherit; font-size: 12px; background: #0d0d0f; color: var(--fg); border: 1px solid #333; border-radius: 6px; padding: 4px 8px }
   form.p { display: flex; gap: 6px } form.p input { width: 180px }
-  .copy input { width: 260px; font-family: ui-monospace, monospace; font-size: 11px }
   @media (max-width: 720px) { .s { grid-template-columns: 8px minmax(0, 1fr) } .acts { grid-column: 2; grid-row: auto; justify-content: flex-start } .meta { white-space: normal } form.p input { width: 120px } }
   pre#log { white-space: pre-wrap; word-break: break-word; font: 12px/1.4 ui-monospace, monospace; padding: 10px 16px; margin: 0; min-height: 40vh }
   pre#log .tool { color: var(--link) } #recap { padding: 0 16px; color: var(--dim); white-space: pre-wrap }
   dialog { background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; max-width: 92vw }
   dialog form { display: flex; flex-direction: column; gap: 8px; min-width: 260px } dialog input { width: auto } .err { color: var(--err) }
+  #qrSvg svg { display: block; width: 240px; height: 240px; border-radius: 6px }
 </style>
 <header id="hdr"></header>
 <section id="attention"></section>
 <main id="roster"></main>
 <pre id="log" hidden></pre>
 <div id="recap" hidden></div>
+<dialog id="qr"><form method="dialog"><div id="qrSvg"></div><button>close</button></form></dialog>
 <dialog id="ws"><form method="dialog">
   <b>Workspace upstream</b>
   <input id="wsUrl" placeholder="https://ws.example.ts.net"><input id="wsTok" placeholder="token" type="password">
@@ -113,12 +114,11 @@ const tilde = (p) => p.replace(/^(\/Users\/[^/]+|\/home\/[^/]+|\/root)(?=\/|$)/,
 const projOf = (r) => r.cwd ? r.cwd.replace(/\/+$/, '').split('/').pop() : '';
 const labelOf = (r) => `${r.name || !r.cwd ? `<span class="name">${esc(r.name || `pid ${r.pid}`)}</span>` : ''}${r.cwd ? `<span class="proj">${esc(projOf(r))}</span>` : ''}`;
 const driven = (r) => r.lane === 'headless' || !!r.holder;
+// Where a session opens: the conversation view for a driven one, else the node's opener over
+// the API (POST /open runs rosterd-open on the machine that has the pane).
 function openCommands(r) {
-  const node = r.node || nodeOf(r.session_key);
   if (driven(r)) return { link: `/ui/sessions/${r.session_key}`, label: 'conversation' };
-  if (r.tmux) return { cmd: `ssh ${node} -t tmux attach -t ${r.tmux.session} \\\\; select-window -t ${r.tmux.session}:${r.tmux.window_index} \\\\; select-pane -t ${r.tmux.pane_id}` };
-  if (r.herdr) { const s = r.herdr.session, t = r.herdr.agent_name ? `agent attach ${r.herdr.agent_name}` : `terminal session observe ${r.herdr.pane_id}`;
-    return { cmd: `herdr --remote ${node} --session ${s} ${t}`, link: `herdr://${node}/${r.herdr.agent_name ? 'agents/attach/' + r.herdr.agent_name : 'panes/observe/' + r.herdr.pane_id}?session=${s}`, label: 'herdr' }; }
+  if (r.tmux || r.herdr) return { open: r.session_key, label: r.tmux ? 'tmux' : 'herdr' };
   return {};
 }
 // ACP option kinds: allow_* are the go, reject_* the no; the gate of R16.2 uses allow, allow_always, deny.
@@ -133,7 +133,7 @@ function sessionHtml(r) {
   const when = r.activity_at ? ago(r.activity_at) : ago(r.started_at);
   const acts = ended ? '' : [
     o.link ? `<a href="${esc(o.link)}">open ${esc(o.label)}</a>` : '',
-    o.cmd ? `<span class="copy"><input readonly value="${esc(o.cmd)}"><button data-copy="${esc(o.cmd)}">copy</button></span>` : '',
+    o.open ? `<button data-open="${esc(o.open)}">open ${esc(o.label)}</button>` : '',
     driven(r) ? `<form class="p" data-prompt="${esc(k)}"><input placeholder="prompt" value="${esc(state.drafts[k] || '')}"><button>send</button></form>` : '',
     driven(r) && st === 'active' ? `<button data-cancel="${esc(k)}">cancel turn</button>` : '',
     st === 'suspended' ? `<button data-resume="${esc(k)}">resume</button>` : '',
@@ -151,7 +151,7 @@ function renderRoster() {
   const sw = state.swarm, live = (sw?.records || []).filter((r) => r.liveness !== 'ended'), need = live.filter((r) => r.activity === 'needs_attention').length;
   $('#hdr').innerHTML = `<b>rosterd</b> <span>${esc((sw?.nodes || []).find((n) => n.state === 'local')?.name || '')}</span>
     <span class="sum">${sw ? plural(live.length, 'session') + (need ? ` · <span class="needs_attention">${need} need${need === 1 ? 's' : ''} attention</span>` : '') : ''}</span>
-    <a href="#" id="wsBtn">${ws()?.url ? 'workspace' : 'add workspace'}</a><span class="st ${state.status === 'live' ? '' : 'bad'}">${esc(state.status)}</span>`;
+    <a href="#" id="wsBtn">${ws()?.url ? 'workspace' : 'add workspace'}</a><a href="#" id="qrBtn">pair phone</a><span class="st ${state.status === 'live' ? '' : 'bad'}">${esc(state.status)}</span>`;
   if (!sw) return;
   const byNode = {};
   for (const r of sw.records) (byNode[r.node_id] ||= []).push(r);
@@ -201,11 +201,12 @@ document.addEventListener('click', async (e) => {
   const b = e.target.closest('button, a'); if (!b) return;
   const d = b.dataset;
   try {
-    if (b.id === 'wsBtn') { e.preventDefault(); $('#wsUrl').value = ws()?.url || ''; $('#wsTok').value = ws()?.token || ''; $('#ws').showModal(); }
+    if (b.id === 'qrBtn') { e.preventDefault(); $('#qrSvg').innerHTML = (await api('/pair')).svg; $('#qr').showModal(); }
+    else if (b.id === 'wsBtn') { e.preventDefault(); $('#wsUrl').value = ws()?.url || ''; $('#wsTok').value = ws()?.token || ''; $('#ws').showModal(); }
     else if (d.cancel) await api(spath(d.cancel, '/cancel'), {});
     else if (d.resume) await api(spath(d.resume, '/resume'), {});
     else if (d.perm) { await api(spath(d.perm, '/permission'), d.opt ? { request_id: JSON.parse(d.req), outcome: 'selected', option_id: d.opt } : { request_id: JSON.parse(d.req), outcome: 'cancelled' }); await refreshPending(d.perm); }
-    else if (d.copy) { try { await navigator.clipboard.writeText(d.copy); b.textContent = 'copied'; } catch { b.previousElementSibling.select(); } }
+    else if (d.open) await api(spath(d.open, '/open'), {});
     else if (d.decision) { state.decisions[d.decision] = await wsCall(`/decisions/${d.decision}`); renderAttention(); }
     else if (d.rule) { await wsCall(`/decisions/${d.rule}/rule`, { choiceId: d.choice, surface: 'phone' }); delete state.decisions[d.rule]; pollAttention(); }
   } catch (err) { state.status = String(err.message || err); renderRoster(); }

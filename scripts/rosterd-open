@@ -48,11 +48,11 @@ tmux select-pane -t %7'
   check "tmux remote" "ROSTERD_MACHINE=wintermute TMUX=" "$tmux" 'terminal ssh gibson -t tmux attach -t agents \\; select-window -t agents:2 \\; select-pane -t %7'
   check "tmux camelCase" "ROSTERD_MACHINE=gibson TMUX=/tmp/x" '{"kind":"tmux","machine":"gibson","tmux":{"session":"a","windowIndex":1,"paneId":"%3"}}' 'tmux select-pane -t %3'
   herdr='{"kind":"herdr","machine":"gibson","herdr":{"session":"default","workspace_id":"w3","pane_id":"w3:p2","agent_name":"builder"}}'
-  check "herdr local" "ROSTERD_MACHINE=gibson ROSTERD_HERDR_LINK=0" "$herdr" 'terminal herdr --session default agent attach builder'
-  check "herdr remote" "ROSTERD_MACHINE=wintermute ROSTERD_HERDR_LINK=0" "$herdr" 'terminal herdr --remote gibson --session default agent attach builder'
+  check "herdr local" "ROSTERD_MACHINE=gibson ROSTERD_HERDR_LINK=0" "$herdr" 'herdr --session default agent focus w3:p2'
+  check "herdr remote" "ROSTERD_MACHINE=wintermute ROSTERD_HERDR_LINK=0" "$herdr" 'terminal herdr --remote gibson --session default'
   check "herdr link" "ROSTERD_MACHINE=wintermute ROSTERD_HERDR_LINK=1" "$herdr" 'browser herdr://gibson/agents/attach/builder?session=default'
   check "herdr pane only" "ROSTERD_MACHINE=gibson ROSTERD_HERDR_LINK=0" '{"kind":"herdr","machine":"gibson","herdr":{"session":"s","workspace_id":"w","pane_id":"w:p9"}}' \
-    'terminal herdr --session s terminal session observe w:p9'
+    'herdr --session s agent focus w:p9'
   check "headless" "ROSTERD_LOOPBACK_PORT=8790 ROSTERD_CONFIG_DIR=/nonexistent" '{"kind":"headless","machine":"gibson","session_key":"abc:42:7"}' \
     'browser http://127.0.0.1:8790/ui/sessions/abc:42:7'
   check "none" "" '{"kind":"none","machine":"gibson"}' 'nothing to open'
@@ -122,20 +122,23 @@ case "$(field .kind)" in
   herdr)
     session=$(safe "$(field '.herdr.session')" 'herdr session') || exit 2
     agent=$(field '.herdr.agent_name // .herdr.agentName')
-    pane=$(field '.herdr.pane_id // .herdr.paneId')
+    pane=$(safe "$(field '.herdr.pane_id // .herdr.paneId')" 'herdr pane') || exit 2
     if [ -n "$agent" ]; then
       agent=$(safe "$agent" 'agent name') || exit 2
-      link="herdr://$machine/agents/attach/$agent?session=$session"; sub="agent attach $agent"
+      link="herdr://$machine/agents/attach/$agent?session=$session"
     else
-      pane=$(safe "$pane" 'herdr pane') || exit 2
-      link="herdr://$machine/panes/observe/$pane?session=$session"; sub="terminal session observe $pane"
+      link="herdr://$machine/panes/observe/$pane?session=$session"
     fi
-    if herdr_link_registered; then
+    # Local: focus the pane inside the running Herdr, no new terminal. Remote: a terminal on the
+    # remote session, since `herdr --remote` takes no subcommand.
+    if [ "$local" = 1 ]; then
+      if [ "$dry" = 1 ]; then echo "herdr --session $session agent focus $pane"; else
+        herdr --session "$session" agent focus "$pane" >/dev/null 2>&1 || herdr --session "$session" workspace focus "${pane%%:*}" >/dev/null
+      fi
+    elif herdr_link_registered; then
       browser "$link"
-    elif [ "$local" = 1 ]; then
-      terminal "herdr --session $session $sub"
     else
-      terminal "herdr --remote $machine --session $session $sub"
+      terminal "herdr --remote $machine --session $session"
     fi
     ;;
   headless)

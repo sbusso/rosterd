@@ -165,6 +165,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/name", post(name))
         .route("/gate", post(gate))
         .route("/status", get(status))
+        .route("/pair", get(pair))
         .route("/swarm/snapshot", get(swarm_snapshot))
         .route("/swarm/events", get(swarm_events))
         .route("/swarm/nodes", get(swarm_nodes))
@@ -185,6 +186,7 @@ pub fn sessions() -> Router<Arc<Node>> {
         .route("/sessions/{key}", get(get_session).patch(patch_session).delete(delete_session))
         .route("/sessions/{key}/prompt", post(prompt))
         .route("/sessions/{key}/cancel", post(cancel))
+        .route("/sessions/{key}/open", post(open_session))
         .route("/sessions/{key}/stream", get(stream))
         .route("/sessions/{key}/permission", post(permission))
         .route("/sessions/{key}/name", post(session_name))
@@ -412,6 +414,22 @@ async fn gate(
     let answer = gate::wait(&key, record.attempt_id.as_deref(), &body.tool, &body.summary, body.policy, &node.bridge, Duration::from_secs(timeout)).await;
     node.roster.claim(source, &key, Activity::Active, "permission_answered", Utc::now())?;
     Ok(Json(answer))
+}
+
+/// What the phone app scans, R9: a `rosterd://pair` link carrying the page's address on the
+/// tailnet and the bearer, as a QR. Only the tailnet address is reachable from a phone.
+async fn pair(State(node): State<Arc<Node>>) -> Result<Json<Value>, ApiError> {
+    if node.config.node.ui_listen != "tailscale" {
+        return Err(ApiError::new(StatusCode::CONFLICT, "node.ui_listen is loopback; set it to tailscale"));
+    }
+    let ip = node.mesh.tailscale_ip().await.ok_or_else(|| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "no Tailscale IP"))?;
+    let link = format!("rosterd://pair?url=http://{ip}:{}&token={}", node.config.node.loopback_port, node.loopback_token);
+    let svg = qrcode::QrCode::new(link.as_bytes())
+        .map_err(|error| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .render::<qrcode::render::svg::Color>()
+        .min_dimensions(240, 240)
+        .build();
+    Ok(Json(json!({ "link": link, "svg": svg })))
 }
 
 async fn ui() -> Html<&'static str> {
@@ -642,6 +660,32 @@ async fn cancel(captures: Captures) -> Result<Response, ApiError> {
         return captures.proxy(node_id, Method::POST, captures.path("/cancel"), None).await;
     }
     ok(captures.node.runner.cancel(&captures.key).await?)
+}
+
+/// Jumps to the session on the machine that has it: `rosterd-open` with the tmux or herdr handle,
+/// run by the owner node so a page on a phone focuses the pane on the desk. Headless sessions have
+/// no pane; the page links their conversation view itself.
+async fn open_session(captures: Captures) -> Result<Response, ApiError> {
+    if let Some(node_id) = captures.remote()? {
+        return captures.proxy(node_id, Method::POST, captures.path("/open"), None).await;
+    }
+    let record = captures.record()?;
+    let (kind, handle) = match (&record.herdr, &record.tmux) {
+        (Some(h), _) => ("herdr", json!(h)),
+        (_, Some(t)) => ("tmux", json!(t)),
+        _ => return Err(ApiError::bad_request(format!("nothing to open for {}: no tmux or herdr handle", captures.key))),
+    };
+    let handle = json!({ "kind": kind, "machine": record.node, "session_key": captures.key, kind: handle });
+    let opener = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("rosterd-open"))).filter(|p| p.is_file());
+    let opener = opener.or_else(|| crate::integrate::which(&std::env::var_os("PATH").unwrap_or_default(), "rosterd-open"));
+    let Some(opener) = opener else { return Err(ApiError::bad_request("rosterd-open is not installed on this node".to_string())) };
+    // ponytail: the daemon runs the opener in its own session; under a LaunchDaemon that is
+    // root with no display, so open only works when the daemon runs as the user (setup's tray row).
+    let out = tokio::process::Command::new(opener).arg("--handle").arg(handle.to_string()).output().await.map_err(|e| ApiError::bad_request(e.to_string()))?;
+    if !out.status.success() {
+        return Err(ApiError::bad_request(String::from_utf8_lossy(&out.stderr).trim().to_string()));
+    }
+    ok(json!({ "opened": kind }))
 }
 
 /// The raw ACP notification stream, R5.5. Served by the owner only: `Mesh::proxy` carries one
