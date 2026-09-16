@@ -29,7 +29,7 @@ struct RosterView: View {
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
                                 Text(node.name).textCase(.uppercase)
                                 Text(node.revoked ? "revoked" : node.state == "local" ? "this node" : "\(node.state) \(ago(Date(timeIntervalSinceNow: -Double(node.peerAgeMs) / 1000))) ago").textCase(nil)
-                                if let h = node.capabilities?.harnesses, !h.isEmpty { Text("· " + h.joined(separator: ", ")).textCase(nil) }
+                                if let h = node.capabilities?.harnesses, !h.isEmpty { Text("·"); ForEach(h, id: \.self) { HarnessMark(harness: $0) } }
                             }.font(.caption).foregroundStyle(Color.dim)
                         }
                     }
@@ -109,6 +109,7 @@ struct SessionRow: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Circle().fill(word == "unknown" ? Color.clear : Color.state(word)).stroke(Color.state(word), lineWidth: 1.5).frame(width: 8, height: 8)
+                HarnessMark(harness: r.harness)
                 if !r.label.isEmpty { Text(r.label).fontWeight(.semibold).strikethrough(word == "ended") }
                 if !r.project.isEmpty { Text(r.project).font(.caption).fontWeight(.medium).padding(.horizontal, 6).padding(.vertical, 1).background(Color.line, in: RoundedRectangle(cornerRadius: 4)) }
                 Text(word.replacing("_", with: " ")).font(.footnote).fontWeight(.medium).foregroundStyle(Color.state(word))
@@ -146,11 +147,24 @@ struct SessionRow: View {
     }
 }
 
+/// The harness by its logo, Claude's and OpenAI's for codex, from the asset catalog; any other by name.
+struct HarnessMark: View {
+    let harness: String
+    var body: some View {
+        if UIImage(named: harness) != nil {
+            Image(harness).resizable().scaledToFit().frame(width: 14, height: 14)
+                .foregroundStyle(harness == "claude" ? Color(red: 0.851, green: 0.467, blue: 0.341) : Color.primary)
+                .accessibilityLabel(harness)
+        } else {
+            Text(harness).font(.footnote).foregroundStyle(Color.dim)
+        }
+    }
+}
+
 struct Stats: View {
     let record: Record
     var body: some View {
         HStack(spacing: 12) {
-            Text(record.harness)
             if let l = record.load { Label("\(l.cpuPct)%", systemImage: "cpu"); Text(mem(l.rssMb)) }
             Label(ago(record.startedAt), systemImage: "clock")
         }.font(.footnote).foregroundStyle(Color.dim).monospacedDigit()
