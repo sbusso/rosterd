@@ -29,7 +29,14 @@ enum View {
 
 fn main() {
     let rosterd = rosterd_bin();
-    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    #[allow(unused_mut)]
+    let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    // A menu bar item only: no Dock icon, no app switcher entry.
+    #[cfg(target_os = "macos")]
+    {
+        use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+        event_loop.set_activation_policy(ActivationPolicy::Accessory);
+    }
     let proxy = event_loop.create_proxy();
     MenuEvent::set_event_handler(Some(move |event| {
         let _ = proxy.send_event(UserEvent::Menu(event));
@@ -256,9 +263,10 @@ fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-/// A filled circle; on macOS black and drawn as a template, elsewhere the colour of the shade.
+/// The roster glyph, three rows with a dot each: black as a template on macOS, the shade's colour
+/// elsewhere; dimmed when the daemon is down. Drawn at 36 px for a crisp 18 pt on a 2x screen.
 fn dot(shade: Shade) -> Icon {
-    let size = if cfg!(target_os = "macos") { 22 } else { 32 };
+    const SIZE: usize = 36;
     let rgb: [u8; 3] = if cfg!(target_os = "macos") {
         [0, 0, 0]
     } else {
@@ -266,24 +274,28 @@ fn dot(shade: Shade) -> Icon {
             Shade::Attention => [255, 179, 0],
             Shade::Active => [76, 175, 80],
             Shade::Idle => [136, 153, 170],
-            Shade::Down => [85, 85, 85],
+            Shade::Down => [136, 153, 170],
         }
     };
-    let mut rgba = Vec::with_capacity(size * size * 4);
-    let c = (size as f32 - 1.0) / 2.0;
-    let r = size as f32 * 0.36;
-    for y in 0..size {
-        for x in 0..size {
-            let d = ((x as f32 - c).powi(2) + (y as f32 - c).powi(2)).sqrt();
-            // One pixel of anti-aliasing at the edge; a hollow ring when the daemon is down.
-            let mut a = (r + 0.5 - d).clamp(0.0, 1.0);
-            if shade == Shade::Down {
-                a *= (d - (r - 2.0) + 0.5).clamp(0.0, 1.0);
-            }
+    let rows = [9.0f32, 18.0, 27.0];
+    let coverage = |x: f32, y: f32| -> f32 {
+        let mut d = f32::MAX;
+        for cy in rows {
+            d = d.min(((x - 8.0).powi(2) + (y - cy).powi(2)).sqrt() - 2.6);
+            let px = x.clamp(15.0, 30.0);
+            d = d.min(((x - px).powi(2) + (y - cy).powi(2)).sqrt() - 1.7);
+        }
+        (0.5 - d).clamp(0.0, 1.0)
+    };
+    let dim = if shade == Shade::Down { 0.4 } else { 1.0 };
+    let mut rgba = Vec::with_capacity(SIZE * SIZE * 4);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let a = coverage(x as f32 + 0.5, y as f32 + 0.5) * dim;
             rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], (a * 255.0) as u8]);
         }
     }
-    Icon::from_rgba(rgba, size as u32, size as u32).expect("icon buffer")
+    Icon::from_rgba(rgba, SIZE as u32, SIZE as u32).expect("icon buffer")
 }
 
 #[cfg(test)]

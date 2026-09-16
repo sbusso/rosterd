@@ -13,7 +13,8 @@ path = "src/main.rs"
 rosterd-proto.workspace = true
 serde_json.workspace = true
 tao = "0.37"
-tray-icon = { version = "0.25", default-features = false }
+# libappindicator on Linux (dlopened at runtime), no libxdo.
+tray-icon = { version = "0.25", default-features = false, features = ["libappindicator"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-foundation = "0.3"
