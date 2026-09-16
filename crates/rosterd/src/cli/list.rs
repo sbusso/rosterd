@@ -6,11 +6,11 @@ use std::io::Write;
 
 use chrono::Utc;
 use reqwest::Method;
-use rosterd_proto::{Activity, Liveness, NodeHealth, PeerState, Record, Snapshot, SwarmRecord, SwarmSnapshot};
+use rosterd_proto::{Activity, Liveness, NodeHealth, PeerState, Record, Snapshot, SwarmRecord, SwarmSnapshot, age};
 use serde_json::Value;
 
 use super::client::{emit, parse, stdout_is_tty, table};
-use super::resolve::{age, display_name};
+use super::resolve::display_name;
 use super::{Client, Exit, Out, Scope};
 
 pub async fn list(client: &Client, scope: &Scope, json: bool) -> Out<()> {

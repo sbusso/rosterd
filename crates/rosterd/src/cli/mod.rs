@@ -318,7 +318,7 @@ fn nodes_table(nodes: &[NodeHealth]) -> String {
                 node.version.clone().unwrap_or_else(|| "-".into()),
                 node.capabilities.harnesses.join(","),
                 state.into(),
-                resolve::age(node.peer_age_ms / 1000),
+                rosterd_proto::age(node.peer_age_ms / 1000),
                 if node.revoked { "yes" } else { "" }.into(),
             ];
             (cells, false)

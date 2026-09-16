@@ -6,13 +6,18 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rosterd_proto::{Activity, Liveness, Record, Snapshot};
+use rosterd_proto::{Activity, Liveness, Record, Snapshot, age};
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{IconMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+
+/// The one name the menu bar uses; the daemon, the CLI and the page are the same word.
+const APP: &str = "rosterd";
+/// Menu sections, indexed by `rank`.
+const SECTIONS: [&str; 5] = ["Needs attention", "Active", "Idle", "Unknown", "Suspended"];
 
 enum UserEvent {
     Snapshot(Snapshot),
@@ -52,7 +57,7 @@ fn main() {
         match event {
             // Created once the loop runs, tauri-apps/tray-icon#90.
             Event::NewEvents(StartCause::Init) => {
-                let built = TrayIconBuilder::new().with_tooltip("rosterd").with_icon(dot(Shade::Idle)).with_icon_as_template(true).build();
+                let built = TrayIconBuilder::new().with_tooltip(APP).with_icon(dot(Shade::Idle)).with_icon_as_template(true).build();
                 match built {
                     Ok(t) => {
                         tray = Some(t);
@@ -159,17 +164,53 @@ enum Shade {
 fn render(tray: &TrayIcon, view: &View) {
     let menu = Menu::new();
     let (summary, shade, attention) = match view {
-        View::Waiting => ("connecting to rosterd…".to_string(), Shade::Down, 0),
-        View::Down(why) => (format!("rosterd: {why}"), Shade::Down, 0),
+        View::Waiting => ("connecting…".to_string(), Shade::Down, 0),
+        View::Down(why) => (why.clone(), Shade::Down, 0),
         View::Roster(s) => {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
             let mut rows: Vec<&Record> = s.records.iter().filter(|r| r.liveness != Liveness::Ended).collect();
             rows.sort_by_key(|r| (rank(r), r.name.clone().unwrap_or_default(), r.pid));
-            let attention = rows.iter().filter(|r| r.activity == Activity::NeedsAttention).count();
+            let attention = rows.iter().filter(|r| rank(r) == 0).count();
             let summary = match (rows.len(), attention) {
                 (0, _) => "no sessions".to_string(),
                 (n, 0) => format!("{n} session{}", plural(n)),
                 (n, a) => format!("{n} session{} · {a} need{} attention", plural(n), if a == 1 { "s" } else { "" }),
             };
+            if rows.is_empty() {
+                let _ = menu.append(&MenuItem::with_id("summary", &summary, false, None));
+            }
+            for (k, title) in SECTIONS.iter().enumerate() {
+                let group: Vec<&&Record> = rows.iter().filter(|r| usize::from(rank(r)) == k).collect();
+                if group.is_empty() {
+                    continue;
+                }
+                let _ = menu.append(&PredefinedMenuItem::section_header(&format!("{title} · {}", group.len())));
+                for r in group {
+                    let text = row_text(r, now);
+                    let key = r.session_key.as_str();
+                    if k == 0 {
+                        let sub = Submenu::new(&text, true);
+                        #[cfg(any(target_os = "macos", target_os = "windows"))]
+                        sub.set_icon(Some(disc(Shade::Attention, false)));
+                        let _ = sub.append_items(&[
+                            &MenuItem::with_id(format!("allow:{key}"), "Allow", true, None),
+                            &MenuItem::with_id(format!("always:{key}"), "Allow always", true, None),
+                            &MenuItem::with_id(format!("deny:{key}"), "Deny", true, None),
+                            &PredefinedMenuItem::separator(),
+                            &MenuItem::with_id(format!("open:{key}"), "Open", true, None),
+                        ]);
+                        let _ = menu.append(&sub);
+                    } else {
+                        let (shade, hollow) = match k {
+                            1 => (Shade::Active, false),
+                            2 => (Shade::Idle, false),
+                            3 => (Shade::Idle, true),
+                            _ => (Shade::Down, false),
+                        };
+                        let _ = menu.append(&IconMenuItem::with_id(format!("open:{key}"), &text, true, Some(disc(shade, hollow)), None));
+                    }
+                }
+            }
             let shade = if attention > 0 {
                 Shade::Attention
             } else if rows.iter().any(|r| r.activity == Activity::Active) {
@@ -177,25 +218,6 @@ fn render(tray: &TrayIcon, view: &View) {
             } else {
                 Shade::Idle
             };
-            let _ = menu.append(&MenuItem::with_id("summary", &summary, false, None));
-            let _ = menu.append(&PredefinedMenuItem::separator());
-            for r in rows {
-                let text = row_text(r);
-                let key = r.session_key.as_str();
-                if r.activity == Activity::NeedsAttention {
-                    let sub = Submenu::new(&text, true);
-                    let _ = sub.append_items(&[
-                        &MenuItem::with_id(format!("allow:{key}"), "Allow", true, None),
-                        &MenuItem::with_id(format!("always:{key}"), "Allow always", true, None),
-                        &MenuItem::with_id(format!("deny:{key}"), "Deny", true, None),
-                        &PredefinedMenuItem::separator(),
-                        &MenuItem::with_id(format!("open:{key}"), "Open", true, None),
-                    ]);
-                    let _ = menu.append(&sub);
-                } else {
-                    let _ = menu.append(&MenuItem::with_id(format!("open:{key}"), &text, true, None));
-                }
-            }
             (summary, shade, attention)
         }
     };
@@ -204,11 +226,11 @@ fn render(tray: &TrayIcon, view: &View) {
     }
     let _ = menu.append_items(&[
         &PredefinedMenuItem::separator(),
-        &MenuItem::with_id("ui", "Open rosterd", true, None),
-        &MenuItem::with_id("quit", "Quit rosterd-tray", true, None),
+        &MenuItem::with_id("ui", format!("Open {APP}"), true, None),
+        &MenuItem::with_id("quit", "Quit", true, None),
     ]);
     tray.set_menu(Some(Box::new(menu)));
-    let _ = tray.set_tooltip(Some(format!("rosterd · {summary}")));
+    let _ = tray.set_tooltip(Some(format!("{APP} · {summary}")));
     // macOS: a template icon plus a count beside it; Linux: the colour is the signal.
     #[cfg(target_os = "macos")]
     {
@@ -223,6 +245,7 @@ fn render(tray: &TrayIcon, view: &View) {
     }
 }
 
+/// The section a row belongs to, in menu order.
 fn rank(r: &Record) -> u8 {
     match (r.liveness, r.activity) {
         (_, Activity::NeedsAttention) => 0,
@@ -233,15 +256,9 @@ fn rank(r: &Record) -> u8 {
     }
 }
 
-fn row_text(r: &Record) -> String {
-    let glyph = match (r.liveness, r.activity) {
-        (Liveness::Suspended, _) => "⏸",
-        (_, Activity::NeedsAttention) => "⚠",
-        (_, Activity::Active) => "●",
-        (_, Activity::Idle) => "○",
-        (_, Activity::Unknown) => "·",
-    };
-    // The CLI's display name, R14.1: the name, else the cwd's last segment in brackets.
+/// `label  harness  age`: the CLI's display name (R14.1: the name, else the cwd's last segment in
+/// brackets), then how long since the last activity, or since the start when nothing was heard.
+fn row_text(r: &Record, now: i64) -> String {
     let label = match r.name.as_deref().filter(|n| !n.is_empty()) {
         Some(name) => name.to_string(),
         None => match r.cwd.as_deref().and_then(|cwd| std::path::Path::new(cwd).file_name()).and_then(|f| f.to_str()) {
@@ -249,35 +266,45 @@ fn row_text(r: &Record) -> String {
             None => format!("pid {}", r.pid),
         },
     };
-    let state = match (r.liveness, r.activity) {
-        (Liveness::Suspended, _) => "suspended",
-        (Liveness::Stale, _) => "stale",
-        (_, Activity::NeedsAttention) => "needs attention",
-        (_, Activity::Active) => "active",
-        (_, Activity::Idle) => "idle",
-        (_, Activity::Unknown) => "unknown",
-    };
-    format!("{glyph} {label}  {}  {state}", r.harness)
+    let since = r.activity_at.unwrap_or(r.started_at).timestamp();
+    let stale = if r.liveness == Liveness::Stale { " · stale" } else { "" };
+    format!("{label}  {}  {}{stale}", r.harness, age((now - since).max(0) as u64))
 }
 
 fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
+fn rgb(shade: Shade) -> [u8; 3] {
+    match shade {
+        Shade::Attention => [255, 179, 0],
+        Shade::Active => [76, 175, 80],
+        Shade::Idle | Shade::Down => [136, 153, 170],
+    }
+}
+
+/// A row's status dot: filled in the shade's colour, or a ring when nothing has been heard.
+fn disc(shade: Shade, hollow: bool) -> tray_icon::menu::Icon {
+    const SIZE: usize = 14;
+    let rgb = rgb(shade);
+    let dim = if shade == Shade::Down { 0.5 } else { 1.0 };
+    let mut rgba = Vec::with_capacity(SIZE * SIZE * 4);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let d = ((x as f32 + 0.5 - 7.0).powi(2) + (y as f32 + 0.5 - 7.0).powi(2)).sqrt();
+            let d = if hollow { (d - 3.6).abs() - 1.0 } else { d - 4.5 };
+            let a = (0.5 - d).clamp(0.0, 1.0) * dim;
+            rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], (a * 255.0) as u8]);
+        }
+    }
+    tray_icon::menu::Icon::from_rgba(rgba, SIZE as u32, SIZE as u32).expect("icon buffer")
+}
+
 /// The roster glyph, three rows with a dot each: black as a template on macOS, the shade's colour
 /// elsewhere; dimmed when the daemon is down. Drawn at 36 px for a crisp 18 pt on a 2x screen.
 fn dot(shade: Shade) -> Icon {
     const SIZE: usize = 36;
-    let rgb: [u8; 3] = if cfg!(target_os = "macos") {
-        [0, 0, 0]
-    } else {
-        match shade {
-            Shade::Attention => [255, 179, 0],
-            Shade::Active => [76, 175, 80],
-            Shade::Idle => [136, 153, 170],
-            Shade::Down => [136, 153, 170],
-        }
-    };
+    let rgb: [u8; 3] = if cfg!(target_os = "macos") { [0, 0, 0] } else { rgb(shade) };
     let rows = [9.0f32, 18.0, 27.0];
     let coverage = |x: f32, y: f32| -> f32 {
         let mut d = f32::MAX;
@@ -316,8 +343,10 @@ mod tests {
     fn rows_sort_attention_first_and_ids_are_cli_lines() {
         let mut rows = [rec(1, Some("docs"), "idle", "live"), rec(2, None, "active", "live"), rec(3, Some("fix"), "needs_attention", "live"), rec(4, Some("old"), "active", "suspended")];
         rows.sort_by_key(|r| (rank(r), r.name.clone().unwrap_or_default(), r.pid));
-        let texts: Vec<String> = rows.iter().map(row_text).collect();
-        assert_eq!(texts, ["⚠ fix  claude  needs attention", "● [api]  claude  active", "○ docs  claude  idle", "⏸ old  claude  suspended"]);
+        let now = rows[0].started_at.timestamp() + 7200;
+        let texts: Vec<String> = rows.iter().map(|r| row_text(r, now)).collect();
+        assert_eq!(texts, ["fix  claude  2h", "[api]  claude  2h", "docs  claude  2h", "old  claude  2h"]);
+        assert_eq!(rows.iter().map(|r| SECTIONS[usize::from(rank(r))]).collect::<Vec<_>>(), ["Needs attention", "Active", "Idle", "Suspended"]);
         assert_eq!(cli_args("always:abc:3:1"), Some(vec!["allow", "abc:3:1", "--always"]));
         assert_eq!(cli_args("open:abc:3:1"), Some(vec!["open", "abc:3:1"]));
         assert_eq!(cli_args("ui"), Some(vec!["ui"]));

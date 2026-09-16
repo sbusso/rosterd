@@ -61,9 +61,10 @@ Space picks rows, enter runs them, `a` picks everything needed; the `tray` row s
 pipe, runs the needed rows headless. The screen is `crates/rosterd/src/setup/tui.rs`, generic
 over the rows: another tool brings its own `steps()`.
 
-The tray. `rosterd-tray` puts the roster in the menu bar: one row per session with its state,
-a submenu with allow, allow always and deny when one needs attention, a click jumps to the
-session (`rosterd open`), and the count of sessions needing attention sits beside the icon on
+The tray. `rosterd-tray` puts the roster in the menu bar: sessions grouped by state (needs
+attention, active, idle, unknown, suspended) with a coloured dot, the harness and the age of the
+last activity; a submenu with allow, allow always and deny when one needs attention; a click jumps
+to the session (`rosterd open`); and the count of sessions needing attention sits beside the icon on
 macOS (the icon's colour on Linux). It is a menu over the CLI: `rosterd watch --json` feeds it and
 `rosterd allow|deny|open|ui` act, so it needs no socket, token or config of its own. Linux shows it
 where StatusNotifierItem trays are shown: KDE and most desktops; GNOME with the AppIndicator

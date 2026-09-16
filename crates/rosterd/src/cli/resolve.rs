@@ -47,16 +47,6 @@ fn ambiguous(key: &str, candidates: &[&Record]) -> Exit {
     Exit::user(message)
 }
 
-/// `12s`, `3m`, `2h`, `4d`.
-pub fn age(seconds: u64) -> String {
-    match seconds {
-        0..=59 => format!("{seconds}s"),
-        60..=3599 => format!("{}m", seconds / 60),
-        3600..=86_399 => format!("{}h", seconds / 3600),
-        _ => format!("{}d", seconds / 86_400),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use rosterd_proto::{Activity, Lane};
@@ -115,15 +105,5 @@ mod tests {
         assert_eq!(err.code, 1);
         assert!(err.message.contains("local:42:1") && err.message.contains("remote:42:1"), "{}", err.message);
         assert_eq!(resolve("nobody", "local", &records).unwrap_err().message, "no session nobody");
-    }
-
-    #[test]
-    fn age_picks_the_largest_whole_unit() {
-        assert_eq!(age(0), "0s");
-        assert_eq!(age(59), "59s");
-        assert_eq!(age(60), "1m");
-        assert_eq!(age(3599), "59m");
-        assert_eq!(age(7200), "2h");
-        assert_eq!(age(90_000), "1d");
     }
 }

@@ -212,6 +212,16 @@ pub struct Record {
     pub permission_policy: Option<PermissionPolicy>,
 }
 
+/// `12s`, `3m`, `2h`, `4d`: how the CLI and the tray print an age.
+pub fn age(seconds: u64) -> String {
+    match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3599 => format!("{}m", seconds / 60),
+        3600..=86_399 => format!("{}h", seconds / 3600),
+        _ => format!("{}d", seconds / 86_400),
+    }
+}
+
 /// `node_id:pid:start_ticks`, stable for the life of the process, R3.
 pub fn session_key(node_id: &str, pid: u32, start_ticks: u64) -> String {
     format!("{node_id}:{pid}:{start_ticks}")
@@ -349,6 +359,16 @@ pub enum HolderFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn age_picks_the_largest_whole_unit() {
+        assert_eq!(age(0), "0s");
+        assert_eq!(age(59), "59s");
+        assert_eq!(age(60), "1m");
+        assert_eq!(age(3599), "59m");
+        assert_eq!(age(7200), "2h");
+        assert_eq!(age(90_000), "1d");
+    }
 
     #[test]
     fn precedence_is_declaration_order() {
