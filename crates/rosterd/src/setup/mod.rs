@@ -358,7 +358,7 @@ fn apply_config(ctx: &Ctx, _: &[String], log: Log) -> Result<()> {
     let name = name.split('.').next().unwrap_or(&name);
     let text = format!(
         "# rosterd, R10. Pin the name: a renamed machine is a new name, the id stays.\n\
-         [node]\nname = \"{name}\"\nport = 8791\nlisten = \"tailscale\"\nloopback_port = 8790\n\n\
+         [node]\nname = \"{name}\"\nport = 8791\nlisten = \"tailscale\"\nloopback_port = 8790\nui_listen = \"loopback\"\n\n\
          [swarm]\nstatic_peers = []\n\n\
          [workspace]\n# url = \"https://ws.example.ts.net\"\n# credential_file = \"{cred}\"\n\n\
          [runner]\ndefault_permission_policy = \"attention\"\nresume_on_crash = true\nrecap = true\nidle_timeout_s = 1800\n\n\

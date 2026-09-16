@@ -82,7 +82,10 @@ or the tray's "Open in browser" opens it with `?token=<loopback.token>` once and
 bearer. It shows the roster with the same states and actions as the tray, a project badge per
 row, and `/ui/sessions/<session_key>` renders the ACP stream of a headless session live with its
 last recap. "Add workspace" on the page stores a workspace URL and token in the browser and lists
-what needs you first. Over Tailscale the same page works from a phone.
+what needs you first. With `ui_listen = "tailscale"` in `[node]` the page and its API also
+answer on the node's Tailscale IP at the same port, so a phone or another machine on the tailnet
+opens `http://<tailscale-ip>:8790/ui?token=<loopback.token>` directly; the token is still the
+application boundary and Tailscale the network one.
 
 **The shell.** `rosterd status` prints the node, its listeners, swarm, bridge state and the
 counts; `rosterd list` the rows; `rosterd daemon` runs the daemon by hand. The config lives in
@@ -132,7 +135,7 @@ rosterd revoke NODE_ID    # removes a node everywhere
 rosterd leave             # takes this node out
 ```
 
-The roster page and the tray show the local node; the page reads `/swarm/snapshot` for the rest.
+The tray shows the local node; the roster page follows `/swarm/events`, so it shows every node.
 Windows joins as a headless-only node: hooks, no tmux or herdr handles.
 
 ## CLI

@@ -341,6 +341,7 @@ async fn status(State(node): State<Arc<Node>>) -> Json<Value> {
         "socket": node.config.socket_path(),
         "loopback_port": node.config.node.loopback_port,
         "listen": node.config.node.listen,
+        "ui_listen": node.config.node.ui_listen,
         "swarm_id": node.mesh.swarm_id(),
         "nodes": nodes.len(),
         "peers": { "total": peers.len(), "reachable": reachable, "unreachable": peers.len() - reachable },

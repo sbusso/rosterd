@@ -283,6 +283,7 @@ async fn status(client: &Client, json: bool) -> Out<()> {
     println!("socket    {}", text("socket"));
     println!("loopback  127.0.0.1:{}", text("loopback_port"));
     println!("listen    {}", text("listen"));
+    println!("ui        {}", text("ui_listen"));
     println!("swarm     {}", status["swarm_id"].as_str().unwrap_or("none"));
     println!("peers     {} ({} reachable, {} unreachable)", count(&["peers", "total"]), count(&["peers", "reachable"]), count(&["peers", "unreachable"]));
     println!("bridge    {bridge_state}, queue {}", bridge["queued"].as_u64().unwrap_or(0));

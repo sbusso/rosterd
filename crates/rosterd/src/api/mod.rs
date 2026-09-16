@@ -69,10 +69,29 @@ pub async fn serve(node: Arc<Node>) -> anyhow::Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], node.config.node.loopback_port));
     let tcp = TcpListener::bind(addr).await.with_context(|| format!("bind {addr}"))?;
     tracing::info!(%addr, "loopback listener");
+    let ui = loopback.clone();
     listeners.spawn(async move { axum::serve(tcp, loopback).await.map_err(anyhow::Error::from) });
 
-    if node.config.node.listen == "tailscale" {
-        match node.mesh.tailscale_ip().await {
+    let mesh_on_tailscale = node.config.node.listen == "tailscale";
+    let ui_on_tailscale = node.config.node.ui_listen == "tailscale";
+    let tailscale_ip = if mesh_on_tailscale || ui_on_tailscale { node.mesh.tailscale_ip().await } else { None };
+
+    // The same bearer-gated router as loopback, on the tailnet: Tailscale is the network boundary
+    // and the token the application one, R7.6.
+    if ui_on_tailscale {
+        match tailscale_ip {
+            Some(ip) => {
+                let addr = SocketAddr::new(ip, node.config.node.loopback_port);
+                let tcp = TcpListener::bind(addr).await.with_context(|| format!("bind {addr}"))?;
+                tracing::info!(%addr, "ui listener");
+                listeners.spawn(async move { axum::serve(tcp, ui).await.map_err(anyhow::Error::from) });
+            }
+            None => tracing::warn!("no Tailscale IP; the page answers on loopback only"),
+        }
+    }
+
+    if mesh_on_tailscale {
+        match tailscale_ip {
             Some(ip) => {
                 let addr = SocketAddr::new(ip, node.config.node.port);
                 let tls = node.mesh.tls()?;

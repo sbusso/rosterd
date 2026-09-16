@@ -30,6 +30,9 @@ pub struct NodeConfig {
     pub listen: String,
     /// Loopback HTTP port with the bearer token, R6.
     pub loopback_port: u16,
+    /// `loopback` or `tailscale`: the page and the bearer API also answer on the Tailscale IP at
+    /// `loopback_port`, so a phone or another machine on the tailnet opens `/ui` directly.
+    pub ui_listen: String,
     /// Overrides the platform default socket path, R6.
     pub socket: Option<PathBuf>,
 }
@@ -41,6 +44,7 @@ impl Default for NodeConfig {
             port: 8791,
             listen: "tailscale".into(),
             loopback_port: 8790,
+            ui_listen: "loopback".into(),
             socket: None,
         }
     }
@@ -158,6 +162,10 @@ impl Config {
             matches!(config.node.listen.as_str(), "tailscale" | "off"),
             "node.listen must be tailscale or off, R7.6; nothing listens elsewhere"
         );
+        anyhow::ensure!(
+            matches!(config.node.ui_listen.as_str(), "loopback" | "tailscale"),
+            "node.ui_listen must be loopback or tailscale, R7.6; nothing listens elsewhere"
+        );
         Ok(config)
     }
 
@@ -268,6 +276,10 @@ adapter = "claude-agent-acp"
 
         std::fs::write(&path, "[node]\nlisten = \"0.0.0.0\"\n").unwrap();
         assert!(Config::load(&path).is_err());
+        std::fs::write(&path, "[node]\nui_listen = \"0.0.0.0\"\n").unwrap();
+        assert!(Config::load(&path).is_err());
+        std::fs::write(&path, "[node]\nui_listen = \"tailscale\"\n").unwrap();
+        assert_eq!(Config::load(&path).unwrap().node.ui_listen, "tailscale");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
