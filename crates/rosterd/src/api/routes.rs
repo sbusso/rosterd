@@ -679,8 +679,6 @@ async fn open_session(captures: Captures) -> Result<Response, ApiError> {
     let opener = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("rosterd-open"))).filter(|p| p.is_file());
     let opener = opener.or_else(|| crate::integrate::which(&std::env::var_os("PATH").unwrap_or_default(), "rosterd-open"));
     let Some(opener) = opener else { return Err(ApiError::bad_request("rosterd-open is not installed on this node".to_string())) };
-    // ponytail: the daemon runs the opener in its own session; under a LaunchDaemon that is
-    // root with no display, so open only works when the daemon runs as the user (setup's tray row).
     let out = tokio::process::Command::new(opener).arg("--handle").arg(handle.to_string()).output().await.map_err(|e| ApiError::bad_request(e.to_string()))?;
     if !out.status.success() {
         return Err(ApiError::bad_request(String::from_utf8_lossy(&out.stderr).trim().to_string()));

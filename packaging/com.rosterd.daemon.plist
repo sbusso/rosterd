@@ -1,27 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- rosterd, R11: a LaunchDaemon, not a LaunchAgent, so it survives logout. Runs as __USER__ with
-     that user's HOME and TMPDIR, so the config directory and the socket are the ones the user's
-     shells resolve, R6. packaging/install.sh fills the placeholders and loads it:
-       sudo install -m644 -o root -g wheel <rendered> /Library/LaunchDaemons/com.rosterd.daemon.plist
-       sudo launchctl bootstrap system /Library/LaunchDaemons/com.rosterd.daemon.plist -->
+<!-- rosterd, R11: a LaunchAgent in the user's GUI session, like the tray, so open reaches the
+     display, the tmux server and the Herdr socket. A logout ends those anyway, so nothing is
+     lost by not being a LaunchDaemon. Loaded without sudo:
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rosterd.daemon.plist -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.rosterd.daemon</string>
   <key>ProgramArguments</key>
   <array><string>__HOME__/.local/bin/rosterd</string><string>daemon</string></array>
-  <key>UserName</key><string>__USER__</string>
   <key>WorkingDirectory</key><string>__HOME__</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>HOME</key><string>__HOME__</string>
-    <key>TMPDIR</key><string>__TMPDIR__</string>
     <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Applications/Tailscale.app/Contents/MacOS</string>
     <key>RUST_LOG</key><string>info</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/var/log/rosterd.log</string>
-  <key>StandardErrorPath</key><string>/var/log/rosterd.err</string>
+  <key>StandardOutPath</key><string>__HOME__/.local/state/rosterd/daemon.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/.local/state/rosterd/daemon.log</string>
 </dict>
 </plist>

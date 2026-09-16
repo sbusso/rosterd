@@ -7,8 +7,7 @@
 #
 # Linux: the systemd user unit (packaging/rosterd.service), enabled and started. For a server
 # without a login session use packaging/rosterd-system@.service instead, see its header.
-# macOS: the LaunchDaemon (packaging/com.rosterd.daemon.plist), which needs sudo once; without it
-# the rendered plist is left in the config directory with the two commands to run.
+# macOS: the LaunchAgent (packaging/com.rosterd.daemon.plist), no sudo.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -83,20 +82,12 @@ case "$(uname)" in
     echo "rosterd.service enabled and started (systemctl --user status rosterd)"
     ;;
   Darwin)
-    rendered="$config_dir/com.rosterd.daemon.plist"
-    sed -e "s|__USER__|$USER|g" -e "s|__HOME__|$HOME|g" -e "s|__TMPDIR__|$(getconf DARWIN_USER_TEMP_DIR)|g" \
-      packaging/com.rosterd.daemon.plist >"$rendered"
-    target=/Library/LaunchDaemons/com.rosterd.daemon.plist
-    if sudo -n true 2>/dev/null || sudo -v; then
-      sudo launchctl bootout system "$target" 2>/dev/null || true
-      sudo install -m644 -o root -g wheel "$rendered" "$target"
-      sudo launchctl bootstrap system "$target"
-      echo "LaunchDaemon loaded (sudo launchctl print system/com.rosterd.daemon)"
-    else
-      echo "no sudo; to load the daemon run:"
-      echo "  sudo install -m644 -o root -g wheel '$rendered' $target"
-      echo "  sudo launchctl bootstrap system $target"
-    fi
+    mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.local/state/rosterd"
+    target="$HOME/Library/LaunchAgents/com.rosterd.daemon.plist"
+    sed -e "s|__HOME__|$HOME|g" packaging/com.rosterd.daemon.plist >"$target"
+    launchctl bootout "gui/$(id -u)/com.rosterd.daemon" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$target"
+    echo "LaunchAgent loaded (launchctl print gui/$(id -u)/com.rosterd.daemon)"
     ;;
   *) echo "no service file for $(uname); start with: rosterd daemon" ;;
 esac

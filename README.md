@@ -57,7 +57,7 @@ rosterd setup
 One row per thing the machine needs. Space picks, enter runs, `a` picks everything.
 `rosterd setup --yes` runs it headless.
 
-- binaries on PATH, config, the service (LaunchDaemon on macOS, systemd user unit on Linux), the daemon
+- binaries on PATH, config, the service (LaunchAgent on macOS, systemd user unit on Linux), the daemon
 - per harness: the binary, its ACP adapter, the hooks or extension
 - the tray at login
 - optional: the workspace credential, a swarm to join

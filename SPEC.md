@@ -311,7 +311,7 @@ Keys and tokens live in the config directory with mode 0600. Adapters are pinned
 ## R11. Cross platform notes
 
 Linux. /proc, systemd user unit for a desktop, system unit for a server with lingering off.
-macOS. libproc for pids, paths, start time, tty. LaunchDaemon not LaunchAgent so it survives logout. Holder sockets under $TMPDIR.
+macOS. libproc for pids, paths, start time, tty. LaunchAgent in the GUI session, so open reaches the display, the tmux server and the Herdr socket; a logout ends those anyway. Holder sockets under $TMPDIR.
 Windows. Toolhelp for enumeration, process creation time from the handle, named pipes, a service. Interactive lane on Windows is hooks only, no tmux or herdr handles.
 
 The holder, the hook script, and the opener are the only platform-conditional code. Everything else is shared.

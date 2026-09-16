@@ -88,7 +88,7 @@ pub fn steps() -> Vec<Step> {
         Step { name: "binaries", inputs: &[], foreground: false, optional: false, check: check_binaries, apply: apply_binaries },
         Step { name: "PATH", inputs: &[], foreground: false, optional: false, check: check_path, apply: apply_path },
         Step { name: "config", inputs: &[], foreground: false, optional: false, check: check_config, apply: apply_config },
-        Step { name: "service", inputs: &[], foreground: cfg!(target_os = "macos"), optional: false, check: check_service, apply: apply_service },
+        Step { name: "service", inputs: &[], foreground: false, optional: false, check: check_service, apply: apply_service },
         Step { name: "daemon", inputs: &[], foreground: false, optional: false, check: check_daemon, apply: apply_daemon },
     ];
     for target in Target::ALL {
@@ -372,39 +372,35 @@ fn apply_config(ctx: &Ctx, _: &[String], log: Log) -> Result<()> {
     Ok(())
 }
 
-// The service, R11: a LaunchDaemon on macOS (sudo, survives logout), a systemd user unit on Linux.
+// The service, R11: a LaunchAgent on macOS (the GUI session, where open works), a systemd user unit on Linux.
 
 #[cfg(target_os = "macos")]
 const LABEL: &str = "com.rosterd.daemon";
 
 #[cfg(target_os = "macos")]
 fn check_service(_: &Ctx) -> State {
-    let loaded = Command::new("launchctl").args(["print", &format!("system/{LABEL}")]).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+    let loaded = Command::new("launchctl").args(["print", &format!("{}/{LABEL}", tray_domain())]).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
     if loaded {
-        State::Done(format!("LaunchDaemon {LABEL} loaded"))
+        State::Done(format!("LaunchAgent {LABEL} loaded"))
     } else {
-        State::Needed("install the LaunchDaemon (asks for sudo)".into())
+        State::Needed("install the LaunchAgent".into())
     }
 }
 
 #[cfg(target_os = "macos")]
 fn apply_service(ctx: &Ctx, _: &[String], log: Log) -> Result<()> {
-    let user = std::env::var("USER").unwrap_or_default();
-    let tmpdir = run_capture("getconf", &["DARWIN_USER_TEMP_DIR"]).unwrap_or_else(|| "/tmp/".into());
-    let rendered = PLIST.replace("__USER__", &user).replace("__HOME__", &ctx.home.to_string_lossy()).replace("__TMPDIR__", tmpdir.trim());
-    let path = ctx.config_path.with_file_name(format!("{LABEL}.plist"));
-    std::fs::write(&path, rendered)?;
-    let target = format!("/Library/LaunchDaemons/{LABEL}.plist");
-    let script = format!(
-        "sudo launchctl bootout system {target} 2>/dev/null; sudo install -m644 -o root -g wheel '{}' {target} && sudo launchctl bootstrap system {target}",
-        path.display()
-    );
-    log(format!("$ {script}"));
-    let status = Command::new("sh").args(["-c", &script]).status()?;
+    std::fs::create_dir_all(crate::config::state_dir())?;
+    let dir = ctx.home.join("Library").join("LaunchAgents");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{LABEL}.plist"));
+    std::fs::write(&path, PLIST.replace("__HOME__", &ctx.home.to_string_lossy()))?;
+    let domain = tray_domain();
+    let _ = Command::new("launchctl").args(["bootout", &format!("{domain}/{LABEL}")]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let status = Command::new("launchctl").args(["bootstrap", &domain, &path.to_string_lossy()]).status()?;
     if !status.success() {
-        bail!("launchctl failed ({status}); the rendered plist is at {}", path.display());
+        bail!("launchctl bootstrap failed ({status}); the plist is at {}", path.display());
     }
-    log(format!("LaunchDaemon loaded (sudo launchctl print system/{LABEL})"));
+    log(format!("LaunchAgent loaded (launchctl print {domain}/{LABEL})"));
     Ok(())
 }
 
@@ -458,7 +454,7 @@ fn check_daemon(ctx: &Ctx) -> State {
 fn apply_daemon(ctx: &Ctx, _: &[String], log: Log) -> Result<()> {
     if let State::Done(_) = check_service(ctx) {
         #[cfg(target_os = "macos")]
-        let _ = Command::new("sudo").args(["launchctl", "kickstart", "-k", &format!("system/{LABEL}")]).status();
+        let _ = Command::new("launchctl").args(["kickstart", "-k", &format!("{}/{LABEL}", tray_domain())]).status();
         #[cfg(target_os = "linux")]
         let _ = Command::new("systemctl").args(["--user", "restart", "rosterd"]).status();
     } else {
