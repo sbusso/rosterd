@@ -189,20 +189,25 @@ impl RosterMcp {
     fn session_name(&self, context: &RequestContext<RoleServer>, args: &Value) -> Result<Value, ApiError> {
         let key = self.caller(context)?;
         let name = args.get("name").and_then(Value::as_str).map(String::from);
-        Ok(serde_json::to_value(self.node.roster.set_name(&key, name, Source::Hook)?)?)
+        let record = self.node.roster.set_name(&key, name.clone(), Source::Hook)?;
+        self.node.journal.action("name", Some(key), Some("local".into()), json!({ "name": name }));
+        Ok(serde_json::to_value(record)?)
     }
 
     /// R5.4: a child session under the caller; the same operation as `POST /sessions/{key}/spawn`.
     async fn session_spawn(&self, context: &RequestContext<RoleServer>, args: &Value) -> Result<Value, ApiError> {
         let key = self.caller(context)?;
         let body: SpawnBody = serde_json::from_value(args.clone()).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e.to_string()))?;
-        spawn_child(&self.node, &key, body).await
+        spawn_child(&self.node, &key, body, Some("local".into())).await
     }
 
     async fn session_prompt(&self, args: &Value) -> Result<Value, ApiError> {
         let key = arg(args, "session_key")?;
         let request: PromptRequest = serde_json::from_value(args.clone()).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e.to_string()))?;
-        prompt_session(&self.node, key, request).await
+        let detail = json!({ "prompt": super::routes::brief(&request.prompt) });
+        let outcome = prompt_session(&self.node, key, request).await?;
+        self.node.journal.action("prompt", Some(key.to_string()), Some("local".into()), detail);
+        Ok(outcome)
     }
 
     /// R5.5 agent to agent: the caller, when known, may not send to itself.

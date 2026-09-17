@@ -153,6 +153,16 @@ harness session under a new key, at the same cwd path, which must exist there. O
 the record here end with reason `handed_off`; a refused import leaves it suspended here. Clients
 follow the `session_id`, not the key or the node. R15.5.
 
+## Journal
+
+Every node keeps an append-only log of what happened on it: sessions started, ended, needing
+attention, renamed, and what the API did (prompt, allow, deny, name, suspend, resume, spawn,
+stop) and who asked. `rosterd journal` prints it, `--swarm` merges every node's, `--follow`
+keeps going live, `--session KEY` narrows to one session. A client that was down replays from
+the last `seq` it saw with `GET /journal?since=` or `GET /swarm/changes?since=`. One JSON line
+per entry under the state directory, one file per day, kept `[journal] keep_days` (30). It is a
+lifecycle log, never a transcript.
+
 ## CLI
 
 One binary, R14. `rosterd` alone prints help; everything but `daemon` talks to the local socket.
@@ -164,6 +174,8 @@ Every command takes `--json`, which prints the API frame for the resource byte f
 rosterd list|watch [--swarm|--node N]      one row per session; watch reprints on every change
 rosterd changes                            one line per change across the swarm
 rosterd attention                          the sessions waiting on a human, with the request
+rosterd journal [--swarm] [--since SEQ | --after TIME] [--session KEY] [--follow]
+                                           what happened: changes and API actions, replayable
 rosterd status | nodes                     this node; swarm membership and health
 rosterd usage [--swarm] [--since 7d]       tokens and cost per day, harness and model
 rosterd read KEY | explain KEY             one session in full; which source set each field

@@ -63,7 +63,9 @@ pub async fn send(node: &Node, from: Option<&str>, body: SendBody) -> Result<Val
         wait_until: Some(body.wait_until.unwrap_or(WaitUntil::Idle)),
         timeout_ms: Some(body.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
     };
+    let detail = json!({ "from": from, "prompt": super::routes::brief(&request.prompt) });
     let outcome = prompt_session(node, &key, request).await?;
+    node.journal.action("send", Some(key.clone()), Some("local".into()), detail);
     // After a resume, R15.3, the session answers under a new key.
     let key = outcome["record"]["session_key"].as_str().unwrap_or(&key).to_string();
     let state = state_of(node, &key).await.unwrap_or(Value::Null);

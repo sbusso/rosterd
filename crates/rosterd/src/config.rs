@@ -14,6 +14,7 @@ pub struct Config {
     pub swarm: SwarmConfig,
     pub runner: RunnerConfig,
     pub sources: SourcesConfig,
+    pub journal: JournalConfig,
     /// `[harness.claude] adapter = "claude-agent-acp"`.
     pub harness: BTreeMap<String, HarnessConfig>,
 }
@@ -103,6 +104,19 @@ pub struct SourcesConfig {
 impl Default for SourcesConfig {
     fn default() -> Self {
         SourcesConfig { files: false, scan_interval_ms: 2000 }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JournalConfig {
+    /// R18. Daily journal files older than this are deleted.
+    pub keep_days: u32,
+}
+
+impl Default for JournalConfig {
+    fn default() -> Self {
+        JournalConfig { keep_days: 30 }
     }
 }
 
@@ -275,6 +289,7 @@ adapter = "claude-agent-acp"
         assert_eq!(config.runner.default_permission_policy, PermissionPolicy::Auto);
         assert_eq!(config.harness["claude"].adapter, "claude-agent-acp");
         assert_eq!(config.sources.scan_interval_ms, 2000);
+        assert_eq!(config.journal.keep_days, 30);
 
         std::fs::write(&path, "[node]\nlisten = \"0.0.0.0\"\n").unwrap();
         assert!(Config::load(&path).is_err());

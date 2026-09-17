@@ -9,6 +9,7 @@ mod doctor;
 mod gate;
 mod identity;
 mod integrate;
+mod journal;
 mod mesh;
 mod node;
 mod roster;
@@ -96,12 +97,14 @@ async fn serve(config_path: PathBuf) -> Result<()> {
     roster.persist_seqs(state_dir().join("seqs.json"));
     let mesh = mesh::Mesh::new(config.clone(), identity.clone(), roster.clone(), VERSION)?;
     let runner = runner::Runner::new(config.clone(), roster.clone());
+    let journal = journal::Journal::open(state_dir().join("journal"), &config.node.name, &identity.node_id, config.journal.keep_days);
     let node = Arc::new(Node {
         config: config.clone(),
         identity,
         roster: roster.clone(),
         mesh: mesh.clone(),
         runner: runner.clone(),
+        journal: journal.clone(),
         loopback_token: loopback_token()?,
         usage_roots: usage::Roots::home(),
     });
@@ -111,6 +114,7 @@ async fn serve(config_path: PathBuf) -> Result<()> {
         tokio::spawn(keep_tray());
     }
     tokio::spawn(mesh.clone().run());
+    tokio::spawn(journal.run(roster.clone()));
     if let Err(error) = runner.recover().await {
         tracing::error!(%error, "holder recovery failed; the roster still answers, R2");
     }

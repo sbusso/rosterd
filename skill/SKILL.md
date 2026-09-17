@@ -65,6 +65,12 @@ rosterd changes --json                          GET /swarm/changes: the snapshot
                                                 attention, attention_cleared, activity, ...)
 rosterd attention --json                        [{record, session}] per session waiting on a
                                                 human (needs_attention, not ended); empty when none
+rosterd journal [--swarm] [--since SEQ | --after TIME] [--session KEY] [--follow] --json
+                                                the journal, one entry per line: this node's
+                                                changes (`kind: change`, `event`, `record`) and
+                                                API actions (`kind: action`, `action`, `by`,
+                                                `detail`); keep the last `seq`, pass it as
+                                                --since to catch up after being away
 rosterd status --json                           node, listeners, swarm, counts
 rosterd nodes --json                            membership, reachability, harness health
 rosterd usage [--swarm] [--since 7d] --json     GET /usage or /swarm/usage: tokens and cost per
