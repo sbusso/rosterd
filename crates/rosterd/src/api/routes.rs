@@ -18,7 +18,7 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
-use rosterd_proto::{Activity, HerdrHandle, Lane, Liveness, NodeUsage, PeerState, PermissionPolicy, Record, Source, SwarmUsage, TmuxHandle};
+use rosterd_proto::{Activity, HarnessState, HerdrHandle, Lane, Liveness, NodeUsage, PeerState, PermissionPolicy, Record, Source, SwarmUsage, TmuxHandle};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -94,6 +94,12 @@ impl From<RunnerError> for ApiError {
                 return refused;
             }
             RunnerError::Roster(error) => return ApiError::from(error),
+            // R7.7: the harness cannot work here right now; the body carries the mark.
+            RunnerError::Unhealthy(ref health) => {
+                let mut refused = ApiError::new(StatusCode::CONFLICT, error.to_string());
+                refused.details.insert("health".into(), json!(health));
+                return refused;
+            }
             RunnerError::AuthRequired => StatusCode::UNAUTHORIZED,
             RunnerError::Acp(_) | RunnerError::Holder(_) | RunnerError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -282,7 +288,18 @@ async fn claim(State(node): State<Arc<Node>>, Body(body): Body<ClaimBody>) -> Re
         }
     };
     let at = body.observed_at.unwrap_or_else(Utc::now);
-    Ok(Json(node.roster.claim(source, &key, body.activity, &body.event, at)?))
+    let record = node.roster.claim(source, &key, body.activity, &body.event, at)?;
+    // R7.7: a hook that saw its harness ask for a login marks the harness, as the runner does
+    // on session/new; a later working claim from that harness clears the login mark only.
+    if source == Source::Hook {
+        let login = node.runner.health.get(&record.harness, at).is_some_and(|h| h.state == HarnessState::LoginRequired);
+        if body.event == "login" {
+            node.runner.mark(&record.harness, HarnessState::LoginRequired, None, Some("hook: login".into()));
+        } else if login && body.activity != Activity::NeedsAttention {
+            node.runner.healthy(&record.harness);
+        }
+    }
+    Ok(Json(record))
 }
 
 #[derive(serde::Deserialize)]
@@ -345,6 +362,7 @@ async fn status(State(node): State<Arc<Node>>) -> Json<Value> {
         "holders": open().filter(|r| node.runner.owns(&r.session_key)).count(),
         "suspended": open().filter(|r| r.liveness == Liveness::Suspended).count(),
         "sources": sources,
+        "health": snapshot.capabilities.health,
     }))
 }
 
@@ -846,5 +864,10 @@ mod tests {
         assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(error.details["retry_after_s"], json!(42));
         assert_eq!(ApiError::from(RunnerError::Suspended("k".into())).status, StatusCode::CONFLICT);
+        let mark = rosterd_proto::HarnessHealth { harness: "claude".into(), state: HarnessState::LoginRequired, since: Utc::now(), until: None, detail: Some("hook: login".into()) };
+        let error = ApiError::from(RunnerError::Unhealthy(mark));
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        assert!(error.message.starts_with("harness claude is login_required on this node since "), "{}", error.message);
+        assert_eq!(error.details["health"]["state"], "login_required");
     }
 }

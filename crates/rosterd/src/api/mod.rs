@@ -553,6 +553,39 @@ mod tests {
         assert_eq!(status["sources"], json!(["launcher", "acp", "hook", "scan"]));
     }
 
+    /// R7.7 over the socket: a hook's login claim marks the harness, /swarm/nodes and /status
+    /// show it, POST /sessions answers 409 with the mark, and a working claim clears it.
+    #[tokio::test]
+    async fn a_login_claim_marks_the_harness_and_starts_are_refused() {
+        let h = start("health").await;
+        let pid = std::process::id();
+        let ticks = crate::scanner::start_ticks(pid).unwrap();
+        let register = json!({ "source": "hook", "pid": pid, "start_ticks": ticks, "harness": "claude", "lane": "interactive" });
+        h.socket.post("http://rosterd/register").json(&register).send().await.unwrap().error_for_status().unwrap();
+        let claim = |activity: &str, event: &str| json!({ "pid": pid, "start_ticks": ticks, "activity": activity, "event": event });
+        h.socket.post("http://rosterd/claim").json(&claim("needs_attention", "login")).send().await.unwrap().error_for_status().unwrap();
+
+        let nodes: Value = h.socket.get("http://rosterd/swarm/nodes").send().await.unwrap().json().await.unwrap();
+        assert_eq!(nodes[0]["capabilities"]["health"][0]["harness"], "claude");
+        assert_eq!(nodes[0]["capabilities"]["health"][0]["state"], "login_required");
+        assert_eq!(nodes[0]["capabilities"]["health"][0]["detail"], "hook: login");
+        let status: Value = h.socket.get("http://rosterd/status").send().await.unwrap().json().await.unwrap();
+        assert_eq!(status["health"][0]["state"], "login_required");
+
+        let refused = h.socket.post("http://rosterd/sessions").json(&json!({ "harness": "claude" })).send().await.unwrap();
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        let body: Value = refused.json().await.unwrap();
+        assert!(body["error"].as_str().unwrap().starts_with("harness claude is login_required on this node since "), "{body}");
+        assert_eq!(body["health"]["state"], "login_required");
+
+        // The harness works again: the mark goes, and the start fails for the usual reason.
+        h.socket.post("http://rosterd/claim").json(&claim("active", "prompt")).send().await.unwrap().error_for_status().unwrap();
+        let nodes: Value = h.socket.get("http://rosterd/swarm/nodes").send().await.unwrap().json().await.unwrap();
+        assert_eq!(nodes[0]["capabilities"]["health"], json!([]));
+        let unknown = h.socket.post("http://rosterd/sessions").json(&json!({ "harness": "claude" })).send().await.unwrap();
+        assert_eq!(unknown.status(), StatusCode::BAD_REQUEST);
+    }
+
     #[tokio::test]
     async fn mcp_lists_tools_and_names_the_caller() {
         let h = start("mcp").await;

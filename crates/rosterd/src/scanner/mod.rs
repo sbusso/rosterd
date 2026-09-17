@@ -340,10 +340,10 @@ async fn pass(roster: &Roster, names: &BTreeMap<String, String>) {
         }
     }
 
-    let mut capabilities = roster.snapshot().capabilities.clone();
-    capabilities.tmux = tmux_present;
-    capabilities.herdr = !sockets.is_empty();
-    roster.set_capabilities(capabilities);
+    roster.update_capabilities(|c| {
+        c.tmux = tmux_present;
+        c.herdr = !sockets.is_empty();
+    });
 
     roster.sweep(now - chrono::Duration::from_std(KEEP_ENDED).unwrap_or_default());
 }

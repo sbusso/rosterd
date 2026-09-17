@@ -306,10 +306,14 @@ impl Roster {
         table.entries.contains_key(&resolved).then_some(resolved)
     }
 
-    pub fn set_capabilities(&self, capabilities: Capabilities) {
+    /// Read-modify-write under the lock, so the scanner's tmux flag and the runner's health
+    /// never overwrite each other. Publishes only on a change.
+    pub fn update_capabilities(&self, f: impl FnOnce(&mut Capabilities)) {
         let mut table = self.table.write().unwrap();
-        if table.capabilities != capabilities {
-            table.capabilities = capabilities;
+        let mut next = table.capabilities.clone();
+        f(&mut next);
+        if next != table.capabilities {
+            table.capabilities = next;
             self.publish(&mut table);
         }
     }
@@ -774,9 +778,11 @@ mod tests {
         assert_eq!(r.snapshot().seq, 2, "the value was refused but scan joined sources");
         r.apply(Source::Scan, cwd(20, "/b")).unwrap();
         assert_eq!(r.snapshot().seq, 2, "a refused value from a known source is not a change");
-        r.set_capabilities(Capabilities { tmux: true, ..Capabilities::default() });
+        r.update_capabilities(|c| c.tmux = true);
         assert_eq!(r.snapshot().seq, 3);
         assert!(r.snapshot().capabilities.tmux);
+        r.update_capabilities(|c| c.tmux = true);
+        assert_eq!(r.snapshot().seq, 3, "same capabilities, nothing published");
         // Sorted by started_at then key.
         let early = Utc::now() - chrono::Duration::hours(1);
         r.apply(Source::Hook, Patch { started_at: Some(early), ..patch(21) }).unwrap();
