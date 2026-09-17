@@ -1,9 +1,17 @@
 import SwiftUI
+import UserNotifications
 
 @main
 struct RosterdApp: App {
     @State private var client = Client()
+    @State private var notifier: Notifier
     @State private var scanning = false
+
+    init() {
+        let notifier = Notifier()
+        _notifier = State(initialValue: notifier)
+        UNUserNotificationCenter.current().delegate = notifier
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -11,6 +19,7 @@ struct RosterdApp: App {
                 if client.paired { RosterView(scanning: $scanning) } else { PairView(onLink: client.pair) }
             }
             .environment(client)
+            .environment(notifier)
             .preferredColorScheme(.dark)
             .tint(Color.link)
             // The Camera app opens rosterd://pair links here too; the same link the in-app scanner reads.
@@ -37,5 +46,20 @@ extension Color {
         case "unknown": Color(red: 0.42, green: 0.42, blue: 0.451)
         default: Color(red: 0.333, green: 0.333, blue: 0.361)
         }
+    }
+}
+
+/// The notification taps, R9: the session key the roster opens next. Banners show in the
+/// foreground too.
+@Observable final class Notifier: NSObject, UNUserNotificationCenterDelegate {
+    var open: String?
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        let key = response.notification.request.content.userInfo["session_key"] as? String
+        await MainActor.run { open = key }
     }
 }

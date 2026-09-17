@@ -4,6 +4,7 @@
 //!
 //! OWNER: the cli agent.
 
+mod attention;
 mod client;
 mod list;
 mod resolve;
@@ -61,6 +62,8 @@ pub enum Command {
     },
     /// One line per change across the swarm; Ctrl+C stops.
     Changes,
+    /// The sessions waiting on a human and what each waits on; nothing when none.
+    Attention,
     /// Node, version, listeners, swarm, holders, sources.
     Status,
     /// Swarm membership and health.
@@ -210,6 +213,7 @@ pub async fn run(command: Command, config_path: &Path, json: bool) -> Out<()> {
         Command::List { scope } => list::list(&client, &scope, json).await,
         Command::Watch { scope } => list::watch(&client, &scope, json).await,
         Command::Changes => list::changes(&client, json).await,
+        Command::Attention => attention::attention(&client, json).await,
         Command::Status => status(&client, json).await,
         Command::Nodes => nodes(&client, json).await,
         Command::Invite { ttl } => {
