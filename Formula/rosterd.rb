@@ -5,15 +5,9 @@
 class Rosterd < Formula
   desc "One daemon per machine that knows every coding agent session on it"
   homepage "https://github.com/sbusso/rosterd"
-  url "https://github.com/sbusso/rosterd/releases/download/v0.1.15/rosterd-0.1.15-aarch64-apple-darwin.tar.gz"
-  sha256 "13a7bae12e4f3a2fae9819c6866b3095594883d934864dbdbe68fd1ac0c2ec97"
+  url "https://github.com/sbusso/rosterd/releases/download/v0.1.16/rosterd-0.1.16-aarch64-apple-darwin.tar.gz"
+  sha256 "60d2ab81e3ad89f7884e0fa396dc93b31b1e7ab22d35dc530439dcd5510023b8"
   license "MIT"
-  # The bottle is what lets a Mac install without a compiler toolchain: `brew bottle` of the
-  # tarball install, uploaded next to it on the release.
-  bottle do
-    root_url "https://github.com/sbusso/rosterd/releases/download/v0.1.15"
-    sha256 arm64_tahoe: "b68d7274e85bff0615c6c93b48c7d54b608175ffe1bb1fab1e639202c2e21727"
-  end
   # The bottle is what lets a Mac install without a compiler toolchain: `brew bottle` of the
   # tarball install, uploaded next to it on the release.
   head do
