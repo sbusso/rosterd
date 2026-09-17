@@ -257,6 +257,44 @@ pub fn session_key(node_id: &str, pid: u32, start_ticks: u64) -> String {
     format!("{node_id}:{pid}:{start_ticks}")
 }
 
+/// Whether a harness on a node can work right now, R7.7. Observed, never managed: rosterd
+/// holds no credentials (R12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessState {
+    Ok,
+    /// The agent refused a session for want of a login on its node.
+    LoginRequired,
+    /// A turn ended on a rate limit or quota error; transient, starts are still accepted.
+    RateLimited,
+    /// The adapter cannot be spawned or exits before initialize.
+    Broken,
+}
+
+impl std::fmt::Display for HarnessState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            HarnessState::Ok => "ok",
+            HarnessState::LoginRequired => "login_required",
+            HarnessState::RateLimited => "rate_limited",
+            HarnessState::Broken => "broken",
+        })
+    }
+}
+
+/// One harness that is not ok on a node, R7.7. Only non-ok entries travel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnessHealth {
+    pub harness: String,
+    pub state: HarnessState,
+    pub since: DateTime<Utc>,
+    /// When the mark expires on its own; none means until cleared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
 /// What a node knows about the harnesses on it, R7.2.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Capabilities {
@@ -268,6 +306,9 @@ pub struct Capabilities {
     pub herdr: bool,
     #[serde(default)]
     pub tmux: bool,
+    /// Harnesses that cannot work right now, R7.7; empty means all ok.
+    #[serde(default)]
+    pub health: Vec<HarnessHealth>,
 }
 
 /// The complete roster of one node. Every emission is the whole table, never a diff.
@@ -412,7 +453,8 @@ pub enum Change {
     /// Any other accepted claim.
     Activity { at: DateTime<Utc>, record: SwarmRecord },
     Renamed { at: DateTime<Utc>, record: SwarmRecord },
-    /// A node appeared, went unreachable, or came back; `node.state` is the state now.
+    /// A node appeared, went unreachable, or came back, or the health of its harnesses
+    /// changed; `node.state` and `node.capabilities.health` are the state now.
     Node { at: DateTime<Utc>, node: NodeHealth },
     NodeLeft { at: DateTime<Utc>, node: NodeHealth },
 }
@@ -476,7 +518,7 @@ pub fn changes(prev: &SwarmSnapshot, next: &SwarmSnapshot) -> Vec<Change> {
     }
     let nodes_before: HashMap<&str, &NodeHealth> = prev.nodes.iter().map(|n| (n.node_id.as_str(), n)).collect();
     for n in &next.nodes {
-        if nodes_before.get(n.node_id.as_str()).is_none_or(|old| old.state != n.state) {
+        if nodes_before.get(n.node_id.as_str()).is_none_or(|old| old.state != n.state || old.capabilities.health != n.capabilities.health) {
             out.push(Change::Node { at, node: n.clone() });
         }
     }
@@ -569,10 +611,15 @@ mod tests {
             node_id: id.into(), name: id.into(), address: None, state, peer_age_ms: 0, seen_ms: None, uptime_ms: None,
             version: None, capabilities: Capabilities::default(), revoked: false,
         };
+        let unhealthy = |id: &str, state: PeerState| {
+            let mut n = node(id, state);
+            n.capabilities.health.push(HarnessHealth { harness: "claude".into(), state: HarnessState::LoginRequired, since: Utc::now(), until: None, detail: None });
+            n
+        };
         let frame = |records: Vec<SwarmRecord>, nodes: Vec<NodeHealth>| SwarmSnapshot { schema: SWARM_SCHEMA.into(), generated_at: Utc::now(), nodes, records };
         let prev = frame(
             vec![rec("k1", Activity::Active, 1, Liveness::Live), rec("k2", Activity::NeedsAttention, 4, Liveness::Live), rec("k3", Activity::Idle, 2, Liveness::Live), rec("k5", Activity::Idle, 1, Liveness::Live)],
-            vec![node("a", PeerState::Local), node("b", PeerState::Reachable), node("c", PeerState::Reachable)],
+            vec![node("a", PeerState::Local), node("b", PeerState::Reachable), node("c", PeerState::Reachable), node("e", PeerState::Reachable)],
         );
         let next = frame(
             vec![
@@ -583,14 +630,15 @@ mod tests {
                 rec("k5", Activity::Idle, 1, Liveness::Ended),
                 rec("k6", Activity::Idle, 1, Liveness::Ended),
             ],
-            vec![node("a", PeerState::Local), node("b", PeerState::Unreachable), node("d", PeerState::Reachable)],
+            // e is still reachable but claude needs a login there: a node change too.
+            vec![node("a", PeerState::Local), node("b", PeerState::Unreachable), node("d", PeerState::Reachable), unhealthy("e", PeerState::Reachable)],
         );
         let names: Vec<&str> = changes(&prev, &next).iter().map(Change::name).collect();
-        assert_eq!(names, ["attention", "attention_cleared", "session_suspended", "session_started", "session_ended", "node", "node", "node_left"]);
+        assert_eq!(names, ["attention", "attention_cleared", "session_suspended", "session_started", "session_ended", "node", "node", "node", "node_left"]);
         // The same claim twice is no change; a new claim while still waiting is attention again.
         assert!(changes(&next, &next).is_empty());
         let again = frame(vec![rec("k1", Activity::NeedsAttention, 3, Liveness::Live)], vec![]);
-        assert_eq!(changes(&next, &again).iter().map(Change::name).collect::<Vec<_>>(), ["attention", "node_left", "node_left", "node_left"]);
+        assert_eq!(changes(&next, &again).iter().map(Change::name).collect::<Vec<_>>(), ["attention", "node_left", "node_left", "node_left", "node_left"]);
         let json = serde_json::to_value(&changes(&prev, &next)[0]).unwrap();
         assert_eq!((json["event"].as_str(), json["record"]["session_key"].as_str()), (Some("attention"), Some("k1")));
     }

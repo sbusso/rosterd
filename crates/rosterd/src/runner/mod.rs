@@ -11,6 +11,7 @@
 mod acp;
 #[cfg(test)]
 mod e2e_test;
+pub mod health;
 mod holder;
 mod session;
 
@@ -21,13 +22,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, TimeZone, Utc};
-use rosterd_proto::{Activity, EndedReason, HolderHandle, HolderState, Lane, Liveness, PermissionPolicy, Record, Source};
+use rosterd_proto::{Activity, EndedReason, HarnessHealth, HarnessState, HolderHandle, HolderState, Lane, Liveness, PermissionPolicy, Record, Source};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::config::{Config, config_dir};
 use crate::roster::{Patch, Roster, RosterError};
+use health::Health;
 use holder::Paths;
 use session::{Effect, Session};
 
@@ -190,6 +192,9 @@ pub enum RunnerError {
     Acp(String),
     #[error("the agent wants a login on its node first")]
     AuthRequired,
+    /// R7.7: the harness cannot work on this node right now; `start` refuses without launching.
+    #[error("harness {} is {} on this node since {}{}", .0.harness, .0.state, .0.since.format("%H:%M:%SZ"), .0.detail.as_deref().map(|d| format!(": {d}")).unwrap_or_default())]
+    Unhealthy(HarnessHealth),
     #[error("holder: {0}")]
     Holder(String),
     #[error(transparent)]
@@ -261,6 +266,8 @@ pub struct Runner {
     // ponytail: one lock for all keys; resumes are rare and take a second.
     resuming: tokio::sync::Mutex<()>,
     idle_tick_ms: AtomicU64,
+    /// R7.7: per-harness health on this node, mirrored into the roster's capabilities.
+    pub health: Health,
 }
 
 impl Runner {
@@ -274,6 +281,7 @@ impl Runner {
             resumes: Mutex::new(HashMap::new()),
             resuming: tokio::sync::Mutex::new(()),
             idle_tick_ms: AtomicU64::new(IDLE_TICK.as_millis() as u64),
+            health: Health::default(),
         })
     }
 
@@ -309,9 +317,32 @@ impl Runner {
         Ok(())
     }
 
-    /// R5.1.
+    /// R5.1. Refused fast, R7.7, when the harness needs a login or is broken here; a rate
+    /// limit is transient and the start goes ahead.
     pub async fn start(self: &Arc<Self>, req: StartSession) -> Result<Record, RunnerError> {
+        if let Some(health) = self.health.get(&req.harness, Utc::now()).filter(|h| matches!(h.state, HarnessState::LoginRequired | HarnessState::Broken)) {
+            return Err(RunnerError::Unhealthy(health));
+        }
         self.launch(req, None, None).await
+    }
+
+    /// R7.7: marks `harness` and pushes the list into the roster's capabilities, so peers see it
+    /// in the next snapshot.
+    pub fn mark(&self, harness: &str, state: HarnessState, until: Option<DateTime<Utc>>, detail: Option<String>) {
+        tracing::info!(harness, %state, ?until, ?detail, "harness health, R7.7");
+        self.health.set(harness, state, until, detail);
+        self.publish_health();
+    }
+
+    /// R7.7: the harness worked; whatever mark it had goes.
+    pub fn healthy(&self, harness: &str) {
+        self.health.clear(harness);
+        self.publish_health();
+    }
+
+    fn publish_health(&self) {
+        let health = self.health.render(Utc::now());
+        self.roster.update_capabilities(|c| c.health = health);
     }
 
     /// What `start` would do differently from what was asked, R16.1. The caller prints these.
@@ -347,7 +378,12 @@ impl Runner {
         };
         let session_key = session_key.as_str();
         let text = req.prompt;
-        let turn = tokio::spawn(async move { session.prompt(&text).await });
+        let runner = self.clone();
+        let turn = tokio::spawn(async move {
+            let outcome = session.prompt(&text).await;
+            runner.note_turn(&session.harness, &outcome);
+            outcome
+        });
         let join = |turn: Turn| async { turn.await.map_err(|e| RunnerError::Acp(e.to_string()))? };
         let timeout = Duration::from_millis(req.timeout_ms.unwrap_or(0));
         let (reached, outcome) = match req.wait_until {
@@ -588,6 +624,11 @@ impl Runner {
             effort: req.effort.clone(),
         };
         let meta = serde_json::to_value(&meta).expect("meta");
+        // R7.7: nothing before initialize answered means the adapter cannot run here.
+        let broken = |error: RunnerError| {
+            self.mark(&req.harness, HarnessState::Broken, None, Some(error.to_string()));
+            error
+        };
         let (holder_pid, reaper) = holder::spawn(holder::Launch {
             bin: &holder::holder_bin(&self.config),
             paths: &paths,
@@ -597,7 +638,8 @@ impl Runner {
             adapter: &harness.adapter,
             args: &harness.args,
             env: &env,
-        })?;
+        })
+        .map_err(broken)?;
         let started = async {
             let state = holder::wait_state(&paths, &reaper, HOLDER_START_TIMEOUT).await?;
             let stream = holder::connect_retry(&paths.socket, 40).await.map_err(|e| RunnerError::Holder(format!("connect {}: {e}", paths.socket.display())))?;
@@ -613,10 +655,14 @@ impl Runner {
             Err(error) => {
                 holder::terminate(holder_pid);
                 paths.clean();
-                return Err(error);
+                return Err(broken(error));
             }
         };
-        if let Err(error) = self.handshake(&session, &cwd.to_string_lossy(), resume, req.effort.as_deref()).await {
+        let handshake = async {
+            session.initialize().await.map_err(broken)?;
+            self.handshake(&session, &cwd.to_string_lossy(), resume, req.effort.as_deref()).await
+        };
+        if let Err(error) = handshake.await {
             tracing::error!(key = %session.key, %error, "ACP handshake failed; stopping the holder");
             session.stopping.store(true, std::sync::atomic::Ordering::Relaxed);
             holder::terminate(session.holder_pid);
@@ -632,10 +678,9 @@ impl Runner {
         self.record(&session.key)
     }
 
-    /// initialize, then session/new or session/load, R5.1 and R2.2, then the effort option
+    /// After initialize: session/new or session/load, R5.1 and R2.2, then the effort option
     /// when the agent advertises one. A loaded session starts idle: nothing is running in it.
     async fn handshake(&self, session: &Arc<Session>, cwd: &str, resume: Option<String>, effort: Option<&str>) -> Result<(), RunnerError> {
-        session.initialize().await?;
         let mcp = self.mcp_servers(&session.key);
         let loaded = resume.is_some();
         let answer = match resume {
@@ -648,11 +693,14 @@ impl Runner {
                 // ponytail: no auth/authenticate relay; log in on the node, then stop and start again.
                 Err(RunnerError::AuthRequired) => {
                     session.need_login();
+                    self.mark(&session.harness, HarnessState::LoginRequired, None, Some("session/new: authentication required".into()));
                     return Ok(());
                 }
                 answer => answer?,
             },
         };
+        // The harness answered with a session: whatever mark it had is stale, R7.7.
+        self.healthy(&session.harness);
         if let Some(effort) = effort {
             match acp::effort_option(&answer) {
                 Some(id) => session.set_config_option(&id, effort).await?,
@@ -842,6 +890,19 @@ impl Runner {
         }
     }
 
+    /// R7.7: a turn that ended on a rate limit marks the harness until the error's own deadline
+    /// or `DEFAULT_TTL`; a turn that completed clears whatever mark it had.
+    fn note_turn<T>(&self, harness: &str, outcome: &Result<T, RunnerError>) {
+        match outcome {
+            Ok(_) => self.healthy(harness),
+            Err(RunnerError::Acp(message)) if health::rate_limited(message) => {
+                let until = health::retry_at(message, Utc::now());
+                self.mark(harness, HarnessState::RateLimited, until, Some(message.clone()));
+            }
+            Err(_) => {}
+        }
+    }
+
     fn ended(self: &Arc<Self>, session: &Arc<Session>, reason: EndedReason) {
         self.sessions.lock().unwrap().remove(&session.key);
         if let Err(error) = self.roster.end(&session.key, reason, Utc::now()) {
@@ -870,6 +931,8 @@ impl Runner {
     async fn sweep_idle(self: Arc<Self>) {
         loop {
             tokio::time::sleep(Duration::from_millis(self.idle_tick_ms.load(Ordering::Relaxed))).await;
+            // R7.7: an expired mark leaves the snapshot on the next tick.
+            self.publish_health();
             let sessions: Vec<Arc<Session>> = self.sessions.lock().unwrap().values().cloned().collect();
             let now = Utc::now();
             for session in sessions {

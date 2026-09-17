@@ -27,6 +27,11 @@ Every record carries one of four words, from the last accepted claim, never a gu
 | `needs_attention` | a permission request, a question or a login is waiting on a human |
 | `unknown` | no claim yet |
 
+A node whose harness is `login_required` or `broken` refuses `rosterd start` and `session.spawn`
+for that harness with 409; check `swarm.nodes` (or `rosterd nodes --json`): each node's
+`capabilities.health` lists the harnesses that cannot work right now, with `state`, `since`,
+`until` and `detail`. Empty means all ok. `rate_limited` is transient and still starts.
+
 A record with `liveness: "suspended"` is a headless session whose holder was stopped on
 purpose (idle timeout or `rosterd suspend`): no process, `session_id` kept. A prompt resumes
 it under a new `session_key` with the same `session_id`. `liveness: "ended"`
@@ -45,7 +50,7 @@ rosterd changes --json                          GET /swarm/changes: the snapshot
                                                 change per line (`event`: session_started,
                                                 attention, attention_cleared, activity, ...)
 rosterd status --json                           node, listeners, swarm, counts
-rosterd nodes --json                            membership and reachability
+rosterd nodes --json                            membership, reachability, harness health
 rosterd read KEY --json                         the record, runtime state, pending request, children
 rosterd explain KEY --json                      which source set each field; rejected claims
 rosterd start --harness H --cwd DIR [--name L] [--policy auto|attention] [--model M]

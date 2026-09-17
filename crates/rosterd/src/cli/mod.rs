@@ -278,6 +278,12 @@ async fn status(client: &Client, json: bool) -> Out<()> {
     println!("sessions  {}", text("sessions"));
     println!("holders   {} ({} suspended)", count(&["holders"]), count(&["suspended"]));
     println!("sources   {sources}");
+    // R7.7: only the harnesses that cannot work right now.
+    for mark in status["health"].as_array().into_iter().flatten() {
+        let word = |key: &str| mark[key].as_str().unwrap_or("-");
+        let detail = mark["detail"].as_str().map(|d| format!(": {d}")).unwrap_or_default();
+        println!("health    {} {} since {}{}{detail}", word("harness"), word("state"), word("since"), mark["until"].as_str().map(|u| format!(" until {u}")).unwrap_or_default());
+    }
     Ok(())
 }
 
@@ -306,6 +312,7 @@ fn nodes_table(nodes: &[NodeHealth]) -> String {
                 node.address.clone().unwrap_or_else(|| "-".into()),
                 node.version.clone().unwrap_or_else(|| "-".into()),
                 node.capabilities.harnesses.join(","),
+                harness_health(&node.capabilities),
                 state.into(),
                 node.seen_ms.map(|ms| rosterd_proto::age(ms / 1000)).unwrap_or_else(|| "-".into()),
                 node.uptime_ms.map(|ms| rosterd_proto::age(ms / 1000)).unwrap_or_else(|| "-".into()),
@@ -314,7 +321,16 @@ fn nodes_table(nodes: &[NodeHealth]) -> String {
             (cells, false)
         })
         .collect::<Vec<_>>();
-    table(&["NAME", "NODE_ID", "ADDRESS", "VERSION", "HARNESSES", "STATE", "SEEN", "UP", "REVOKED"], &rows)
+    table(&["NAME", "NODE_ID", "ADDRESS", "VERSION", "HARNESSES", "HEALTH", "STATE", "SEEN", "UP", "REVOKED"], &rows)
+}
+
+/// `claude login_required · codex ok`, R7.7; `-` when the node names no harness.
+fn harness_health(capabilities: &rosterd_proto::Capabilities) -> String {
+    if capabilities.harnesses.is_empty() {
+        return "-".into();
+    }
+    let word = |h: &str| capabilities.health.iter().find(|m| m.harness == h).map_or(rosterd_proto::HarnessState::Ok, |m| m.state);
+    capabilities.harnesses.iter().map(|h| format!("{h} {}", word(h))).collect::<Vec<_>>().join(" · ")
 }
 
 /// `doctor`, R14.3: `pass  name: detail` or `FIX   name: detail → fix`; exit 1 when any fails.

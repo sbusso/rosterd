@@ -135,6 +135,15 @@ rosterd leave             # take this node out
 Tailscale ACLs are the network boundary, the swarm key the application boundary. Windows joins
 headless only: hooks, no tmux or herdr handles.
 
+Every node also reports which of its harnesses cannot work right now: `login_required` when
+the agent asked for a login, `rate_limited` when a turn ended on a rate limit or quota error,
+`broken` when the adapter does not come up. `rosterd nodes` shows it per node, `rosterd status`
+for this one, and `GET /swarm/nodes` carries it as `capabilities.health`. A start on a harness
+that needs a login or is broken is refused with 409 and the reason; a rate limit is transient
+and the start goes ahead. Marks expire on their own (five minutes unless the error named a
+time), so a login or an install on the node needs no step here. rosterd never manages the
+credentials themselves.
+
 ## CLI
 
 One binary, R14. `rosterd` alone prints help; everything but `daemon` talks to the local socket.

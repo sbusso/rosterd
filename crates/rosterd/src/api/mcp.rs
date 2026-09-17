@@ -94,7 +94,7 @@ fn tools() -> Vec<Tool> {
             "Activity, pending permission requests and the last recap of a session; never the transcript.",
             json!({ "type": "object", "properties": { "session_key": { "type": "string" } }, "required": ["session_key"] }),
         ),
-        tool("swarm.nodes", "Swarm membership with health.", json!({ "type": "object", "properties": {} })),
+        tool("swarm.nodes", "Swarm membership with health. `capabilities.health` lists the harnesses a node cannot run right now (login_required, rate_limited, broken); a start on a login_required or broken harness is refused with 409.", json!({ "type": "object", "properties": {} })),
     ]
 }
 

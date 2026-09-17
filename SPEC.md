@@ -190,7 +190,7 @@ POST /name. Set or clear a display name.
 POST /sessions, GET /sessions/{key}, PATCH, DELETE, /prompt, /cancel, /stream as in R5.
 GET /swarm/snapshot. Union of this node's roster and every peer's last snapshot, each tagged with node and peer_age_ms.
 GET /swarm/events. SSE, complete swarm snapshot on any change anywhere.
-GET /swarm/changes. SSE, the swarm snapshot once as event `snapshot`, then one event per change between consecutive frames, in the order records appear: `session_started`, `session_ended`, `session_suspended`, `attention` (an accepted claim landed on needs_attention, sent again for every new claim while it waits, `record.activity_event` names permission, question or login), `attention_cleared`, `activity`, `renamed`, each carrying `at` and the swarm record; `node` (a node joined or changed state) and `node_left` carrying the node. Pure function of two frames, so a client that missed events resyncs from the next `snapshot`.
+GET /swarm/changes. SSE, the swarm snapshot once as event `snapshot`, then one event per change between consecutive frames, in the order records appear: `session_started`, `session_ended`, `session_suspended`, `attention` (an accepted claim landed on needs_attention, sent again for every new claim while it waits, `record.activity_event` names permission, question or login), `attention_cleared`, `activity`, `renamed`, each carrying `at` and the swarm record; `node` (a node joined, changed state, or the health of its harnesses changed, R7.7) and `node_left` carrying the node. Pure function of two frames, so a client that missed events resyncs from the next `snapshot`.
 GET /swarm/nodes. Membership with health.
 Any /sessions path under /swarm/{node_id}/ is proxied to that node.
 
@@ -241,6 +241,20 @@ Any client can send an action for a session to any node. The receiving node look
 ### R7.6 Trust
 
 All node to node traffic is HTTPS on the Tailscale interface with a self signed certificate pinned to the node public key, requests signed with the sender's node key, and the swarm key required in a header. Loopback traffic uses the bearer token. Nothing listens on any other interface. A node refuses to start with a listener configured outside Tailscale and loopback.
+
+### R7.7 Harness health
+
+One word per harness per node, so a client or a coordinator skips a node whose harness cannot work right now. `capabilities.health` in the snapshot, and so in every `NodeHealth` of GET /swarm/nodes, lists only the harnesses that are not ok: `{harness, state, since, until, detail}`. An empty list means every harness is ok. Observation only: rosterd never holds or refreshes a credential (R12).
+
+| state | set when | cleared when |
+| --- | --- | --- |
+| `login_required` | session/new answers the auth error (R5.1), or a hook claims `needs_attention` with event `login` | session/new or session/load succeeds on that harness; a hook of that harness claims something other than needs_attention; `until` passes |
+| `rate_limited` | a turn ends with an error matching, case-insensitive, `rate limit`, `429`, `overloaded`, `usage limit`, `quota` | a turn completes on that harness; `until` passes |
+| `broken` | the adapter cannot be spawned, or exits before initialize answers | session/new or session/load succeeds; `until` passes |
+
+`until` is the deadline the error carries (`retry-after` seconds, `resets at` timestamp) when it does, otherwise five minutes from the mark. Every mark expires: the daemon cannot see a login or an install happen, so the next start after the deadline probes the harness again and either clears the mark or sets it afresh. `since` is kept while the state is unchanged.
+
+POST /sessions for a harness in `login_required` or `broken` answers 409 with `{error, health}` without launching anything; `rosterd start` prints the reason. A `rate_limited` harness still starts, the limit is transient. A health change is a `node` event on /swarm/changes.
 
 ## R8. Systems above rosterd
 
@@ -368,9 +382,9 @@ rosterd explain KEY [--json]
 
 `watch` prints the complete table again on every change, or the complete JSON frame per line with `--json`. Ctrl+C stops it.
 
-`status` shows the node name and id, version, listeners, swarm id, peer count and reachability, holder count, and which sources are enabled.
+`status` shows the node name and id, version, listeners, swarm id, peer count and reachability, holder count, which sources are enabled, and this node's harnesses that are not ok (R7.7).
 
-`nodes` lists membership: name, node id, address, version, capabilities, reachability, last hello age, revoked flag.
+`nodes` lists membership: name, node id, address, version, capabilities, harness health (`claude login_required · codex ok`, R7.7), reachability, last hello age, revoked flag.
 
 `read` shows one session in full: every roster field, the runtime handle, the last recap if one exists, pending permission request if any, and the child sessions. It never shows the transcript.
 

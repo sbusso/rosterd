@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rosterd_proto::{Activity, Capabilities, EndedReason, HolderState, Liveness, PermissionPolicy};
+use rosterd_proto::{Activity, Capabilities, EndedReason, HarnessState, HolderState, Liveness, PermissionPolicy};
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -210,6 +210,10 @@ fn node(dir: &Path, holders: &Path, bin: &Path, fake: &Path, tweak: impl FnOnce(
     config.runner.resume_on_crash = false;
     config.harness.insert("fake".into(), HarnessConfig { adapter: fake.to_string_lossy().into_owned(), ..Default::default() });
     config.harness.insert("pi".into(), HarnessConfig { adapter: fake.to_string_lossy().into_owned(), extension: true, ..Default::default() });
+    // The same fake refusing session/new for want of a login.
+    config.harness.insert("fakeauth".into(), HarnessConfig { adapter: fake.to_string_lossy().into_owned(), args: vec!["--auth".into()], ..Default::default() });
+    // An adapter that cannot be spawned.
+    config.harness.insert("missing".into(), HarnessConfig { adapter: dir.join("no-such-adapter").to_string_lossy().into_owned(), ..Default::default() });
     tweak(&mut config);
     let config = Arc::new(config);
     let roster = Roster::new("test", "test-node", Capabilities::default());
@@ -436,6 +440,52 @@ async fn pi_without_the_extension_warns_and_runs_as_auto() {
     let outcome = tokio::time::timeout(Duration::from_secs(10), runner.prompt(&record.session_key, prompt("go"))).await.unwrap().unwrap();
     assert_eq!(outcome.recap.as_deref(), Some("You said: go"));
     assert!(runner.state(&record.session_key).unwrap().pending.is_empty());
+    runner.stop(&record.session_key).await.unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn harness_health_marks_login_and_broken_and_refuses_the_next_start() {
+    let Some((bin, fake)) = binaries() else { return };
+    let dir = short_dir("e");
+    let runner = node(&dir, &dir.join("h"), &bin, &fake, |_| {});
+    let health = |harness: &str| runner.roster.snapshot().capabilities.health.iter().find(|h| h.harness == harness).cloned();
+
+    // R7.7: session/new refused with the auth error; the session waits on the login and the
+    // harness is marked on the node.
+    let record = runner.start(start("fakeauth")).await.unwrap();
+    until("the login claim", || runner.roster.get(&record.session_key).unwrap().activity_event.as_deref() == Some("login")).await;
+    let mark = health("fakeauth").expect("fakeauth marked");
+    assert_eq!(mark.state, HarnessState::LoginRequired);
+    assert!(mark.until.is_some_and(|u| u > mark.since));
+    assert!(health("fake").is_none());
+
+    // The next start is refused without a launch; the error carries the mark.
+    match runner.start(start("fakeauth")).await {
+        Err(RunnerError::Unhealthy(h)) => assert_eq!((h.harness.as_str(), h.state), ("fakeauth", HarnessState::LoginRequired)),
+        other => panic!("expected the refusal, got {other:?}"),
+    }
+    assert_eq!(runner.roster.snapshot().records.len(), 1, "nothing launched");
+
+    // Another harness is untouched and works.
+    let ok = runner.start(start("fake")).await.unwrap();
+    assert!(health("fake").is_none());
+
+    // An adapter that cannot run is broken, cleared by hand here as a login would be.
+    assert!(runner.start(start("missing")).await.is_err());
+    assert_eq!(health("missing").map(|h| h.state), Some(HarnessState::Broken));
+    assert!(matches!(runner.start(start("missing")).await, Err(RunnerError::Unhealthy(_))));
+    runner.healthy("missing");
+    assert!(health("missing").is_none());
+
+    // A turn that ends on a rate limit marks the harness; the next turn clears it.
+    runner.mark("fake", HarnessState::RateLimited, None, Some("429".into()));
+    assert_eq!(health("fake").map(|h| h.state), Some(HarnessState::RateLimited));
+    let outcome = tokio::time::timeout(Duration::from_secs(10), runner.prompt(&ok.session_key, prompt("go"))).await.unwrap().unwrap();
+    assert_eq!(outcome.recap.as_deref(), Some("You said: go"));
+    assert!(health("fake").is_none(), "a completed turn clears the mark");
+
+    runner.stop(&ok.session_key).await.unwrap();
     runner.stop(&record.session_key).await.unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
