@@ -14,7 +14,7 @@ use rosterd_proto::{
     Activity, Capabilities, EndedReason, Explain, FieldOrigin, HerdrHandle, HolderHandle, Lane, Liveness, Load,
     PermissionPolicy, Record, RejectedClaim, Snapshot, Source, TmuxHandle, Usage,
 };
-use tokio::sync::{broadcast, watch};
+use tokio::sync::watch;
 
 use crate::scanner;
 
@@ -31,8 +31,6 @@ pub struct Patch {
     pub session_id: Option<String>,
     pub lane: Option<Lane>,
     pub name: Option<String>,
-    pub attempt_id: Option<String>,
-    pub parent_attempt_id: Option<String>,
     pub parent_session_key: Option<String>,
     pub cwd: Option<String>,
     pub origin: Option<String>,
@@ -42,24 +40,6 @@ pub struct Patch {
     pub holder: Option<HolderHandle>,
     pub usage: Option<Usage>,
     pub permission_policy: Option<PermissionPolicy>,
-}
-
-/// What the bridge forwards to the workspace, R8. Emitted after the table changed.
-#[derive(Debug, Clone)]
-pub enum RosterEvent {
-    /// First time a session key is seen, or an existing record gained an attempt id or a
-    /// runtime handle (tmux, herdr, holder).
-    Registered(Record),
-    /// An accepted activity claim; `record.activity_seq` is the node's sequence for it.
-    Claimed(Record),
-    /// No consumer yet: the workspace has no field for a session name, R8.
-    #[allow(dead_code)]
-    Named(Record),
-    Ended(Record),
-    /// R15.1. The holder stopped on purpose; the record stays, no process exists.
-    Suspended(Record),
-    /// R5.4. A second live process claimed an attempt bound to `bound_to` (a session key).
-    Conflict { record: Record, attempt_id: String, bound_to: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -81,8 +61,6 @@ enum Field {
     Lane,
     Name,
     Activity,
-    AttemptId,
-    ParentAttemptId,
     ParentSessionKey,
     Cwd,
     Origin,
@@ -94,15 +72,13 @@ enum Field {
 
 impl Field {
     /// Declaration order, the order `explain` lists them in.
-    const ALL: [Field; 15] = [
+    const ALL: [Field; 13] = [
         Field::StartedAt,
         Field::Harness,
         Field::SessionId,
         Field::Lane,
         Field::Name,
         Field::Activity,
-        Field::AttemptId,
-        Field::ParentAttemptId,
         Field::ParentSessionKey,
         Field::Cwd,
         Field::Origin,
@@ -121,8 +97,6 @@ impl Field {
             Field::Lane => "lane",
             Field::Name => "name",
             Field::Activity => "activity",
-            Field::AttemptId => "attempt_id",
-            Field::ParentAttemptId => "parent_attempt_id",
             Field::ParentSessionKey => "parent_session_key",
             Field::Cwd => "cwd",
             Field::Origin => "origin",
@@ -141,8 +115,6 @@ impl Field {
             Field::Lane => serde_json::to_value(record.lane),
             Field::Name => serde_json::to_value(&record.name),
             Field::Activity => serde_json::to_value(record.activity),
-            Field::AttemptId => serde_json::to_value(&record.attempt_id),
-            Field::ParentAttemptId => serde_json::to_value(&record.parent_attempt_id),
             Field::ParentSessionKey => serde_json::to_value(&record.parent_session_key),
             Field::Cwd => serde_json::to_value(&record.cwd),
             Field::Origin => serde_json::to_value(&record.origin),
@@ -213,8 +185,8 @@ struct Table {
     aliases: HashMap<String, String>,
     capabilities: Capabilities,
     seq: u64,
-    /// The last activity_seq per session key, live records and the file's, R8: the workspace
-    /// dedupes on attempt plus seq, so a counter must survive a daemon restart.
+    /// The last activity_seq per session key, live records and the file's: clients dedupe on
+    /// session plus seq, so a counter must survive a daemon restart.
     seqs: HashMap<String, u64>,
 }
 
@@ -235,7 +207,6 @@ pub struct Roster {
     node: String,
     node_id: String,
     snapshot: watch::Sender<Arc<Snapshot>>,
-    events: broadcast::Sender<RosterEvent>,
     table: RwLock<Table>,
     ancestors: AncestorLookup,
     /// The seq map after each accepted claim or ending; `persist_seqs` writes it, debounced.
@@ -251,13 +222,11 @@ impl Roster {
         snapshot.capabilities = capabilities.clone();
         snapshot.up_since = Some(up_since);
         let (snapshot, _) = watch::channel(Arc::new(snapshot));
-        let (events, _) = broadcast::channel(1024);
         let (seqs, _) = watch::channel(Arc::new(HashMap::new()));
         Arc::new(Roster {
             node: node.into(),
             node_id: node_id.into(),
             snapshot,
-            events,
             table: RwLock::new(Table { capabilities, ..Table::default() }),
             ancestors: Arc::new(scanner::ancestors),
             seqs,
@@ -268,7 +237,7 @@ impl Roster {
     /// Loads `{session_key: seq}` from `path` (missing file is empty) and from then on writes it
     /// back, debounced 250 ms, after every accepted claim and every ending. A record created for
     /// a key in the file continues its counter, so a session reattached after a restart never
-    /// reuses a seq the workspace already stored. Keys of dead processes are dropped at load.
+    /// reuses a seq a client already stored. Keys of dead processes are dropped at load.
     /// Call inside the tokio runtime.
     pub fn persist_seqs(&self, path: PathBuf) {
         let loaded: HashMap<String, u64> = std::fs::read(&path)
@@ -305,9 +274,9 @@ impl Roster {
     /// Replaces the process tree lookup used by the collapse rule, R3. For tests.
     #[cfg(test)]
     pub fn with_ancestor_lookup(self: Arc<Self>, lookup: AncestorLookup) -> Arc<Roster> {
-        let Roster { node, node_id, snapshot, events, table, seqs, .. } =
+        let Roster { node, node_id, snapshot, table, seqs, .. } =
             Arc::try_unwrap(self).unwrap_or_else(|_| panic!("roster already shared"));
-        Arc::new(Roster { node, node_id, snapshot, events, table, ancestors: lookup, seqs, up_since: Utc::now() })
+        Arc::new(Roster { node, node_id, snapshot, table, ancestors: lookup, seqs, up_since: Utc::now() })
     }
 
     pub fn key_of(&self, pid: u32, start_ticks: u64) -> String {
@@ -324,22 +293,8 @@ impl Roster {
         self.snapshot.subscribe()
     }
 
-    pub fn events(&self) -> broadcast::Receiver<RosterEvent> {
-        self.events.subscribe()
-    }
-
     pub fn get(&self, session_key: &str) -> Option<Record> {
         self.snapshot().records.iter().find(|r| r.session_key == session_key).cloned()
-    }
-
-    /// The record bound to an attempt on this node, R5.4: live or suspended (R15.1, the attempt
-    /// is still bound), never ended.
-    pub fn live_by_attempt(&self, attempt_id: &str) -> Option<Record> {
-        self.snapshot()
-            .records
-            .iter()
-            .find(|r| r.attempt_id.as_deref() == Some(attempt_id) && r.liveness != Liveness::Ended)
-            .cloned()
     }
 
     /// The session key a process reports under: its own, or the root it was collapsed into,
@@ -387,39 +342,18 @@ impl Roster {
 
         // A process the roster has not seen: is it nested in a session it knows? R3.
         let mut key = key;
-        let mut parent: Option<(String, Option<String>)> = None;
         let collapsible = matches!(source, Source::Hook | Source::Scan | Source::Files);
         if !table.entries.contains_key(&key) && collapsible {
             let root = (self.ancestors)(pid).into_iter().find_map(|a| {
                 table.entries.values().find(|e| e.record.pid == a && e.record.liveness != Liveness::Ended)
             });
             if let Some(root) = root {
+                // A nested process of the same session, collapsed into the root. A spawned
+                // child comes through the launcher, which never collapses.
                 let root_key = root.record.session_key.clone();
-                let root_attempt = root.record.attempt_id.clone();
-                let spawned = patch.attempt_id.is_some() && patch.attempt_id != root_attempt;
-                if spawned {
-                    // (a) a spawned child: its own record, R3 and R5.4.
-                    parent = Some((root_key, root_attempt));
-                } else {
-                    // (b) a nested process of the same session, collapsed into the root.
-                    table.aliases.insert(key.clone(), root_key.clone());
-                    key = root_key;
-                    patch.started_at = None;
-                }
-            }
-        }
-
-        // R5.4, node local: an attempt already bound to another live or suspended record is not
-        // bound twice. An ended record frees its attempt (resume, R2.2 and R15.3).
-        let mut conflict = None;
-        if let Some(attempt) = patch.attempt_id.as_deref() {
-            let bound = table.entries.values().find(|e| {
-                e.record.session_key != key
-                    && e.record.attempt_id.as_deref() == Some(attempt)
-                    && e.record.liveness != Liveness::Ended
-            });
-            if let Some(bound) = bound {
-                conflict = Some((patch.attempt_id.take().unwrap(), bound.record.session_key.clone()));
+                table.aliases.insert(key.clone(), root_key.clone());
+                key = root_key;
+                patch.started_at = None;
             }
         }
 
@@ -445,8 +379,6 @@ impl Roster {
                 activity_event: None,
                 activity_at: None,
                 activity_seq: stored_seq,
-                attempt_id: None,
-                parent_attempt_id: None,
                 parent_session_key: None,
                 cwd: None,
                 origin: None,
@@ -459,33 +391,19 @@ impl Roster {
                 ended_reason: None,
                 usage: None,
                 load: None,
-            mode: None,
-            plan: None,
-                conflict: false,
+                mode: None,
+                plan: None,
                 permission_policy: None,
             },
             origins: Origins::default(),
         });
-        if let Some((root_key, root_attempt)) = parent {
-            patch.parent_session_key = patch.parent_session_key.or(Some(root_key));
-            patch.parent_attempt_id = patch.parent_attempt_id.or(root_attempt);
-        }
-
         let Entry { record, origins } = entry;
-        if let Some((attempt_id, bound_to)) = &conflict {
-            let reason = format!("attempt {attempt_id} is bound to {bound_to} (R5.4)");
-            origins.reject(source, Some(Field::AttemptId), None, None, now, reason);
-        }
-        let had_attempt = record.attempt_id.is_some();
-        let had_handle = record.tmux.is_some() || record.herdr.is_some() || record.holder.is_some();
         let mut changed = created;
         changed |= fill_plain(origins, source, now, Field::StartedAt, &mut record.started_at, patch.started_at);
         changed |= fill_plain(origins, source, now, Field::Harness, &mut record.harness, patch.harness);
         changed |= fill_plain(origins, source, now, Field::Lane, &mut record.lane, patch.lane);
         changed |= fill(origins, source, now, Field::SessionId, &mut record.session_id, patch.session_id);
         changed |= fill(origins, source, now, Field::Name, &mut record.name, patch.name);
-        changed |= fill(origins, source, now, Field::AttemptId, &mut record.attempt_id, patch.attempt_id);
-        changed |= fill(origins, source, now, Field::ParentAttemptId, &mut record.parent_attempt_id, patch.parent_attempt_id);
         changed |= fill(origins, source, now, Field::ParentSessionKey, &mut record.parent_session_key, patch.parent_session_key);
         changed |= fill(origins, source, now, Field::Cwd, &mut record.cwd, patch.cwd);
         changed |= fill(origins, source, now, Field::Origin, &mut record.origin, patch.origin);
@@ -501,25 +419,10 @@ impl Roster {
             changed |= record.permission_policy != Some(policy);
             record.permission_policy = Some(policy);
         }
-        if conflict.is_some() && !record.conflict {
-            record.conflict = true;
-            changed = true;
-        }
         changed |= add_source(record, source);
         let record = record.clone();
-        if !changed {
-            return Ok(record);
-        }
-
-        let registered = created
-            || (!had_attempt && record.attempt_id.is_some())
-            || (!had_handle && (record.tmux.is_some() || record.herdr.is_some() || record.holder.is_some()));
-        self.publish(&mut table);
-        if registered {
-            self.emit(RosterEvent::Registered(record.clone()));
-        }
-        if let Some((attempt_id, bound_to)) = conflict {
-            self.emit(RosterEvent::Conflict { record: record.clone(), attempt_id, bound_to });
+        if changed {
+            self.publish(&mut table);
         }
         Ok(record)
     }
@@ -565,7 +468,6 @@ impl Roster {
         let record = record.clone();
         self.publish(&mut table);
         self.publish_seqs(&table);
-        self.emit(RosterEvent::Claimed(record.clone()));
         Ok(record)
     }
 
@@ -589,7 +491,6 @@ impl Roster {
         let record = entry.record.clone();
         if changed {
             self.publish(&mut table);
-            self.emit(RosterEvent::Named(record.clone()));
         }
         Ok(record)
     }
@@ -637,7 +538,6 @@ impl Roster {
         table.seqs.remove(&key);
         self.publish(&mut table);
         self.publish_seqs(&table);
-        self.emit(RosterEvent::Ended(record.clone()));
         Ok(record)
     }
 
@@ -658,7 +558,6 @@ impl Roster {
         entry.record.activity_at.get_or_insert(at);
         let record = entry.record.clone();
         self.publish(&mut table);
-        self.emit(RosterEvent::Suspended(record.clone()));
         Ok(record)
     }
 
@@ -729,10 +628,6 @@ impl Roster {
         self.seqs.send_replace(Arc::new(table.seqs.clone()));
     }
 
-    fn emit(&self, event: RosterEvent) {
-        // No subscriber yet is not an error.
-        let _ = self.events.send(event);
-    }
 }
 
 /// R4 per field: a value is stored when the field is null or the source overrides the one that
@@ -841,10 +736,10 @@ mod tests {
     }
 
     #[test]
-    fn nested_processes_collapse_and_spawned_children_are_records() {
+    fn nested_processes_collapse_and_launched_children_are_records() {
         let r = roster(&[(200, &[100, 1]), (300, &[100, 1]), (400, &[100, 1]), (500, &[300, 100, 1])]);
-        let root = r.apply(Source::Hook, Patch { attempt_id: Some("A".into()), ..patch(100) }).unwrap();
-        // (b) same session: no attempt id, collapsed into the root; its cwd fills the root's null.
+        let root = r.apply(Source::Hook, patch(100)).unwrap();
+        // A nested process is collapsed into the root; its cwd fills the root's null.
         let rec = r.apply(Source::Scan, cwd(200, "/root")).unwrap();
         assert_eq!(rec.session_key, root.session_key);
         assert_eq!(rec.cwd.as_deref(), Some("/root"));
@@ -854,14 +749,10 @@ mod tests {
         // A claim by the nested pid's key lands on the root.
         let nested_key = r.key_of(200, 7);
         assert_eq!(r.claim(Source::Hook, &nested_key, Activity::Active, "prompt", Utc::now()).unwrap().session_key, root.session_key);
-        // (a) a different attempt id: a spawned child with parent_session_key.
-        let child = r.apply(Source::Hook, Patch { attempt_id: Some("B".into()), ..patch(300) }).unwrap();
+        // A launched child is its own record, with the parent it was given.
+        let child = r.apply(Source::Launcher, Patch { parent_session_key: Some(root.session_key.clone()), ..patch(300) }).unwrap();
         assert_ne!(child.session_key, root.session_key);
         assert_eq!(child.parent_session_key.as_deref(), Some(root.session_key.as_str()));
-        assert_eq!(child.parent_attempt_id.as_deref(), Some("A"));
-        assert_eq!(child.attempt_id.as_deref(), Some("B"));
-        // Same attempt id as the root: same session, collapsed.
-        assert_eq!(r.apply(Source::Hook, Patch { attempt_id: Some("A".into()), ..patch(400) }).unwrap().session_key, root.session_key);
         // Nearest ancestor wins: a process under the child collapses into the child.
         assert_eq!(r.apply(Source::Scan, patch(500)).unwrap().session_key, child.session_key);
         // Launcher and acp never collapse.
@@ -869,33 +760,6 @@ mod tests {
         assert_ne!(own.session_key, root.session_key);
         assert_eq!(own.parent_session_key, None);
         assert_eq!(r.snapshot().records.len(), 3);
-    }
-
-    #[test]
-    fn a_second_live_process_on_a_bound_attempt_is_a_conflict() {
-        let r = roster(&[]);
-        let mut events = r.events();
-        let first = r.apply(Source::Hook, Patch { attempt_id: Some("X".into()), ..patch(10) }).unwrap();
-        let second = r.apply(Source::Hook, Patch { attempt_id: Some("X".into()), ..patch(11) }).unwrap();
-        assert_eq!(second.attempt_id, None);
-        assert!(second.conflict);
-        assert_eq!(r.live_by_attempt("X").unwrap().session_key, first.session_key);
-        let mut saw = false;
-        while let Ok(ev) = events.try_recv() {
-            if let RosterEvent::Conflict { record, attempt_id, bound_to } = ev {
-                assert_eq!(record.session_key, second.session_key);
-                assert_eq!((attempt_id.as_str(), bound_to.as_str()), ("X", first.session_key.as_str()));
-                saw = true;
-            }
-        }
-        assert!(saw);
-        // Rebinding the same attempt on its own record is not a conflict.
-        assert!(!r.apply(Source::Acp, Patch { attempt_id: Some("X".into()), ..patch(10) }).unwrap().conflict);
-        // Once the first ends, the attempt may be bound again (resume, R2.2).
-        r.end(&first.session_key, EndedReason::Crash, Utc::now()).unwrap();
-        let third = r.apply(Source::Acp, Patch { attempt_id: Some("X".into()), ..patch(12) }).unwrap();
-        assert_eq!(third.attempt_id.as_deref(), Some("X"));
-        assert!(!third.conflict);
     }
 
     #[test]
@@ -929,7 +793,6 @@ mod tests {
         let rec = r.end(&key, EndedReason::Exit, at).unwrap();
         assert_eq!((rec.liveness, rec.ended_reason, rec.ended_at), (Liveness::Ended, Some(EndedReason::Exit), Some(at)));
         assert_eq!(r.end(&key, EndedReason::Crash, at).unwrap().ended_reason, Some(EndedReason::Exit));
-        assert_eq!(r.live_by_attempt("none"), None);
         r.sweep(at - chrono::Duration::minutes(10));
         assert_eq!(r.snapshot().records.len(), 1);
         r.sweep(at + chrono::Duration::seconds(1));
@@ -1030,63 +893,33 @@ mod tests {
         assert!(matches!(r.explain("abc:9:9"), Err(RosterError::NotFound(_))));
     }
 
-    /// R15.1 and R15.3: a suspended record keeps its attempt, no process ending touches it, and
-    /// only a resume (old key ends `suspended`) frees the attempt for the new key.
+    /// R15.1 and R15.3: a suspended record stays, no process ending touches it, and only a
+    /// resume (old key ends `suspended`) ends it.
     #[test]
-    fn a_suspended_record_keeps_its_attempt_until_resumed() {
+    fn a_suspended_record_stays_until_resumed() {
         let r = roster(&[]);
-        let mut events = r.events();
         let holder = Some(HolderHandle { socket: "/h.sock".into() });
-        let first = r.apply(Source::Launcher, Patch { attempt_id: Some("S".into()), holder, ..patch(80) }).unwrap();
+        let first = r.apply(Source::Launcher, Patch { holder, ..patch(80) }).unwrap();
         let at = Utc::now();
         let rec = r.suspend(&first.session_key, at).unwrap();
-        assert_eq!((rec.liveness, rec.holder, rec.attempt_id.as_deref()), (Liveness::Suspended, None, Some("S")));
+        assert_eq!((rec.liveness, rec.holder), (Liveness::Suspended, None));
         assert_eq!(r.suspend(&first.session_key, at).unwrap().liveness, Liveness::Suspended);
-        let mut suspended = 0;
-        while let Ok(ev) = events.try_recv() {
-            suspended += matches!(ev, RosterEvent::Suspended(ref r) if r.session_key == first.session_key) as u32;
-        }
-        assert_eq!(suspended, 1);
-        assert_eq!(r.live_by_attempt("S").unwrap().session_key, first.session_key);
         for reason in [EndedReason::Exit, EndedReason::Crash, EndedReason::Reboot, EndedReason::Killed] {
             assert_eq!(r.end(&first.session_key, reason, at).unwrap().liveness, Liveness::Suspended, "{reason:?} needs a process");
         }
         r.sweep(at + chrono::Duration::hours(1));
         assert_eq!(r.snapshot().records.len(), 1, "sweep keeps a suspended record");
-        assert!(r.apply(Source::Launcher, Patch { attempt_id: Some("S".into()), ..patch(81) }).unwrap().conflict, "still bound, R5.4");
 
         let ended = r.end(&first.session_key, EndedReason::Suspended, at).unwrap();
         assert_eq!((ended.liveness, ended.ended_reason), (Liveness::Ended, Some(EndedReason::Suspended)));
-        let resumed = r.apply(Source::Launcher, Patch { attempt_id: Some("S".into()), ..patch(82) }).unwrap();
-        assert_eq!((resumed.conflict, resumed.attempt_id.as_deref()), (false, Some("S")));
-        assert_eq!(r.live_by_attempt("S").unwrap().session_key, resumed.session_key);
         r.claim(Source::Hook, &first.session_key, Activity::Active, "late", at).unwrap();
         assert_eq!(r.explain(&first.session_key).unwrap().rejected.last().unwrap().reason, "record has ended");
         assert!(matches!(r.suspend(&first.session_key, at), Err(RosterError::Invalid(_))));
     }
 
     #[test]
-    fn registered_fires_on_creation_attempt_and_handle() {
+    fn identity_is_a_key_or_pid_and_ticks() {
         let r = roster(&[]);
-        let mut events = r.events();
-        r.apply(Source::Scan, patch(50)).unwrap();
-        r.apply(Source::Scan, cwd(50, "/x")).unwrap();
-        r.apply(Source::Hook, Patch { attempt_id: Some("A".into()), ..patch(50) }).unwrap();
-        r.apply(
-            Source::Scan,
-            Patch {
-                tmux: Some(TmuxHandle { session: "main".into(), window_index: 0, window_name: None, pane_id: "%1".into() }),
-                ..patch(50)
-            },
-        )
-        .unwrap();
-        let mut registered = 0;
-        while let Ok(ev) = events.try_recv() {
-            if matches!(ev, RosterEvent::Registered(_)) {
-                registered += 1;
-            }
-        }
-        assert_eq!(registered, 3);
         assert!(matches!(r.apply(Source::Hook, Patch::default()), Err(RosterError::NoIdentity)));
         let by_key = r.apply(Source::Hook, Patch { session_key: Some("abc:60:8".into()), ..Patch::default() }).unwrap();
         assert_eq!((by_key.pid, by_key.start_ticks), (60, 8));

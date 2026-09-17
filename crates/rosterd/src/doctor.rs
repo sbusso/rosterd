@@ -65,19 +65,6 @@ pub fn run_at(config: &Config, config_dir: &Path, paths: &Paths) -> Vec<Check> {
         check("swarm", true, "standalone; rosterd invite or rosterd join to form one", "")
     });
 
-    let credential = &config.workspace.credential_file;
-    checks.push(match &config.workspace.url {
-        None => check("workspace", true, "no workspace configured", ""),
-        Some(url) => {
-            let fix = format!("write the workspace agent token to {} and chmod 600 it", credential.display());
-            let mut c = private_file("workspace", credential, 0o600, &fix);
-            if c.ok {
-                c.detail = format!("{url} with {}", credential.display());
-            }
-            c
-        }
-    });
-
     let holders = &config.runner.holder_dir;
     let holders_fix = format!("mkdir -p {0} && chmod 700 {0}", holders.display());
     checks.push(match std::fs::metadata(holders) {
@@ -202,8 +189,6 @@ mod tests {
         config.node.socket = Some(dir.join("rosterd.sock"));
         config.node.loopback_port = 1; // nothing listens on 127.0.0.1:1
         config.node.listen = "off".into();
-        config.workspace.url = Some("http://ws.example".into());
-        config.workspace.credential_file = dir.join("workspace.token");
         config.runner.holder_dir = dir.join("holders");
         let paths = Paths {
             claude_settings: dir.join("home/.claude/settings.json"),
@@ -234,7 +219,7 @@ mod tests {
             assert_eq!(c.fix.as_deref(), Some(fix), "{name}");
         }
         assert!(by_name("tailscale").ok);
-        assert!(!by_name("workspace").ok && !by_name("holders").ok && !by_name("node key").ok);
+        assert!(!by_name("holders").ok && !by_name("node key").ok);
         assert!(by_name("swarm").ok, "standalone is not a failure");
         let mut ok_json = serde_json::to_string(&checks).unwrap();
         ok_json.truncate(1);

@@ -1,9 +1,8 @@
 # rosterd
 
 One daemon per machine that knows every coding agent session on it, drives headless sessions over
-ACP, joins a swarm of peers over Tailscale, and reports to the workspace. The spec is SPEC.md.
-
-Its own repository and Cargo workspace; the workspace it reports to lives in its own.
+ACP, and joins a swarm of peers over Tailscale. Anything above it (a project board, a task
+runner) is a client of its API. The spec is SPEC.md.
 
 ```
 crates/proto     types shared by daemon and holder: Record, Snapshot, HolderState, Source
@@ -17,7 +16,6 @@ crates/rosterd   the daemon
   src/scanner/      process enumeration, tmux and herdr handles     R4
   src/runner/       ACP client, holders, policy, resume             R5 R2.2
   src/mesh/         discovery, membership, snapshot exchange, proxy R7
-  src/bridge/       workspace client and disk queue                 R8
   src/api/          socket, loopback, Tailscale listeners, MCP      R6 R9
   src/cli/          the command line client                         R14
 scripts/         hook, launcher, opener
@@ -64,7 +62,7 @@ One row per thing the machine needs. Space picks, enter runs, `a` picks everythi
 - binaries on PATH, config, the service (LaunchAgent on macOS, systemd user unit on Linux), the daemon
 - per harness: the binary, its ACP adapter, the hooks or extension
 - the tray at login
-- optional: the workspace credential, a swarm to join
+- optional: a swarm to join
 
 ## Using it
 
@@ -87,7 +85,6 @@ arrives, R4.
 - the roster with the same states and actions as the tray, every node of the swarm
 - each row: project badge, state and its age, the folder with `~` for home; on the right the harness, CPU share, memory and uptime of the process tree, then the actions
 - `/ui/sessions/<session_key>`: the live conversation of a headless session, with its last recap
-- Add workspace: a workspace URL and token, kept in the browser, to list what needs you first
 - also on the Tailscale IP (`ui_listen = "tailscale"`, the default): `http://<tailscale-ip>:8790/ui?token=…` from another machine on the tailnet
 
 **Phone** (`ios/`)
@@ -98,7 +95,7 @@ arrives, R4.
 
 **Shell**
 
-- `rosterd status`: the node, listeners, swarm, bridge, counts
+- `rosterd status`: the node, listeners, swarm, counts
 - `rosterd list` / `rosterd watch`: the rows
 - `rosterd daemon`: run the daemon by hand
 - config: `~/.config/rosterd/rosterd.toml` (Linux), `~/Library/Application Support/rosterd/rosterd.toml` (macOS), next to `node.key`, `loopback.token`, `swarm.json`
@@ -148,8 +145,8 @@ Every command takes `--json`, which prints the API frame for the resource byte f
 rosterd list|watch [--swarm|--node N]      one row per session; watch reprints on every change
 rosterd status | nodes                     this node; swarm membership and health
 rosterd read KEY | explain KEY             one session in full; which source set each field
-rosterd start --harness H --cwd DIR --attempt ATT [--parent-attempt P] [--name L]
-              [--policy auto|attention|decision] [--model M] [--effort E] [--env K=V ...]
+rosterd start --harness H --cwd DIR [--name L] [--policy auto|attention] [--model M]
+              [--effort E] [--env K=V ...]
 rosterd prompt KEY TEXT [--wait idle|needs_attention|ended] [--timeout SECONDS]
 rosterd cancel|stop|suspend|resume|open KEY
 rosterd name KEY LABEL | name KEY --clear
@@ -163,7 +160,7 @@ rosterd daemon [--config PATH] | setup [--yes] | doctor | version
 
 KEY is an exact session key, a PID on this node, or a unique display name (the name, else the
 cwd basename shown in brackets); an ambiguous name lists the candidates. `list` and `watch` read
-the roster only and answer with the runner, bridge or mesh broken. The agent-facing summary is
+the roster only and answer with the runner or mesh broken. The agent-facing summary is
 `skill/SKILL.md`.
 
 Hook. Put `rosterd-hook` on PATH and add this to `~/.claude/settings.json`; the same object without
@@ -183,15 +180,14 @@ Hook. Put `rosterd-hook` on PATH and add this to `~/.claude/settings.json`; the 
 ```
 
 The hook reads `session_id`, `hook_event_name`, `cwd` and `notification_type` from the event,
-nothing else, and posts the claim to the daemon socket and, when the three workspace variables
-are set, to the workspace. It fails open in 800 ms and always exits 0, R4. `rosterd-hook
+nothing else, and posts the claim to the daemon socket. It fails open in 800 ms and always
+exits 0, R4. `rosterd-hook
 --self-test` runs the mapping offline.
 
-Launch. `rosterd-launch [--attempt <id> --token <t>] [--name <n>] [--harness claude|codex] --
-claude --model opus` exports the variables below, registers the session with the daemon as
-source `launcher`, and execs the harness with the rosterd MCP server in its config
-(`--mcp-config` for Claude Code, `-c mcp_servers.rosterd.*` for Codex). Without `--attempt`
-the roster sees the session and the workspace does not.
+Launch. `rosterd-launch [--name <n>] [--harness claude|codex] -- claude --model opus` exports
+the variables below, registers the session with the daemon as source `launcher`, and execs the
+harness with the rosterd MCP server in its config (`--mcp-config` for Claude Code,
+`-c mcp_servers.rosterd.*` for Codex).
 
 Open. `rosterd-open --handle '<runtime handle json>'` jumps to a session from a shell: tmux, herdr,
 or the conversation view; `rosterd open KEY` resolves the handle first.
@@ -200,7 +196,6 @@ Environment.
 
 | variable | read by | meaning |
 | --- | --- | --- |
-| `WORKSPACE_URL`, `WORKSPACE_ATTEMPT_ID`, `WORKSPACE_ATTEMPT_TOKEN` | hook, bridge | the attempt a session works on; all three or the hook skips the workspace |
 | `ROSTERD_SOCKET` | daemon, CLI, hook, launcher | the daemon socket; default `$XDG_RUNTIME_DIR/rosterd.sock` on Linux, `$TMPDIR/rosterd.sock` on macOS, R6 |
 | `ROSTERD_HARNESS` | hook | the harness name when the process tree does not say |
 | `ROSTERD_CONFIG_DIR`, `ROSTERD_STATE_DIR` | daemon, scripts | override the config and state directories |

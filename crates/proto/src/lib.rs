@@ -61,7 +61,7 @@ pub enum Liveness {
     #[default]
     Live,
     Stale,
-    /// R15.1: holder stopped on purpose, session_id kept, attempt still open, no process.
+    /// R15.1: holder stopped on purpose, session_id kept, no process.
     Suspended,
     Ended,
 }
@@ -115,7 +115,6 @@ pub enum PermissionPolicy {
     Auto,
     #[default]
     Attention,
-    Decision,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,10 +209,6 @@ pub struct Record {
     #[serde(default)]
     pub activity_seq: u64,
     #[serde(default)]
-    pub attempt_id: Option<String>,
-    #[serde(default)]
-    pub parent_attempt_id: Option<String>,
-    #[serde(default)]
     pub parent_session_key: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
@@ -243,9 +238,6 @@ pub struct Record {
     pub mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<Plan>,
-    /// R5.4. A second live process claimed an attempt already bound elsewhere in the swarm.
-    #[serde(default)]
-    pub conflict: bool,
     #[serde(default)]
     pub permission_policy: Option<PermissionPolicy>,
 }
@@ -372,10 +364,6 @@ pub struct HolderState {
     pub session_id: Option<String>,
     pub harness: String,
     pub cwd: String,
-    #[serde(default)]
-    pub attempt_id: Option<String>,
-    #[serde(default)]
-    pub parent_attempt_id: Option<String>,
     /// The ACP adapter child of the holder.
     pub adapter_pid: u32,
     /// The holder itself.
@@ -447,8 +435,6 @@ mod tests {
             activity_event: Some("tool_call".into()),
             activity_at: None,
             activity_seq: 3,
-            attempt_id: None,
-            parent_attempt_id: None,
             parent_session_key: None,
             cwd: None,
             origin: None,
@@ -463,7 +449,6 @@ mod tests {
             load: None,
             mode: None,
             plan: None,
-            conflict: false,
             permission_policy: None,
         });
         let mut json: serde_json::Value = serde_json::to_value(&snap).unwrap();

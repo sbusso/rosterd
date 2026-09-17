@@ -410,14 +410,6 @@ impl Mesh {
             .map(|(node_id, _)| node_id.clone())
     }
 
-    /// The live session bound to an attempt anywhere in the swarm, R5.4.
-    pub fn live_by_attempt(&self, attempt_id: &str) -> Option<SwarmRecord> {
-        self.swarm_snapshot()
-            .records
-            .into_iter()
-            .find(|r| r.record.attempt_id.as_deref() == Some(attempt_id) && r.record.liveness != rosterd_proto::Liveness::Ended)
-    }
-
     /// Peer facing routes served on the Tailscale listener: /node/hello, /node/join, and the
     /// gossip endpoints. The api mounts this and also serves /events there; requests reach
     /// handlers only after `authenticate` passed, except /node/hello and /node/join.
@@ -967,14 +959,14 @@ mod tests {
         (mesh, dir)
     }
 
-    fn snapshot_with_record(node: &str, node_id: &str, attempt: &str) -> Snapshot {
+    fn snapshot_with_record(node: &str, node_id: &str) -> Snapshot {
         let mut snapshot = Snapshot::empty(node, node_id);
         snapshot.seq = 1;
         snapshot.up_since = Some(Utc::now());
         snapshot.records.push(
             serde_json::from_value::<Record>(json!({
                 "node": node, "node_id": node_id, "session_key": format!("{node_id}:42:7"), "pid": 42, "start_ticks": 7,
-                "started_at": Utc::now(), "harness": "claude", "lane": "headless", "attempt_id": attempt
+                "started_at": Utc::now(), "harness": "claude", "lane": "headless"
             }))
             .unwrap(),
         );
@@ -986,7 +978,7 @@ mod tests {
         match mesh.authenticate(&method, "/events", &headers, b"") {
             Ok(_) => {
                 let local = mesh.roster.snapshot();
-                let snapshot = snapshot_with_record(&local.node, &local.node_id, &format!("attempt-{}", local.node));
+                let snapshot = snapshot_with_record(&local.node, &local.node_id);
                 let first = futures::stream::once(async move { Ok::<_, std::convert::Infallible>(Event::default().json_data(snapshot).unwrap()) });
                 Sse::new(first.chain(futures::stream::pending())).into_response()
             }
@@ -1055,8 +1047,6 @@ mod tests {
         let from_b = on_a.records.iter().find(|r| r.peer_state == PeerState::Reachable).unwrap();
         assert_eq!(from_b.record.node_id, b.identity.node_id);
         assert_eq!(a.owner_of(&from_b.record.session_key).as_deref(), Some(b.identity.node_id.as_str()));
-        assert_eq!(a.live_by_attempt("attempt-wintermute").unwrap().record.node_id, b.identity.node_id);
-        assert!(a.live_by_attempt("attempt-nobody").is_none());
 
         // Proxy: a signed request to the owner comes back with its status; here /node/hello.
         let (status, body) = a.proxy(&b.identity.node_id, Method::GET, "/node/hello", None).await.unwrap();
@@ -1101,16 +1091,16 @@ mod tests {
         // No swarm: snapshots from anyone are kept, so the store can be exercised directly.
         let (a, dir) = node("gibson", "127.0.0.1:1");
         let now = Utc::now();
-        a.peer_for_test("fresh", snapshot_with_record("fresh", "fresh", "x"), now - chrono::Duration::seconds(5), None);
+        a.peer_for_test("fresh", snapshot_with_record("fresh", "fresh"), now - chrono::Duration::seconds(5), None);
         a.peer_for_test(
             "stale",
-            snapshot_with_record("stale", "stale", "y"),
+            snapshot_with_record("stale", "stale"),
             now - chrono::Duration::hours(30),
             Some(now - chrono::Duration::hours(23)),
         );
         a.peer_for_test(
             "gone",
-            snapshot_with_record("gone", "gone", "z"),
+            snapshot_with_record("gone", "gone"),
             now - chrono::Duration::hours(30),
             Some(now - chrono::Duration::hours(25)),
         );
@@ -1129,7 +1119,7 @@ mod tests {
         // Local roster changes and stored snapshots both bump `changed`.
         let mut changed = a.changed();
         let before = *changed.borrow_and_update();
-        a.store_snapshot(snapshot_with_record("fresh", "fresh", "x"));
+        a.store_snapshot(snapshot_with_record("fresh", "fresh"));
         assert!(*changed.borrow_and_update() > before);
         std::fs::remove_dir_all(&dir).unwrap();
     }

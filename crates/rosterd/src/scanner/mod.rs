@@ -503,7 +503,7 @@ async fn herdr_session_panes(session: &str, socket: &Path) -> anyhow::Result<Vec
     Ok(panes)
 }
 
-/// One request on Herdr's socket, section 38.1 of the workspace spec: newline delimited JSON,
+/// One request on Herdr's socket: newline delimited JSON,
 /// `{id, method, params}` with a string id, snake_case params, reply by id, error body
 /// `{code, message}`. Herdr 0.8.2 closes the connection after one reply, so each call connects.
 #[cfg(unix)]

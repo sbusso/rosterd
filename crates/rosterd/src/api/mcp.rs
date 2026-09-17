@@ -62,15 +62,14 @@ fn tools() -> Vec<Tool> {
         ),
         tool(
             "session.spawn",
-            "Start a child session under a new workspace attempt whose parent is the caller's attempt, for the workspace task `task` when given. Returns attempt_id, task_id and session_key.",
+            "Start a child session whose parent is the calling session. Returns session_key and the record.",
             json!({
                 "type": "object",
                 "properties": {
                     "harness": { "type": "string" },
                     "cwd": { "type": "string" },
-                    "task": { "type": "string", "description": "workspace task id the child attempt belongs to" },
                     "name": { "type": "string" },
-                    "permission_policy": { "type": "string", "enum": ["auto", "attention", "decision"] },
+                    "permission_policy": { "type": "string", "enum": ["auto", "attention"] },
                     "model": { "type": "string" }
                 },
                 "required": ["harness"]
@@ -178,8 +177,7 @@ impl RosterMcp {
         Ok(serde_json::to_value(self.node.roster.set_name(&key, name, Source::Hook)?)?)
     }
 
-    /// R5.4: a child attempt in the workspace, then a child session bound to it; the same
-    /// operation as `POST /sessions/{key}/spawn`, R14.3.
+    /// R5.4: a child session under the caller; the same operation as `POST /sessions/{key}/spawn`.
     async fn session_spawn(&self, context: &RequestContext<RoleServer>, args: &Value) -> Result<Value, ApiError> {
         let key = self.caller(context)?;
         let body: SpawnBody = serde_json::from_value(args.clone()).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e.to_string()))?;

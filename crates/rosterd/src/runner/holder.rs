@@ -66,8 +66,6 @@ pub struct Launch<'a> {
     pub paths: &'a Paths,
     pub harness: &'a str,
     pub cwd: &'a Path,
-    pub attempt_id: Option<&'a str>,
-    pub parent_attempt_id: Option<&'a str>,
     pub meta: &'a Value,
     pub adapter: &'a str,
     pub args: &'a [String],
@@ -89,12 +87,6 @@ pub fn spawn(launch: Launch<'_>) -> Result<(u32, JoinHandle<std::io::Result<std:
         .arg(launch.cwd)
         .arg("--meta")
         .arg(launch.meta.to_string());
-    if let Some(a) = launch.attempt_id {
-        cmd.arg("--attempt-id").arg(a);
-    }
-    if let Some(p) = launch.parent_attempt_id {
-        cmd.arg("--parent-attempt-id").arg(p);
-    }
     cmd.arg("--").arg(launch.adapter).args(launch.args);
     cmd.envs(launch.env).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::from(log)).process_group(0);
     let mut child = cmd.spawn().map_err(|e| RunnerError::Holder(format!("spawn {}: {e}", launch.bin.display())))?;

@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     pub node: NodeConfig,
     pub swarm: SwarmConfig,
-    pub workspace: WorkspaceConfig,
     pub runner: RunnerConfig,
     pub sources: SourcesConfig,
     /// `[harness.claude] adapter = "claude-agent-acp"`.
@@ -64,19 +63,6 @@ pub struct SwarmConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct WorkspaceConfig {
-    pub url: Option<String>,
-    pub credential_file: PathBuf,
-}
-
-impl Default for WorkspaceConfig {
-    fn default() -> Self {
-        WorkspaceConfig { url: None, credential_file: config_dir().join("workspace.token") }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
 pub struct RunnerConfig {
     pub default_permission_policy: PermissionPolicy,
     pub holder_dir: PathBuf,
@@ -88,7 +74,6 @@ pub struct RunnerConfig {
     pub idle_timeout_s: u64,
     pub suspend_on_needs_attention: bool,
     pub resume_on_prompt: bool,
-    pub resume_on_ruling: bool,
     pub max_resumes_per_hour: u32,
 }
 
@@ -103,7 +88,6 @@ impl Default for RunnerConfig {
             idle_timeout_s: 1800,
             suspend_on_needs_attention: false,
             resume_on_prompt: true,
-            resume_on_ruling: true,
             max_resumes_per_hour: 6,
         }
     }
@@ -279,7 +263,7 @@ loopback_port = 8790
 [swarm]
 static_peers = ["100.64.0.12:8791"]
 [runner]
-default_permission_policy = "decision"
+default_permission_policy = "auto"
 [harness.claude]
 adapter = "claude-agent-acp"
 "#,
@@ -288,7 +272,7 @@ adapter = "claude-agent-acp"
         let config = Config::load(&path).unwrap();
         assert_eq!(config.node.name, "gibson");
         assert_eq!(config.swarm.static_peers, vec!["100.64.0.12:8791"]);
-        assert_eq!(config.runner.default_permission_policy, PermissionPolicy::Decision);
+        assert_eq!(config.runner.default_permission_policy, PermissionPolicy::Auto);
         assert_eq!(config.harness["claude"].adapter, "claude-agent-acp");
         assert_eq!(config.sources.scan_interval_ms, 2000);
 

@@ -14,18 +14,13 @@ use crate::config::{Config, config_dir};
 
 pub async fn run(client: &Client, config: &Config, command: Command, json: bool) -> Out<()> {
     match command {
-        Command::Start { harness, cwd, attempt, parent_attempt, name, policy, model, effort, env } => {
-            let Some(attempt) = attempt else {
-                return Err(Exit::user("--attempt is required: a session that is not a workspace attempt has no place to report to; start the attempt in the workspace and pass its id"));
-            };
+        Command::Start { harness, cwd, name, policy, model, effort, env } => {
             let env = env
                 .iter()
                 .map(|pair| pair.split_once('=').map(|(k, v)| (k.to_string(), Value::String(v.to_string()))).ok_or_else(|| Exit::user(format!("--env {pair}: expected K=V"))))
                 .collect::<Out<Map<String, Value>>>()?;
             let body = json!({
-                "harness": harness, "cwd": cwd, "attempt_id": attempt, "parent_attempt_id": parent_attempt,
-                "attempt_token": std::env::var("WORKSPACE_ATTEMPT_TOKEN").ok(),
-                "name": name, "model": model, "effort": effort, "permission_policy": policy.map(policy_word), "env": env,
+                "harness": harness, "cwd": cwd, "name": name, "model": model, "effort": effort, "permission_policy": policy.map(policy_word), "env": env,
             });
             let body = client.call(Method::POST, "/sessions", Some(body)).await?;
             started(&body, json)
@@ -81,9 +76,9 @@ pub async fn run(client: &Client, config: &Config, command: Command, json: bool)
         Command::Ui => open_ui(config, "/ui"),
         Command::Allow { key, always } => answer(client, &key, if always { Choice::AllowAlways } else { Choice::Allow }, None, json).await,
         Command::Deny { key, reason } => answer(client, &key, Choice::Deny, reason, json).await,
-        Command::Spawn { key, harness, cwd, task, name } => {
+        Command::Spawn { key, harness, cwd, name } => {
             let key = session_key(client, &key).await?;
-            let body = json!({ "harness": harness, "cwd": cwd, "task": task, "name": name });
+            let body = json!({ "harness": harness, "cwd": cwd, "name": name });
             let body = client.call(Method::POST, &format!("/sessions/{key}/spawn"), Some(body)).await?;
             started(&body, json)
         }
@@ -113,7 +108,6 @@ fn policy_word(policy: Policy) -> &'static str {
     match policy {
         Policy::Auto => "auto",
         Policy::Attention => "attention",
-        Policy::Decision => "decision",
     }
 }
 

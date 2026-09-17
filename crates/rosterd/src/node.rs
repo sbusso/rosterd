@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use crate::bridge::Bridge;
 use crate::config::Config;
 use crate::identity::Identity;
 use crate::mesh::Mesh;
@@ -16,7 +15,6 @@ pub struct Node {
     pub identity: Identity,
     pub roster: Arc<Roster>,
     pub mesh: Arc<Mesh>,
-    pub bridge: Arc<Bridge>,
     pub runner: Arc<Runner>,
     /// The loopback bearer token, R6. Stored at `<config dir>/loopback.token`, mode 0600.
     pub loopback_token: String,

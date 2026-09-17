@@ -248,7 +248,7 @@ mod tests {
     }
 
     /// A node with listen off, an ephemeral loopback port, and the socket under a temp dir;
-    /// `serve` runs in the background. Nothing here reaches the runner, mesh or bridge.
+    /// `serve` runs in the background. Nothing here reaches the runner or the mesh.
     async fn start(tag: &str) -> Harness {
         let dir = std::env::temp_dir().join(format!("rosterd-api-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -265,14 +265,12 @@ mod tests {
         let identity = Identity::from_key(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng));
         let roster = Roster::new("gibson", &identity.node_id, Capabilities::default());
         let mesh = crate::mesh::Mesh::new(config.clone(), identity.clone(), roster.clone(), "test").unwrap();
-        let bridge = crate::bridge::Bridge::new(config.clone(), roster.clone()).unwrap();
-        let runner = crate::runner::Runner::new(config.clone(), roster.clone(), bridge.clone(), mesh.clone());
+        let runner = crate::runner::Runner::new(config.clone(), roster.clone());
         let node = Arc::new(Node {
             config: config.clone(),
             identity,
             roster,
             mesh,
-            bridge,
             runner,
             loopback_token: "secret-token".into(),
         });
@@ -302,7 +300,6 @@ mod tests {
         assert_eq!(status["node"], "gibson");
         assert_eq!(status["node_id"], h.node.identity.node_id);
         assert_eq!(status["sessions"], 0);
-        assert_eq!(status["bridge"]["configured"], false);
 
         let ui = h.socket.get("http://rosterd/ui/sessions/abc").send().await.unwrap();
         assert!(ui.headers()["content-type"].to_str().unwrap().starts_with("text/html"));
@@ -500,12 +497,12 @@ mod tests {
         // Interactive sessions are never suspended, R15.1: the runner does not know the key.
         let refused = h.socket.post(format!("http://rosterd/sessions/{key}/suspend")).send().await.unwrap();
         assert_eq!(refused.status(), StatusCode::NOT_FOUND);
-        // Spawn needs a parent attempt.
+        // Spawn needs a harness this node has.
         let spawn = h.socket.post(format!("http://rosterd/sessions/{key}/spawn")).json(&json!({ "harness": "claude" })).send().await.unwrap();
         assert_eq!(spawn.status(), StatusCode::BAD_REQUEST);
         // No swarm to leave.
         let leave = h.socket.post("http://rosterd/swarm/leave").send().await.unwrap();
-        assert_eq!(leave.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(leave.status(), StatusCode::SERVICE_UNAVAILABLE, "{}", leave.text().await.unwrap());
 
         let status: Value = h.socket.get("http://rosterd/status").send().await.unwrap().json().await.unwrap();
         assert_eq!(status["swarm_id"], Value::Null);

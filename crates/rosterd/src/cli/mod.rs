@@ -36,7 +36,6 @@ pub struct Scope {
 pub enum Policy {
     Auto,
     Attention,
-    Decision,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy)]
@@ -60,7 +59,7 @@ pub enum Command {
         #[command(flatten)]
         scope: Scope,
     },
-    /// Node, version, listeners, swarm, bridge, holders, sources.
+    /// Node, version, listeners, swarm, holders, sources.
     Status,
     /// Swarm membership and health.
     Nodes,
@@ -68,17 +67,12 @@ pub enum Command {
     Read { key: String },
     /// Which source set each field and when, and which claims were rejected.
     Explain { key: String },
-    /// Create a headless session for a workspace attempt, R5.1.
+    /// Create a headless session, R5.1.
     Start {
         #[arg(long)]
         harness: String,
         #[arg(long)]
         cwd: String,
-        /// The workspace attempt this session works on; required.
-        #[arg(long)]
-        attempt: Option<String>,
-        #[arg(long)]
-        parent_attempt: Option<String>,
         #[arg(long)]
         name: Option<String>,
         #[arg(long)]
@@ -134,15 +128,13 @@ pub enum Command {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// A child attempt for TASK under the session's task, and a child session bound to it, R5.4.
+    /// A child session of KEY, R5.4.
     Spawn {
         key: String,
         #[arg(long)]
         harness: String,
         #[arg(long)]
         cwd: String,
-        #[arg(long)]
-        task: String,
         #[arg(long)]
         name: Option<String>,
     },
@@ -271,12 +263,6 @@ async fn status(client: &Client, json: bool) -> Out<()> {
     let status = parse::<Value>(&body)?;
     let text = |key: &str| status[key].as_str().map(str::to_string).unwrap_or_else(|| status[key].to_string());
     let count = |path: &[&str]| path.iter().fold(&status, |v, k| &v[*k]).as_u64().unwrap_or(0);
-    let bridge = &status["bridge"];
-    let bridge_state = match (bridge["configured"].as_bool(), bridge["connected"].as_bool()) {
-        (Some(false), _) => "not configured".to_string(),
-        (_, Some(true)) => "connected".to_string(),
-        _ => "reconnecting".to_string(),
-    };
     let sources = status["sources"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")).unwrap_or_default();
     println!("node      {} ({})", text("node"), text("node_id"));
     println!("version   {}", text("version"));
@@ -286,7 +272,6 @@ async fn status(client: &Client, json: bool) -> Out<()> {
     println!("ui        {}", text("ui_listen"));
     println!("swarm     {}", status["swarm_id"].as_str().unwrap_or("none"));
     println!("peers     {} ({} reachable, {} unreachable)", count(&["peers", "total"]), count(&["peers", "reachable"]), count(&["peers", "unreachable"]));
-    println!("bridge    {bridge_state}, queue {}", bridge["queued"].as_u64().unwrap_or(0));
     println!("sessions  {}", text("sessions"));
     println!("holders   {} ({} suspended)", count(&["holders"]), count(&["suspended"]));
     println!("sources   {sources}");

@@ -26,7 +26,6 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 
 use super::Peer;
-use crate::bridge::BridgeError;
 use crate::gate;
 use crate::mesh::{MeshError, PeerAuth};
 use crate::node::{Node, VERSION};
@@ -82,7 +81,7 @@ impl From<RunnerError> for ApiError {
     fn from(error: RunnerError) -> Self {
         let status = match error {
             RunnerError::NotFound(_) | RunnerError::NoPending(_) => StatusCode::NOT_FOUND,
-            RunnerError::AttemptBound { .. } | RunnerError::Suspended(_) => StatusCode::CONFLICT,
+            RunnerError::Suspended(_) => StatusCode::CONFLICT,
             RunnerError::UnknownHarness(_) => StatusCode::BAD_REQUEST,
             // R15.3: over max_resumes_per_hour the session stays suspended until the window passes.
             RunnerError::ResumeLimit { retry_after_s, .. } => {
@@ -106,17 +105,6 @@ impl From<MeshError> for ApiError {
             MeshError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             MeshError::NoSwarm => StatusCode::SERVICE_UNAVAILABLE,
             MeshError::Unreachable(_) | MeshError::Other(_) => StatusCode::BAD_GATEWAY,
-        };
-        ApiError::new(status, error.to_string())
-    }
-}
-
-impl From<BridgeError> for ApiError {
-    fn from(error: BridgeError) -> Self {
-        let status = match error {
-            BridgeError::NotConfigured => StatusCode::SERVICE_UNAVAILABLE,
-            BridgeError::NoToken(_) => StatusCode::BAD_REQUEST,
-            BridgeError::Refused { .. } | BridgeError::Other(_) => StatusCode::BAD_GATEWAY,
         };
         ApiError::new(status, error.to_string())
     }
@@ -221,9 +209,6 @@ struct RegisterBody {
     session_id: Option<String>,
     lane: Option<Lane>,
     name: Option<String>,
-    attempt_id: Option<String>,
-    parent_attempt_id: Option<String>,
-    attempt_token: Option<String>,
     cwd: Option<String>,
     tty: Option<String>,
     tmux: Option<TmuxHandle>,
@@ -251,8 +236,6 @@ async fn register(State(node): State<Arc<Node>>, Body(body): Body<RegisterBody>)
             session_id: body.session_id,
             lane: body.lane,
             name: body.name,
-            attempt_id: body.attempt_id.clone(),
-            parent_attempt_id: body.parent_attempt_id,
             cwd: body.cwd,
             tty: body.tty,
             tmux: body.tmux,
@@ -260,9 +243,6 @@ async fn register(State(node): State<Arc<Node>>, Body(body): Body<RegisterBody>)
             ..Patch::default()
         },
     )?;
-    if let (Some(attempt_id), Some(token)) = (body.attempt_id, body.attempt_token) {
-        node.bridge.bind_attempt(&attempt_id, &token);
-    }
     Ok(Json(record))
 }
 
@@ -349,7 +329,6 @@ async fn status(State(node): State<Arc<Node>>) -> Json<Value> {
         "swarm_id": node.mesh.swarm_id(),
         "nodes": nodes.len(),
         "peers": { "total": peers.len(), "reachable": reachable, "unreachable": peers.len() - reachable },
-        "bridge": node.bridge.status(),
         "sessions": open().count(),
         "holders": open().filter(|r| node.runner.owns(&r.session_key)).count(),
         "suspended": open().filter(|r| r.liveness == Liveness::Suspended).count(),
@@ -413,7 +392,7 @@ async fn gate(
     let source = if record.holder.is_some() { Source::Acp } else { Source::Hook };
     let timeout = node.config.harness.get(&record.harness).map(|h| h.gate_timeout_s).unwrap_or(crate::config::HarnessConfig::default().gate_timeout_s);
     node.roster.claim(source, &key, Activity::NeedsAttention, &format!("gate:{}", body.tool), Utc::now())?;
-    let answer = gate::wait(&key, record.attempt_id.as_deref(), &body.tool, &body.summary, body.policy, &node.bridge, Duration::from_secs(timeout)).await;
+    let answer = gate::wait(&key, &body.tool, &body.summary, body.policy, Duration::from_secs(timeout)).await;
     node.roster.claim(source, &key, Activity::Active, "permission_answered", Utc::now())?;
     Ok(Json(answer))
 }
@@ -581,7 +560,7 @@ async fn suspend(captures: Captures) -> Result<Response, ApiError> {
     ok(captures.node.runner.suspend(&captures.key).await?)
 }
 
-/// R15.3: the new record, under a new key bound to the same attempt and session id.
+/// R15.3: the new record, under a new key bound to the same harness session id.
 async fn resume(captures: Captures) -> Result<Response, ApiError> {
     if let Some(node_id) = captures.remote()? {
         return captures.proxy(node_id, Method::POST, captures.path("/resume"), None).await;
@@ -594,31 +573,24 @@ async fn resume(captures: Captures) -> Result<Response, ApiError> {
 pub(super) struct SpawnBody {
     pub harness: String,
     pub cwd: Option<String>,
-    /// The workspace task the child attempt is created under, R14.3 `spawn`.
-    pub task: Option<String>,
     pub name: Option<String>,
     pub permission_policy: Option<PermissionPolicy>,
     pub model: Option<String>,
 }
 
-/// R5.4: a child attempt in the workspace under the parent's, then a child session bound to
-/// it. Shared by `POST /sessions/{key}/spawn` and the MCP tool session.spawn. The runner
-/// refuses an attempt already bound to a live session anywhere in the swarm.
+/// R5.4: a child session under the parent's key. Shared by `POST /sessions/{key}/spawn` and
+/// the MCP tool session.spawn.
 pub(super) async fn spawn_child(node: &Node, parent_key: &str, body: SpawnBody) -> Result<Value, ApiError> {
     let parent = node.roster.get(parent_key).ok_or_else(|| ApiError::not_found(format!("no session {parent_key}")))?;
-    let parent_attempt = parent.attempt_id.ok_or_else(|| ApiError::bad_request("the parent session has no workspace attempt to spawn under"))?;
     if body.harness.is_empty() {
         return Err(ApiError::bad_request("harness is required"));
     }
-    let child = node.bridge.create_child_attempt(&parent_attempt, &body.harness, body.task.as_deref()).await?;
     let record = node
         .runner
         .start(StartSession {
             harness: body.harness,
             cwd: body.cwd.or(parent.cwd),
-            attempt_id: Some(child.attempt_id.clone()),
-            parent_attempt_id: Some(parent_attempt),
-            attempt_token: Some(child.token),
+            parent_session_key: Some(parent.session_key),
             name: body.name,
             model: body.model,
             // A child inherits the parent's policy unless the call overrides it, R5.4.
@@ -626,7 +598,7 @@ pub(super) async fn spawn_child(node: &Node, parent_key: &str, body: SpawnBody) 
             ..StartSession::default()
         })
         .await?;
-    Ok(json!({ "attempt_id": child.attempt_id, "task_id": child.task_id, "session_key": record.session_key, "record": record }))
+    Ok(json!({ "session_key": record.session_key, "record": record }))
 }
 
 async fn spawn(captures: Captures, Body(body): Body<Value>) -> Result<Response, ApiError> {
@@ -644,7 +616,7 @@ async fn patch_session(captures: Captures, Body(body): Body<Value>) -> Result<Re
     ok(captures.node.runner.patch(&captures.key, patch).await?)
 }
 
-/// DELETE stops the holder; the workspace attempt stays open, R5.6.
+/// DELETE stops the holder, R5.6.
 async fn delete_session(captures: Captures) -> Result<Response, ApiError> {
     if let Some(node_id) = captures.remote()? {
         return captures.proxy(node_id, Method::DELETE, captures.path(""), None).await;

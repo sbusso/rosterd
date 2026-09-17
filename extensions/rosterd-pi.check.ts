@@ -26,8 +26,6 @@ const server = http.createServer((req, res) => {
 });
 await new Promise<void>((r) => server.listen(sock, r));
 process.env.ROSTERD_SOCKET = sock;
-process.env.WORKSPACE_ATTEMPT_ID = "01JATTEMPT";
-process.env.WORKSPACE_ATTEMPT_TOKEN = "wst_secret";
 
 const handlers: Record<string, Function> = {};
 ext({ on: (name: string, fn: Function) => (handlers[name] = fn) });
@@ -39,7 +37,6 @@ await handlers.session_start({ reason: "startup" }, ctx);
 assert(seen[0].path === "/register", "register first");
 assert(seen[0].body.source === "hook" && seen[0].body.pid === process.pid && seen[0].body.harness === "pi", "ident");
 assert(seen[0].body.session_id === "sess-1" && seen[0].body.cwd === "/w", "session and cwd");
-assert(seen[0].body.attempt_id === "01JATTEMPT" && seen[0].body.attempt_token === "wst_secret", "attempt");
 
 await handlers.before_agent_start({}, ctx);
 assert(seen[1].path === "/claim" && seen[1].body.activity === "active" && seen[1].body.event === "prompt", "prompt claim");

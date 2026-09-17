@@ -1,7 +1,7 @@
 //! `rosterd setup`: the installer, a checklist on a terminal screen. Every row is checked the
 //! way `doctor` checks it and fixed in place when picked: binaries on PATH, the config, the
 //! service, the daemon, the three harnesses and their adapters, hooks and the pi extension, the
-//! workspace credential, a swarm to join. The rows are data (`steps`); the screen (`tui`) knows
+//! a swarm to join. The rows are data (`steps`); the screen (`tui`) knows
 //! nothing about rosterd, so another tool can hand it its own rows.
 //!
 //! Without a terminal, or with `--yes`, the needed rows run in order and print one line each.
@@ -154,14 +154,6 @@ pub fn steps() -> Vec<Step> {
         });
     }
     steps.push(Step { name: "tray", inputs: &[], foreground: false, optional: false, check: check_tray, apply: apply_tray });
-    steps.push(Step {
-        name: "workspace",
-        inputs: &["workspace url", "workspace agent token"],
-        foreground: false,
-        optional: true,
-        check: check_workspace,
-        apply: apply_workspace,
-    });
     steps.push(Step {
         name: "swarm",
         inputs: &["peer address (host:port)", "invite token"],
@@ -360,12 +352,10 @@ fn apply_config(ctx: &Ctx, _: &[String], log: Log) -> Result<()> {
         "# rosterd, R10. Pin the name: a renamed machine is a new name, the id stays.\n\
          [node]\nname = \"{name}\"\nport = 8791\nlisten = \"tailscale\"\nloopback_port = 8790\nui_listen = \"loopback\"\n\n\
          [swarm]\nstatic_peers = []\n\n\
-         [workspace]\n# url = \"https://ws.example.ts.net\"\n# credential_file = \"{cred}\"\n\n\
          [runner]\ndefault_permission_policy = \"attention\"\nresume_on_crash = true\nrecap = true\nidle_timeout_s = 1800\n\n\
          [sources]\nfiles = false\nscan_interval_ms = 2000\n\n\
          [harness.claude]\nadapter = \"claude-agent-acp\"\n[harness.codex]\nadapter = \"codex-acp\"\n\
-         [harness.pi]\nadapter = \"pi-acp\"\nextension = true\n",
-        cred = dir.join("workspace.token").display()
+         [harness.pi]\nadapter = \"pi-acp\"\nextension = true\n"
     );
     crate::config::write_private(&ctx.config_path, text.as_bytes())?;
     log(format!("wrote {}", ctx.config_path.display()));
@@ -651,37 +641,7 @@ fn apply_tray(_: &Ctx, _: &[String], _: Log) -> Result<()> {
     bail!("no tray autostart for this OS")
 }
 
-// The workspace credential, R8, and a swarm to join, R7.3: the two rows that ask for input.
-
-fn check_workspace(ctx: &Ctx) -> State {
-    match &ctx.config.workspace.url {
-        None => State::Needed("optional: url and agent token for the workspace bridge".into()),
-        Some(url) => match std::fs::metadata(&ctx.config.workspace.credential_file) {
-            Ok(m) if m.len() > 0 => State::Done(url.clone()),
-            _ => State::Needed(format!("{url}, but {} is missing", ctx.config.workspace.credential_file.display())),
-        },
-    }
-}
-
-fn apply_workspace(ctx: &Ctx, inputs: &[String], log: Log) -> Result<()> {
-    let [url, token] = inputs else { bail!("workspace needs a url and a token") };
-    let url = url.trim();
-    let token = token.trim();
-    if !(url.starts_with("http://") || url.starts_with("https://")) || token.is_empty() {
-        bail!("the url must start with http:// or https:// and the token must not be empty");
-    }
-    let credential = ctx.config.workspace.credential_file.clone();
-    crate::config::write_private(&credential, format!("{token}\n").as_bytes())?;
-    let mut doc = std::fs::read_to_string(&ctx.config_path).unwrap_or_default().parse::<toml_edit::DocumentMut>().context("parse rosterd.toml")?;
-    if !doc.contains_table("workspace") {
-        doc["workspace"] = toml_edit::table();
-    }
-    doc["workspace"]["url"] = toml_edit::value(url);
-    doc["workspace"]["credential_file"] = toml_edit::value(credential.to_string_lossy().as_ref());
-    crate::config::write_private(&ctx.config_path, doc.to_string().as_bytes())?;
-    log(format!("workspace {url}, token in {}; restart the daemon to connect", credential.display()));
-    Ok(())
-}
+// A swarm to join, R7.3: the row that asks for input.
 
 fn check_swarm(_: &Ctx) -> State {
     let swarm = config_dir().join("swarm.json");
@@ -761,7 +721,7 @@ mod tests {
     /// The rows that write files: needed, then applied, then done, then applied again with no
     /// change, the way `integrate install` is byte idempotent.
     #[test]
-    fn config_path_and_workspace_rows_apply_then_read_done() {
+    fn config_and_path_rows_apply_then_read_done() {
         let dir = std::env::temp_dir().join(format!("rosterd-setup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -783,15 +743,6 @@ mod tests {
         ctx.paths.search_path = std::env::join_paths([ctx.bin_dir.clone()]).unwrap();
         assert!(matches!(check_path(&ctx), State::Done(_)));
 
-        ctx.config.workspace.credential_file = dir.join("workspace.token");
-        assert!(matches!(check_workspace(&ctx), State::Needed(_)));
-        assert!(apply_workspace(&ctx, &["ftp://x".into(), "t".into()], &mut log).is_err());
-        apply_workspace(&ctx, &["https://ws.example".into(), "tok\n".into()], &mut log).unwrap();
-        ctx.reload();
-        assert_eq!(ctx.config.workspace.url.as_deref(), Some("https://ws.example"));
-        assert_eq!(std::fs::read_to_string(dir.join("workspace.token")).unwrap(), "tok\n");
-        assert!(matches!(check_workspace(&ctx), State::Done(_)));
-        assert!(std::fs::read_to_string(&ctx.config_path).unwrap().contains("# rosterd, R10"), "toml_edit kept the comments");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# rosterd-hook, R4: the hook of the workspace amendment (section 43.3) with its one addition,
-# a post to the local rosterd socket. Claude Code and Codex both hand the event to stdin as
-# JSON with session_id, hook_event_name and cwd; only those, plus notification_type, are read.
-# No prompt, transcript or tool input is read or sent.
+# rosterd-hook, R4: a post to the local rosterd socket. Claude Code and Codex both hand the
+# event to stdin as JSON with session_id, hook_event_name and cwd; only those, plus
+# notification_type, are read. No prompt, transcript or tool input is read or sent.
 #
 # It fails open: every call is curl --max-time 0.8 with errors swallowed, and the exit is 0
 # whatever happened, so a harness with the hook installed is never blocked by it.
 #
-#   rosterd-hook [Event]        the event may also come as argv[1], as `workspace hook` takes it
+#   rosterd-hook [Event]        the event may also come as argv[1]
 #   rosterd-hook --dry-run      print the requests instead of sending them
 #   rosterd-hook --self-test    sample payloads through the mapping, no network
 #
@@ -28,9 +27,8 @@
 # (Codex raises PermissionRequest instead). Both harnesses run the command with the event on
 # stdin; `rosterd-hook` must be on PATH, or write its absolute path in "command".
 #
-# Environment. WORKSPACE_URL, WORKSPACE_ATTEMPT_ID and WORKSPACE_ATTEMPT_TOKEN name the
-# workspace attempt; all three or the workspace is skipped. ROSTERD_SOCKET overrides the daemon
-# socket; ROSTERD_HARNESS overrides the harness name (else inferred from the process tree).
+# Environment. ROSTERD_SOCKET overrides the daemon socket; ROSTERD_HARNESS overrides the
+# harness name (else inferred from the process tree).
 set -u
 
 DRY=0
@@ -59,13 +57,7 @@ jstr() {
   printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
 }
 
-# `,"key":"value"` only when the value is set, for bodies whose schema wants absent, not null.
-opt() {
-  [ -n "$2" ] && printf ',"%s":%s' "$1" "$(jstr "$2")"
-  return 0
-}
-
-# Event to claim, section 43.3's table with R5.2's event names. Prints "kind activity event",
+# Event to claim, R5.2's event names. Prints "kind activity event",
 # kind being register, claim or none.
 map_event() { # $1 event, $2 notification_type
   case "$1" in
@@ -113,13 +105,13 @@ daemon_socket() {
   return 0
 }
 
-post() { # $1 url, $2 body, $3 bearer token or empty, $4 unix socket or empty
+post() { # $1 url, $2 body, $3 unix socket
   if [ "$DRY" = 1 ]; then
-    printf 'POST %s %s\n' "${4:+unix:$4}$1" "$2"
+    printf 'POST unix:%s%s %s\n' "$3" "$1" "$2"
     return 0
   fi
   curl -sS -o /dev/null --max-time 0.8 -X POST "$1" -H 'Content-Type: application/json' \
-    ${3:+-H "Authorization: Bearer $3"} ${4:+--unix-socket "$4"} --data "$2" >/dev/null 2>&1 || true
+    --unix-socket "$3" --data "$2" >/dev/null 2>&1 || true
 }
 
 main() {
@@ -141,31 +133,15 @@ main() {
   [ -n "$harness" ] || case "${proc#* }" in claude | codex) harness=${proc#* } ;; esac
   [ -n "$harness" ] || harness=unknown
 
-  # (a) The workspace, section 43.3: a heartbeat on SessionStart, a claim otherwise.
-  # ponytail: no seq; the workspace assigns one, and the daemon's bridge carries the ordered
-  # sequence. Add the amendment's mkdir-locked counter if hook-only nodes reorder claims.
-  if [ -n "${WORKSPACE_URL-}" ] && [ -n "${WORKSPACE_ATTEMPT_ID-}" ] && [ -n "${WORKSPACE_ATTEMPT_TOKEN-}" ]; then
-    local base="${WORKSPACE_URL%/}/api/v1/attempts/$WORKSPACE_ATTEMPT_ID"
-    if [ "$kind" = register ]; then
-      post "$base/heartbeat" "{\"harness\":$(jstr "$harness")$(opt sessionId "$session_id")}" "$WORKSPACE_ATTEMPT_TOKEN"
-    else
-      post "$base/activity" \
-        "{\"activity\":\"$activity\",\"event\":\"$ev\",\"harness\":$(jstr "$harness")$(opt sessionId "$session_id"),\"observedAt\":\"$at\"}" \
-        "$WORKSPACE_ATTEMPT_TOKEN"
-    fi
-  fi
-
-  # (b) The local daemon, R4: identity is the harness pid; the daemon reads its start ticks.
+  # The local daemon, R4: identity is the harness pid; the daemon reads its start ticks.
   local sock
   sock=$(daemon_socket)
   [ -n "$sock" ] || return 0
   local ident="\"source\":\"hook\",\"pid\":$pid,\"harness\":$(jstr "$harness"),\"session_id\":$(jstr "$session_id"),\"cwd\":$(jstr "$cwd")"
   if [ "$kind" = register ]; then
-    post http://rosterd/register \
-      "{$ident,\"attempt_id\":$(jstr "${WORKSPACE_ATTEMPT_ID-}"),\"attempt_token\":$(jstr "${WORKSPACE_ATTEMPT_TOKEN-}")}" \
-      '' "$sock"
+    post http://rosterd/register "{$ident}" "$sock"
   else
-    post http://rosterd/claim "{$ident,\"activity\":\"$activity\",\"event\":\"$ev\",\"observed_at\":\"$at\"}" '' "$sock"
+    post http://rosterd/claim "{$ident,\"activity\":\"$activity\",\"event\":\"$ev\",\"observed_at\":\"$at\"}" "$sock"
   fi
 }
 
@@ -184,14 +160,12 @@ self_test() {
       fi
     done
   }
-  local ws="WORKSPACE_URL=https://ws.example/ WORKSPACE_ATTEMPT_ID=01JATTEMPT WORKSPACE_ATTEMPT_TOKEN=wst_secret ROSTERD_SOCKET=/tmp/rosterd-test.sock"
+  local ws="ROSTERD_SOCKET=/tmp/rosterd-test.sock"
   local start='{"session_id":"s-1","hook_event_name":"SessionStart","cwd":"/w","transcript_path":"/x","prompt":"never sent"}'
   check "claude SessionStart" "$ws ROSTERD_HARNESS=claude" "$start" \
-    'POST https://ws.example/api/v1/attempts/01JATTEMPT/heartbeat {"harness":"claude","sessionId":"s-1"}' \
     'POST unix:/tmp/rosterd-test.sock' 'http://rosterd/register {"source":"hook","pid":' \
-    '"harness":"claude","session_id":"s-1","cwd":"/w","attempt_id":"01JATTEMPT","attempt_token":"wst_secret"}'
+    '"harness":"claude","session_id":"s-1","cwd":"/w"}'
   check "claude PreToolUse" "$ws ROSTERD_HARNESS=claude" '{"session_id":"s-1","hook_event_name":"PreToolUse","tool_name":"Bash","cwd":"/w"}' \
-    '/activity {"activity":"active","event":"tool_call","harness":"claude","sessionId":"s-1","observedAt":"' \
     'http://rosterd/claim {"source":"hook","pid":' '"activity":"active","event":"tool_call","observed_at":"'
   check "claude UserPromptSubmit" "$ws ROSTERD_HARNESS=claude" '{"session_id":"s-1","hook_event_name":"UserPromptSubmit","cwd":"/w"}' \
     '"activity":"active","event":"prompt"'
@@ -203,7 +177,7 @@ self_test() {
   check "claude Notification auth" "$ws ROSTERD_HARNESS=claude" \
     '{"session_id":"s-1","hook_event_name":"Notification","notification_type":"auth_success","cwd":"/w"}' NOTHING
   check "codex PermissionRequest" "$ws ROSTERD_HARNESS=codex" '{"session_id":"c-1","hook_event_name":"PermissionRequest","cwd":"/w"}' \
-    '"activity":"needs_attention","event":"permission","harness":"codex","sessionId":"c-1"'
+    '"harness":"codex","session_id":"c-1"' '"activity":"needs_attention","event":"permission"'
   check "codex Stop" "$ws ROSTERD_HARNESS=codex" '{"session_id":"c-1","hook_event_name":"Stop","cwd":"/w"}' \
     '"activity":"idle","event":"turn_end"'
   check "SubagentStop" "$ws ROSTERD_HARNESS=claude" '{"session_id":"s-1","hook_event_name":"SubagentStop","cwd":"/w"}' NOTHING
@@ -211,10 +185,6 @@ self_test() {
   local out
   out=$(printf '{"session_id":"s-1","cwd":"/w"}' | env $ws ROSTERD_HARNESS=claude "$0" --dry-run Stop)
   case "$out" in *'"activity":"idle","event":"turn_end"'*) ;; *) echo "FAIL argv event: $out"; fails=$((fails + 1)) ;; esac
-  check "no workspace vars" "ROSTERD_SOCKET=/tmp/rosterd-test.sock ROSTERD_HARNESS=claude" \
-    '{"session_id":"s-1","hook_event_name":"Stop","cwd":"/w"}' 'http://rosterd/claim'
-  out=$(printf '{"session_id":"s-1","hook_event_name":"Stop"}' | env ROSTERD_SOCKET=/tmp/rosterd-test.sock ROSTERD_HARNESS=claude "$0" --dry-run)
-  case "$out" in *ws.example*) echo "FAIL no workspace vars: posted to the workspace: $out"; fails=$((fails + 1)) ;; esac
   check "quotes in cwd" "$ws ROSTERD_HARNESS=claude" '{"session_id":"s-1","hook_event_name":"Stop","cwd":"/w/it\"s"}' '"cwd":"/w/it\"s"'
   if [ "$fails" = 0 ]; then echo "rosterd-hook self-test: ok"; else echo "rosterd-hook self-test: $fails failed"; return 1; fi
 }

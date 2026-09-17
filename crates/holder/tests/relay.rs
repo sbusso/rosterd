@@ -28,7 +28,7 @@ async fn relays_replays_and_cleans_up() {
     let state = dir.join("s.json");
     let mut holder = tokio::process::Command::new(env!("CARGO_BIN_EXE_rosterd-holder"))
         .args(["--socket", socket.to_str().unwrap(), "--state", state.to_str().unwrap()])
-        .args(["--harness", "cat", "--cwd", dir.to_str().unwrap(), "--attempt-id", "att_1"])
+        .args(["--harness", "cat", "--cwd", dir.to_str().unwrap()])
         .args(["--meta", r#"{"name":"echo"}"#, "--", "cat"])
         .spawn()
         .expect("spawn holder");
@@ -46,7 +46,6 @@ async fn relays_replays_and_cleans_up() {
     }
     let written = written.expect("state file");
     assert_eq!(written.harness, "cat");
-    assert_eq!(written.attempt_id.as_deref(), Some("att_1"));
     assert_eq!(written.meta["name"], "echo");
     assert_eq!(written.holder_pid, holder.id().unwrap());
     assert_ne!(written.adapter_pid, 0);

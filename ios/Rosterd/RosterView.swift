@@ -118,10 +118,9 @@ struct SessionRow: View {
                 if !r.project.isEmpty { Text(r.project).font(.caption).fontWeight(.medium).padding(.horizontal, 6).padding(.vertical, 1).background(Color.line, in: RoundedRectangle(cornerRadius: 4)) }
                 Text(word.replacing("_", with: " ")).font(.footnote).fontWeight(.medium).foregroundStyle(Color.state(word))
                 Text([r.activityEvent, ago(r.when), word == "ended" ? r.endedReason : nil].compactMap { $0 }.joined(separator: " · ")).font(.footnote).foregroundStyle(Color.dim)
-                if r.conflict { Text("attempt conflict").font(.footnote).foregroundStyle(Color.err) }
             }
             Stats(record: r)
-            let meta = [r.lane == "headless" ? "headless" : nil, r.attemptId.map { "attempt \($0)" + (r.parentAttemptId.map { " ← \($0)" } ?? "") }, r.origin, r.cwd.map(tilde)].compactMap { $0 }
+            let meta = [r.lane == "headless" ? "headless" : nil, r.origin, r.cwd.map(tilde)].compactMap { $0 }
             if !meta.isEmpty { Text(meta.joined(separator: " · ")).font(.footnote).foregroundStyle(Color.dim) }
             ForEach(pending) { p in PendingView(key: r.sessionKey, pending: p, local: local, fail: fail, refresh: refresh) }
             if word != "ended" {

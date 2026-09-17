@@ -1,9 +1,8 @@
 //! rosterd: one daemon per machine that knows every coding agent session on it, drives headless
-//! sessions over ACP, joins a swarm of peers over Tailscale, and reports to the workspace.
+//! sessions over ACP and joins a swarm of peers over Tailscale.
 //! One binary serves both the daemon (`rosterd daemon`) and the CLI of R14.
 
 mod api;
-mod bridge;
 mod cli;
 mod config;
 mod doctor;
@@ -92,17 +91,15 @@ async fn serve(config_path: PathBuf) -> Result<()> {
         ..Capabilities::default()
     };
     let roster = roster::Roster::new(&config.node.name, &identity.node_id, capabilities);
-    // R8, acceptance 2: claim sequences continue across a restart, or the workspace refuses them.
+    // Claim sequences continue across a restart, so peers never see one go backwards.
     roster.persist_seqs(state_dir().join("seqs.json"));
     let mesh = mesh::Mesh::new(config.clone(), identity.clone(), roster.clone(), VERSION)?;
-    let bridge = bridge::Bridge::new(config.clone(), roster.clone())?;
-    let runner = runner::Runner::new(config.clone(), roster.clone(), bridge.clone(), mesh.clone());
+    let runner = runner::Runner::new(config.clone(), roster.clone());
     let node = Arc::new(Node {
         config: config.clone(),
         identity,
         roster: roster.clone(),
         mesh: mesh.clone(),
-        bridge: bridge.clone(),
         runner: runner.clone(),
         loopback_token: loopback_token()?,
     });
@@ -112,7 +109,6 @@ async fn serve(config_path: PathBuf) -> Result<()> {
         tokio::spawn(keep_tray());
     }
     tokio::spawn(mesh.clone().run());
-    tokio::spawn(bridge.clone().run());
     if let Err(error) = runner.recover().await {
         tracing::error!(%error, "holder recovery failed; the roster still answers, R2");
     }

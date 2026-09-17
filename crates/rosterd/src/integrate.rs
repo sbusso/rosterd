@@ -1,5 +1,5 @@
-//! R14.3 `rosterd integrate`: hook declarations for Claude Code and Codex following the workspace
-//! amendment's 43.3 rules (only marked entries are ours, everything else is kept, atomic writes),
+//! R14.3 `rosterd integrate`: hook declarations for Claude Code and Codex (only marked entries
+//! are ours, everything else is kept, atomic writes),
 //! the pi extension of R16.2, and the adapter lock file of R10. Install and uninstall write only
 //! when the bytes would change, so a second run changes nothing, A14 acceptance 8.
 
@@ -118,7 +118,7 @@ pub fn status(config: &Config) -> Vec<HarnessStatus> {
     status_at(config, &Paths::resolve(), true)
 }
 
-/// R16.1: the runner warns when a pi session under attention or decision has no extension.
+/// R16.1: the runner warns when a pi session under attention has no extension.
 pub fn pi_extension_installed() -> bool {
     std::fs::read(Paths::resolve().pi_extension).is_ok_and(|bytes| bytes == PI_EXTENSION.as_bytes())
 }

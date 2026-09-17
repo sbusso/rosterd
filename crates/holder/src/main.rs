@@ -34,10 +34,6 @@ struct Cli {
     harness: String,
     #[arg(long)]
     cwd: PathBuf,
-    #[arg(long)]
-    attempt_id: Option<String>,
-    #[arg(long)]
-    parent_attempt_id: Option<String>,
     /// JSON object of extra launch facts the daemon wants back after a restart.
     #[arg(long, default_value = "{}")]
     meta: String,
@@ -196,8 +192,6 @@ async fn main() -> Result<()> {
         session_id: None,
         harness: cli.harness,
         cwd: cli.cwd.to_string_lossy().into_owned(),
-        attempt_id: cli.attempt_id,
-        parent_attempt_id: cli.parent_attempt_id,
         adapter_pid,
         holder_pid: std::process::id(),
         started_at: chrono::Utc::now(),

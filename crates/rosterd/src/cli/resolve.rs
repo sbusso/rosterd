@@ -70,8 +70,6 @@ mod tests {
             activity_event: None,
             activity_at: None,
             activity_seq: 0,
-            attempt_id: None,
-            parent_attempt_id: None,
             parent_session_key: None,
             cwd: cwd.map(Into::into),
             origin: None,
@@ -86,7 +84,6 @@ mod tests {
             load: None,
             mode: None,
             plan: None,
-            conflict: false,
             permission_policy: None,
         }
     }

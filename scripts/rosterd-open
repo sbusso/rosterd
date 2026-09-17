@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # rosterd-open, R9: resolves a runtime handle and jumps to the session. The handle is the roster
-# record's (snake_case) or the workspace's (camelCase), on stdin or as --handle:
+# record's (snake_case, camelCase accepted), on stdin or as --handle:
 #
 #   {"kind": "tmux|herdr|headless|none", "machine": "gibson",
 #    "tmux": {"session": "agents", "window_index": 2, "pane_id": "%7"},

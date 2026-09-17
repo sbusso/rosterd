@@ -1,7 +1,6 @@
 //! R16.2 gating: a harness extension (pi) posts a tool call it is about to make and waits for
 //! allow or deny. Under policy `attention` the answer comes from `POST /sessions/{key}/permission`
-//! (the CLI's allow and deny); under `decision` from the workspace ruling through the bridge. A
-//! wait past the harness's `gate_timeout_s` is a deny with reason `timeout`. The pending calls
+//! (the CLI's allow and deny). A wait past the harness's `gate_timeout_s` is a deny with reason `timeout`. The pending calls
 //! use the runner's `PendingPermission` shape so one answer route serves both lanes.
 //!
 //! OWNER: the roster/api agent.
@@ -16,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::oneshot;
 
-use crate::bridge::{Bridge, Choice, DecisionRequest, Ruling};
 use crate::runner::{PendingPermission, PermissionAnswer, PermissionOption, RunnerError};
 
 /// `POST /gate`'s answer.
@@ -94,9 +92,8 @@ fn take(session_key: &str, position: impl FnOnce(&[Waiting]) -> Option<usize>) -
 }
 
 /// Holds a gated `tool` call on `session_key` until it is allowed or denied, or `timeout`
-/// passes (deny, reason `timeout`). Under `decision` the workspace rules through `bridge`;
-/// `attempt_id` is the session's.
-pub async fn wait(session_key: &str, attempt_id: Option<&str>, tool: &str, summary: &str, policy: PermissionPolicy, bridge: &Bridge, timeout: Duration) -> GateAnswer {
+/// passes (deny, reason `timeout`).
+pub async fn wait(session_key: &str, tool: &str, summary: &str, policy: PermissionPolicy, timeout: Duration) -> GateAnswer {
     match policy {
         PermissionPolicy::Auto => allow(),
         PermissionPolicy::Attention => {
@@ -113,52 +110,18 @@ pub async fn wait(session_key: &str, attempt_id: Option<&str>, tool: &str, summa
                 }
             }
         }
-        PermissionPolicy::Decision => {
-            let Some(attempt_id) = attempt_id else { return deny("no workspace attempt to decide under") };
-            let request = DecisionRequest {
-                attempt_id: attempt_id.into(),
-                title: tool.into(),
-                summary: summary.into(),
-                choices: options().into_iter().map(|o| Choice { id: o.option_id, label: o.name }).collect(),
-                default_choice_id: None,
-                context: None,
-            };
-            match tokio::time::timeout(timeout, bridge.request_decision(request)).await {
-                Ok(Ok(Ruling::Choice { id })) if matches!(id.as_str(), "allow" | "allow_always") => allow(),
-                Ok(Ok(Ruling::FreeText { text })) if matches!(text.trim(), "allow" | "allow_always") => allow(),
-                Ok(Ok(Ruling::Choice { id })) => deny(id),
-                Ok(Ok(Ruling::FreeText { text })) => deny(text),
-                Ok(Ok(Ruling::Withdrawn)) => deny("withdrawn"),
-                Ok(Ok(Ruling::Expired)) => deny("expired"),
-                Ok(Err(error)) => deny(error.to_string()),
-                Err(_) => deny("timeout"),
-            }
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
-    use crate::roster::Roster;
-    use rosterd_proto::Capabilities;
-    use std::sync::Arc;
-
-    fn bridge() -> Arc<Bridge> {
-        let config = Arc::new(Config::default());
-        Bridge::new(config, Roster::new("gibson", "abc", Capabilities::default())).unwrap()
-    }
 
     #[tokio::test]
     async fn attention_waits_for_allow_or_deny_and_times_out() {
-        let bridge = bridge();
         let key = "abc:1:1";
         let long = Duration::from_secs(5);
-        let gate = tokio::spawn({
-            let bridge = bridge.clone();
-            async move { wait(key, None, "bash", "bash {\"cmd\":\"ls\"}", PermissionPolicy::Attention, &bridge, long).await }
-        });
+        let gate = tokio::spawn(async move { wait(key, "bash", "bash {\"cmd\":\"ls\"}", PermissionPolicy::Attention, long).await });
         while pending(key).is_empty() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -170,23 +133,16 @@ mod tests {
         assert_eq!(gate.await.unwrap(), allow());
         assert!(pending(key).is_empty());
 
-        let gate = tokio::spawn({
-            let bridge = bridge.clone();
-            async move { wait(key, None, "edit", "edit a.rs", PermissionPolicy::Attention, &bridge, long).await }
-        });
+        let gate = tokio::spawn(async move { wait(key, "edit", "edit a.rs", PermissionPolicy::Attention, long).await });
         while pending(key).is_empty() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         answer(key, None, PermissionAnswer::Selected { option_id: "deny".into() }, Some("not that file".into())).unwrap();
         assert_eq!(gate.await.unwrap(), deny("not that file"));
 
-        let timed_out = wait(key, None, "rm", "rm -rf", PermissionPolicy::Attention, &bridge, Duration::from_millis(30)).await;
+        let timed_out = wait(key, "rm", "rm -rf", PermissionPolicy::Attention, Duration::from_millis(30)).await;
         assert_eq!(timed_out, deny("timeout"));
         assert!(pending(key).is_empty(), "a timed out gate leaves nothing pending");
-        assert_eq!(wait(key, None, "x", "x", PermissionPolicy::Auto, &bridge, long).await, allow());
-        // Decision without a workspace: denied at once, nothing pending.
-        let denied = wait(key, Some("att"), "x", "x", PermissionPolicy::Decision, &bridge, long).await;
-        assert_eq!(denied.outcome, Outcome::Deny);
-        assert_eq!(wait(key, None, "x", "x", PermissionPolicy::Decision, &bridge, long).await, deny("no workspace attempt to decide under"));
+        assert_eq!(wait(key, "x", "x", PermissionPolicy::Auto, long).await, allow());
     }
 }

@@ -6,7 +6,6 @@ use rosterd_proto::{Activity, Plan, PlanEntry, Usage};
 use serde_json::{Value, json};
 
 use super::{AuthMethod, PermissionOption};
-use crate::bridge::{Choice, Ruling};
 
 pub const PROTOCOL_VERSION: u64 = 1;
 pub const METHOD_NOT_FOUND: i64 = -32601;
@@ -169,26 +168,6 @@ pub fn message_text(update: &Value) -> Option<&str> {
     (content.get("type")?.as_str()? == "text").then(|| content.get("text")?.as_str())?
 }
 
-/// R5.4: a tool_call that runs an in-process subagent, with a label for the span.
-// ponytail: title heuristics per harness; a `kind` for subagents when ACP grows one.
-pub fn subagent_label(update: &Value) -> Option<String> {
-    if update.get("sessionUpdate").and_then(Value::as_str) != Some("tool_call") {
-        return None;
-    }
-    let title = update.get("title").and_then(Value::as_str).unwrap_or("");
-    let raw = update.get("rawInput");
-    let subagent_type = raw.and_then(|r| r.get("subagent_type")).and_then(Value::as_str);
-    let is_subagent = subagent_type.is_some()
-        || title.contains("Task")
-        || title.contains("Agent")
-        || title.to_ascii_lowercase().contains("subagent");
-    if !is_subagent {
-        return None;
-    }
-    let description = raw.and_then(|r| r.get("description")).and_then(Value::as_str);
-    Some(description.or(subagent_type).filter(|s| !s.is_empty()).unwrap_or(title).to_string())
-}
-
 pub fn permission_options(params: &Value) -> Vec<PermissionOption> {
     params
         .get("options")
@@ -223,30 +202,6 @@ pub fn auto_option(options: &[PermissionOption]) -> Option<String> {
         .iter()
         .find_map(|kind| options.iter().find(|o| o.kind == *kind))
         .map(|o| o.option_id.clone())
-}
-
-/// R5.3 decision: the three choices offered to the workspace.
-pub fn decision_choices() -> Vec<Choice> {
-    [("allow", "Allow"), ("deny", "Deny"), ("allow_always", "Allow always")]
-        .iter()
-        .map(|(id, label)| Choice { id: id.to_string(), label: label.to_string() })
-        .collect()
-}
-
-/// R5.3 decision: the ACP option a ruling selects. None means cancelled.
-pub fn ruling_option(ruling: &Ruling, options: &[PermissionOption]) -> Option<String> {
-    let choice = match ruling {
-        Ruling::Choice { id } => id.as_str(),
-        Ruling::FreeText { text } => text.trim(),
-        Ruling::Withdrawn | Ruling::Expired => return None,
-    };
-    let kinds: &[&str] = match choice {
-        "allow" => &["allow_once", "allow_always"],
-        "allow_always" => &["allow_always", "allow_once"],
-        "deny" => &["reject_once", "reject_always"],
-        _ => return None,
-    };
-    kinds.iter().find_map(|kind| options.iter().find(|o| o.kind == *kind)).map(|o| o.option_id.clone())
 }
 
 /// R3: tokens and cost only as the harness reported them. A usage_update, or any update that
@@ -319,6 +274,8 @@ mod tests {
         }
         assert_eq!(activity_of(&up("something_new")), Some((Activity::Active, "message")));
         assert_eq!(activity_of(&json!({})), Some((Activity::Active, "message")));
+        assert!(tool_call_done(&json!({"status": "cancelled"})));
+        assert!(!tool_call_done(&json!({"status": "in_progress"})));
     }
 
     #[test]
@@ -338,16 +295,6 @@ mod tests {
         assert_eq!(auto_option(&opts(&["reject_once", "allow_always"])).as_deref(), Some("o1"));
         assert_eq!(auto_option(&opts(&["reject_once"])), None);
 
-        let allow = Ruling::Choice { id: "allow".into() };
-        assert_eq!(ruling_option(&allow, &options).as_deref(), Some("o2"));
-        assert_eq!(ruling_option(&allow, &opts(&["allow_always"])).as_deref(), Some("o0"));
-        assert_eq!(ruling_option(&Ruling::Choice { id: "allow_always".into() }, &options).as_deref(), Some("o1"));
-        assert_eq!(ruling_option(&Ruling::Choice { id: "deny".into() }, &options).as_deref(), Some("o0"));
-        assert_eq!(ruling_option(&Ruling::FreeText { text: " deny ".into() }, &options).as_deref(), Some("o0"));
-        assert_eq!(ruling_option(&Ruling::Choice { id: "maybe".into() }, &options), None);
-        assert_eq!(ruling_option(&Ruling::Withdrawn, &options), None);
-        assert_eq!(ruling_option(&Ruling::Expired, &options), None);
-        assert_eq!(decision_choices().iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["allow", "deny", "allow_always"]);
 
         let params = json!({"options": [{"optionId": "a", "name": "Allow", "kind": "allow_once"}, {"bad": true}]});
         let parsed = permission_options(&params);
@@ -364,24 +311,6 @@ mod tests {
         assert!(summary.starts_with("Bash {\"command\":\"xxx"));
         assert!(summary.len() <= "Bash ".len() + SUMMARY_ARGS);
         assert_eq!(tool_summary(&json!({})), ("tool".to_string(), "tool".to_string()));
-    }
-
-    #[test]
-    fn span_detection() {
-        let task = json!({"sessionUpdate": "tool_call", "title": "Task: explore", "rawInput": {"description": "Explore the repo"}});
-        assert_eq!(subagent_label(&task).as_deref(), Some("Explore the repo"));
-        let typed = json!({"sessionUpdate": "tool_call", "title": "run", "rawInput": {"subagent_type": "Explore"}});
-        assert_eq!(subagent_label(&typed).as_deref(), Some("Explore"));
-        let agent = json!({"sessionUpdate": "tool_call", "title": "Agent"});
-        assert_eq!(subagent_label(&agent).as_deref(), Some("Agent"));
-        let sub = json!({"sessionUpdate": "tool_call", "title": "spawn SubAgent"});
-        assert_eq!(subagent_label(&sub).as_deref(), Some("spawn SubAgent"));
-        let bash = json!({"sessionUpdate": "tool_call", "title": "Bash: ls", "rawInput": {"command": "ls"}});
-        assert_eq!(subagent_label(&bash), None);
-        let update = json!({"sessionUpdate": "tool_call_update", "title": "Task: explore"});
-        assert_eq!(subagent_label(&update), None);
-        assert!(tool_call_done(&json!({"status": "cancelled"})));
-        assert!(!tool_call_done(&json!({"status": "in_progress"})));
     }
 
     #[test]

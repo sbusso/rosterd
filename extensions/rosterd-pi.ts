@@ -82,11 +82,7 @@ export default function (pi: any) {
 
   pi.on("session_start", async (_event: any, ctx: any) => {
     try { sessionId = ctx?.sessionManager?.getSessionId?.() ?? ""; } catch { sessionId = ""; }
-    await send(ctx, "/register", {
-      ...ident(ctx),
-      attempt_id: process.env.WORKSPACE_ATTEMPT_ID || null,
-      attempt_token: process.env.WORKSPACE_ATTEMPT_TOKEN || null,
-    });
+    await send(ctx, "/register", ident(ctx));
   });
 
   pi.on("before_agent_start", (_event: any, ctx: any) => claim(ctx, "active", "prompt"));
@@ -95,7 +91,7 @@ export default function (pi: any) {
   pi.on("tool_call", async (event: any, ctx: any) => {
     await claim(ctx, "active", "tool_call");
     const policy = process.env.ROSTERD_GATE;
-    if (policy !== "attention" && policy !== "decision") return;
+    if (policy !== "attention") return;
     let summary = "";
     try { summary = JSON.stringify(event.input ?? {}); } catch { summary = String(event.input); }
     if (summary.length > SUMMARY_CHARS) summary = summary.slice(0, SUMMARY_CHARS);

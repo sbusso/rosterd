@@ -51,10 +51,6 @@ loopback_port = 8790
 [swarm]
 static_peers = []
 
-[workspace]
-# url = "https://ws.example.ts.net"
-# credential_file = "$config_dir/workspace.token"
-
 [runner]
 default_permission_policy = "attention"
 resume_on_crash = true

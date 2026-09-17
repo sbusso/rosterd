@@ -54,16 +54,10 @@
   #qr .row { display: flex; gap: 6px; justify-content: flex-end }
 </style>
 <header id="hdr"></header>
-<section id="attention"></section>
 <main id="roster"></main>
 <pre id="log" hidden></pre>
 <div id="recap" hidden></div>
 <dialog id="qr"><form method="dialog"><div id="qrSvg"></div><a id="qrLink"></a><div class="row"><button type="button" id="qrCopy">copy link</button><button>close</button></div></form></dialog>
-<dialog id="ws"><form method="dialog">
-  <b>Workspace upstream</b>
-  <input id="wsUrl" placeholder="https://ws.example.ts.net"><input id="wsTok" placeholder="token" type="password">
-  <div style="display:flex;gap:6px;justify-content:flex-end"><button value="clear">clear</button><button value="save">save</button></div>
-</form></dialog>
 <script>
 'use strict';
 const $ = (s) => document.querySelector(s);
@@ -105,11 +99,10 @@ async function sse(path, onEvent, onStatus) {
   }
 }
 
-const state = { swarm: null, local: '', pending: {}, questions: {}, login: {}, seen: {}, status: 'connecting', attention: [], decisions: {}, wsErr: '' };
+const state = { swarm: null, local: '', pending: {}, questions: {}, login: {}, seen: {}, status: 'connecting' };
 const nodeOf = (key) => key.split(':')[0];
 // Session actions reach the owning node through this node, R7.5: local keys directly, peers under /swarm/{node_id}/.
 const spath = (key, suffix = '') => (nodeOf(key) === state.local ? `/sessions/${key}${suffix}` : `/swarm/${nodeOf(key)}/sessions/${key}${suffix}`);
-const ws = () => { try { return JSON.parse(localStorage.getItem('rosterd.workspace') || 'null'); } catch { return null; } };
 
 // ---------- roster page ----------
 // One word for a row, liveness first: ended, suspended and stale say more than the last activity did.
@@ -180,17 +173,17 @@ function sessionHtml(r) {
   return `<article class="s ${st}" data-key="${esc(k)}">
     ${markHtml(r, st)}
     <div class="who">${labelOf(r)}<span class="state ${st}">${st.replace('_', ' ')}</span>
-      <span class="ev">${esc(r.activity_event || '')}${r.activity_event ? ' · ' : ''}${when}${ended && r.ended_reason ? ` · ${esc(r.ended_reason)}` : ''}${r.conflict ? ' · <span class="err">attempt conflict</span>' : ''}</span></div>
+      <span class="ev">${esc(r.activity_event || '')}${r.activity_event ? ' · ' : ''}${when}${ended && r.ended_reason ? ` · ${esc(r.ended_reason)}` : ''}</span></div>
     <div class="stats">${statsHtml(r)}</div>
     <div class="acts">${acts}</div>
-    <div class="meta">${[r.lane === 'headless' ? 'headless' : '', r.attempt_id ? `attempt ${esc(r.attempt_id)}${r.parent_attempt_id ? ` ← ${esc(r.parent_attempt_id)}` : ''}` : '', r.origin ? esc(r.origin) : '', r.cwd ? esc(tilde(r.cwd)) : ''].filter(Boolean).join(' · ')}</div>
+    <div class="meta">${[r.lane === 'headless' ? 'headless' : '', r.origin ? esc(r.origin) : '', r.cwd ? esc(tilde(r.cwd)) : ''].filter(Boolean).join(' · ')}</div>
     ${planHtml(r)}${pendingHtml(k)}</article>`;
 }
 function renderRoster() {
   const sw = state.swarm, live = (sw?.records || []).filter((r) => r.liveness !== 'ended'), need = live.filter((r) => r.activity === 'needs_attention').length;
   $('#hdr').innerHTML = `<b>rosterd</b> <span>${esc((sw?.nodes || []).find((n) => n.state === 'local')?.name || '')}</span>
     <span class="sum">${sw ? plural(live.length, 'session') + (need ? ` · <span class="needs_attention">${need} need${need === 1 ? 's' : ''} attention</span>` : '') : ''}</span>
-    <a href="#" id="wsBtn">${ws()?.url ? 'workspace' : 'add workspace'}</a><a href="#" id="qrBtn">pair phone</a><span class="st ${state.status === 'live' ? '' : 'bad'}">${esc(state.status)}</span>`;
+    <a href="#" id="qrBtn">pair phone</a><span class="st ${state.status === 'live' ? '' : 'bad'}">${esc(state.status)}</span>`;
   if (!sw) return;
   const byNode = {};
   for (const r of sw.records) (byNode[r.node_id] ||= []).push(r);
@@ -216,54 +209,19 @@ async function refreshPending(key) {
   try { takePending(key, (await api(spath(key))).state); } catch { takePending(key, null); }
   rerender();
 }
-async function renderAttention() {
-  const w = ws(); const el = $('#attention');
-  if (!w?.url) { el.innerHTML = ''; return; }
-  const items = state.attention;
-  el.innerHTML = `<h2>workspace <small>${esc(w.url)}${state.wsErr ? ` · <span class="err">${esc(state.wsErr)}</span>` : ` · ${items.length} need you`}</small></h2><div class="list">` +
-    (items.map((it) => { const d = it.decisionId && state.decisions[it.decisionId];
-      return `<article class="s needs_attention"><span class="dot needs_attention"></span><div class="who"><span class="name">${esc(it.taskTitle || it.kind)}</span><span class="state needs_attention">${esc(it.reason)}</span>
-        <span class="ev">${it.agent ? esc(it.agent.name) + ' · ' : ''}${ago(it.since)}${it.signalCount > 1 ? ` · ×${it.signalCount}` : ''}</span></div>
-        <div class="acts"><a href="${esc(w.url.replace(/\/$/, ''))}/inbox">open in workspace</a>${it.decisionId && !d ? `<button data-decision="${esc(it.decisionId)}">rule</button>` : ''}</div>
-        ${d ? `<div class="pend"><span><b>${esc(d.title)}</b> <small>${esc(d.summary)}</small></span>${(d.choices || []).map((c) => `<button data-rule="${esc(d.id)}" data-choice="${esc(c.id)}" title="${esc(c.description || '')}">${esc(c.label)}${c.recommended ? ' ★' : ''}</button>`).join('')}</div>` : ''}
-      </article>`; }).join('') || '<small>nothing needs you</small>') + '</div>';
-}
-async function pollAttention() {
-  const w = ws(); if (!w?.url) return;
-  try {
-    const r = await fetch(`${w.url.replace(/\/$/, '')}/api/v1/me/attention`, { headers: { authorization: `Bearer ${w.token}` } });
-    const j = await r.json(); if (!r.ok) throw new Error(j.error?.message || j.error || r.status);
-    state.attention = (j.data || j).items || []; state.wsErr = '';
-  } catch (e) { state.wsErr = String(e.message || e); }
-  renderAttention();
-}
-async function wsCall(path, body) {
-  const w = ws(); const r = await fetch(`${w.url.replace(/\/$/, '')}/api/v1${path}`, { method: body ? 'POST' : 'GET', headers: { authorization: `Bearer ${w.token}`, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body && JSON.stringify(body) });
-  const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error?.message || j.error || r.status); return j.data || j;
-}
-
 document.addEventListener('click', async (e) => {
   const b = e.target.closest('button, a'); if (!b) return;
   const d = b.dataset;
   try {
     if (b.id === 'qrBtn') { e.preventDefault(); const p = await api('/pair'); $('#qrSvg').innerHTML = p.svg; $('#qrLink').textContent = p.link; $('#qrLink').href = p.link; $('#qr').showModal(); }
     if (b.id === 'qrCopy') { await navigator.clipboard.writeText($('#qrLink').textContent); b.textContent = 'copied'; }
-    else if (b.id === 'wsBtn') { e.preventDefault(); $('#wsUrl').value = ws()?.url || ''; $('#wsTok').value = ws()?.token || ''; $('#ws').showModal(); }
     else if (d.cancel) await api(spath(d.cancel, '/cancel'), {});
     else if (d.resume) await api(spath(d.resume, '/resume'), {});
     else if (d.perm) { await api(spath(d.perm, '/permission'), d.opt ? { request_id: JSON.parse(d.req), outcome: 'selected', option_id: d.opt } : { request_id: JSON.parse(d.req), outcome: 'cancelled' }); await refreshPending(d.perm); }
     else if (d.answer) { await api(spath(d.answer, '/answer'), d.act ? { request_id: JSON.parse(d.req), action: d.act } : { request_id: JSON.parse(d.req), action: 'accept', content: JSON.parse(d.content) }); await refreshPending(d.answer); }
     else if (d.open) await api(spath(d.open, '/open'), {});
-    else if (d.decision) { state.decisions[d.decision] = await wsCall(`/decisions/${d.decision}`); renderAttention(); }
-    else if (d.rule) { await wsCall(`/decisions/${d.rule}/rule`, { choiceId: d.choice, surface: 'phone' }); delete state.decisions[d.rule]; pollAttention(); }
   } catch (err) { state.status = String(err.message || err); rerender(); }
 });
-$('#ws').addEventListener('close', () => {
-  if ($('#ws').returnValue === 'save') localStorage.setItem('rosterd.workspace', JSON.stringify({ url: $('#wsUrl').value.trim(), token: $('#wsTok').value.trim() }));
-  else if ($('#ws').returnValue === 'clear') localStorage.removeItem('rosterd.workspace');
-  state.attention = []; renderRoster(); pollAttention();
-});
-
 // ---------- session page, /ui/sessions/{key}: the live ACP stream as a plain log plus the last recap ----------
 const sessionKey = location.pathname.startsWith('/ui/sessions/') ? decodeURIComponent(location.pathname.slice('/ui/sessions/'.length)) : '';
 function logLine(msg) {
@@ -297,7 +255,7 @@ async function sessionPage() {
 
 if (sessionKey) sessionPage();
 else {
-  renderRoster(); pollAttention(); setInterval(pollAttention, 15000); setInterval(renderRoster, 30000);
+  renderRoster(); setInterval(renderRoster, 30000);
   sse('/swarm/events', (snap) => { state.swarm = snap; state.local = (snap.nodes || []).find((n) => n.state === 'local')?.node_id || state.local; renderRoster(); },
     (s) => { state.status = s || 'live'; renderRoster(); });
 }

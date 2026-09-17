@@ -4,7 +4,7 @@
 //!
 //! `session` is the per-session machine (ACP in, effects out), `holder` the daemon's side of
 //! the holder binary in crates/holder, `acp` the framing and the pure R5 mappings. This file
-//! applies effects to the roster and the bridge.
+//! applies effects to the roster.
 //!
 //! OWNER: the holder/runner agent. Unix sockets only; Windows is a later target.
 
@@ -24,16 +24,14 @@ use chrono::{DateTime, TimeZone, Utc};
 use rosterd_proto::{Activity, EndedReason, HolderHandle, HolderState, Lane, Liveness, PermissionPolicy, Record, Source};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc};
 
-use crate::bridge::{Bridge, BridgeError, DecisionRequest, Inbound, Outbound, Ruling};
 use crate::config::{Config, config_dir};
-use crate::mesh::Mesh;
 use crate::roster::{Patch, Roster, RosterError};
 use holder::Paths;
 use session::{Effect, Session};
 
-/// R2.2: a second crash of one attempt inside this window is not resumed.
+/// R2.2: a second crash of one harness session inside this window is not resumed.
 const RESUME_COOLDOWN: chrono::Duration = chrono::Duration::minutes(5);
 const HOLDER_START_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long `stop` waits for the holder's Exited frame before answering anyway.
@@ -54,11 +52,9 @@ type Turn = tokio::task::JoinHandle<Result<(Option<String>, Option<String>), Run
 pub struct StartSession {
     pub harness: String,
     pub cwd: Option<String>,
-    pub attempt_id: Option<String>,
-    pub parent_attempt_id: Option<String>,
-    /// The attempt's own token, so hooks inside the harness and the bridge can claim for it.
-    pub attempt_token: Option<String>,
     pub name: Option<String>,
+    /// The session this one was spawned from, R5.4.
+    pub parent_session_key: Option<String>,
     pub model: Option<String>,
     pub permission_policy: Option<PermissionPolicy>,
     pub env: HashMap<String, String>,
@@ -180,8 +176,6 @@ pub struct SessionState {
 pub enum RunnerError {
     #[error("no session {0}")]
     NotFound(String),
-    #[error("attempt {attempt_id} is already bound to live session {session_key}")]
-    AttemptBound { attempt_id: String, session_key: String },
     #[error("unknown harness {0}; add [harness.{0}] to the config")]
     UnknownHarness(String),
     #[error("no pending request {0}")]
@@ -204,17 +198,16 @@ pub enum RunnerError {
     Roster(#[from] RosterError),
 }
 
-/// Launch facts the holder keeps in its state file for the daemon, R2.1 item 5. The token and
-/// env travel too, so a resume relaunches with the same environment; the file is 0600 under a
-/// 0700 directory, the same protection as the attempt token in the adapter's own environment.
+/// Launch facts the holder keeps in its state file for the daemon, R2.1 item 5. The env travels
+/// too, so a resume relaunches with the same environment; the file is 0600 under a 0700 directory.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Meta {
     name: Option<String>,
+    parent_session_key: Option<String>,
     /// The policy as requested; `Runner::effective_policy` applies R16.1 at every launch.
     permission_policy: Option<PermissionPolicy>,
     recap: Option<bool>,
-    attempt_token: Option<String>,
     model: Option<String>,
     env: HashMap<String, String>,
     /// The harness session id this holder resumed, when it did.
@@ -234,10 +227,8 @@ impl Meta {
         StartSession {
             harness: state.harness.clone(),
             cwd: Some(state.cwd.clone()),
-            attempt_id: state.attempt_id.clone(),
-            parent_attempt_id: state.parent_attempt_id.clone(),
-            attempt_token: self.attempt_token,
             name: self.name,
+            parent_session_key: self.parent_session_key,
             model: self.model,
             permission_policy: self.permission_policy,
             env: self.env,
@@ -259,14 +250,12 @@ struct Parked {
 pub struct Runner {
     config: Arc<Config>,
     roster: Arc<Roster>,
-    bridge: Arc<Bridge>,
-    mesh: Arc<Mesh>,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     /// R15.1: suspended sessions by their last key.
     parked: Mutex<HashMap<String, Parked>>,
-    /// R2.2: when each attempt last crashed.
+    /// R2.2: when each harness session last crashed.
     crashes: Mutex<HashMap<String, DateTime<Utc>>>,
-    /// R15.3: when each attempt (or, without one, harness session) was resumed, last hour.
+    /// R15.3: when each harness session was resumed, last hour.
     resumes: Mutex<HashMap<String, Vec<DateTime<Utc>>>>,
     /// One resume at a time, so two prompts for one suspended key start one holder.
     // ponytail: one lock for all keys; resumes are rare and take a second.
@@ -275,12 +264,10 @@ pub struct Runner {
 }
 
 impl Runner {
-    pub fn new(config: Arc<Config>, roster: Arc<Roster>, bridge: Arc<Bridge>, mesh: Arc<Mesh>) -> Arc<Runner> {
+    pub fn new(config: Arc<Config>, roster: Arc<Roster>) -> Arc<Runner> {
         Arc::new(Runner {
             config,
             roster,
-            bridge,
-            mesh,
             sessions: Mutex::new(HashMap::new()),
             parked: Mutex::new(HashMap::new()),
             crashes: Mutex::new(HashMap::new()),
@@ -298,10 +285,8 @@ impl Runner {
 
     /// On start: reconnect every live holder, replay its buffer, rebuild those sessions; report
     /// dead holders once and clean them; resume what R2.2 says to resume, restore what R15.4
-    /// says to restore as suspended. Also starts routing the bridge's inbound prompts, R8, and
-    /// the idle sweep, R15.2.
+    /// says to restore as suspended. Also starts the idle sweep, R15.2.
     pub async fn recover(self: &Arc<Self>) -> Result<(), RunnerError> {
-        tokio::spawn(self.clone().route_inbound());
         tokio::spawn(self.clone().sweep_idle());
         let dir = self.config.runner.holder_dir.clone();
         holder::ensure_dir(&dir)?;
@@ -324,7 +309,7 @@ impl Runner {
         Ok(())
     }
 
-    /// R5.1. Refuses an attempt already bound to a live session anywhere in the swarm, R5.4.
+    /// R5.1.
     pub async fn start(self: &Arc<Self>, req: StartSession) -> Result<Record, RunnerError> {
         self.launch(req, None, None).await
     }
@@ -342,8 +327,8 @@ impl Runner {
         warnings
     }
 
-    /// R16.1: a pi session without the extension gets no permission requests, so attention and
-    /// decision run as auto.
+    /// R16.1: a pi session without the extension gets no permission requests, so attention runs
+    /// as auto.
     fn effective_policy(&self, harness: &str, requested: Option<PermissionPolicy>) -> PermissionPolicy {
         let policy = requested.unwrap_or(self.config.runner.default_permission_policy);
         let extension = self.config.harness.get("pi").is_some_and(|h| h.extension) && crate::integrate::pi_extension_installed();
@@ -387,7 +372,7 @@ impl Runner {
         self.record(session_key)
     }
 
-    /// DELETE: stops the holder. Never closes the workspace attempt, R5.6. A suspended session
+    /// DELETE: stops the holder. A suspended session
     /// has no holder; it ends with reason expired, R15.1.
     pub async fn stop(self: &Arc<Self>, session_key: &str) -> Result<Record, RunnerError> {
         let session = match self.session(session_key) {
@@ -445,7 +430,7 @@ impl Runner {
     }
 
     /// R15.3: a new holder loads the stored session id; the old key ends with reason
-    /// suspended and the new record, same attempt and session id, is returned. Over
+    /// suspended and the new record, same session id, is returned. Over
     /// `max_resumes_per_hour` the session stays suspended.
     pub async fn resume(self: &Arc<Self>, session_key: &str) -> Result<Record, RunnerError> {
         let _one_at_a_time = self.resuming.lock().await;
@@ -454,11 +439,11 @@ impl Runner {
         }
         let parked = self.parked.lock().unwrap().get(session_key).cloned();
         let Some(parked) = parked else {
-            // Resumed under another key already: follow the attempt.
+            // Resumed under another key already: follow the harness session.
             return self
                 .record(session_key)?
-                .attempt_id
-                .and_then(|a| self.session_by_attempt(&a))
+                .session_id
+                .and_then(|id| self.session_by_session_id(&id))
                 .map(|s| self.record(&s.key))
                 .unwrap_or_else(|| Err(RunnerError::NotFound(session_key.into())));
         };
@@ -472,7 +457,7 @@ impl Runner {
 
     fn count_resume(&self, session_key: &str, state: &HolderState) -> Result<(), RunnerError> {
         let now = Utc::now();
-        let by = state.attempt_id.clone().or_else(|| state.session_id.clone()).unwrap_or_else(|| session_key.to_string());
+        let by = state.session_id.clone().unwrap_or_else(|| session_key.to_string());
         let mut resumes = self.resumes.lock().unwrap();
         let times = resumes.entry(by).or_default();
         times.retain(|t| now - *t < RESUME_WINDOW);
@@ -576,18 +561,6 @@ impl Runner {
     /// instead of opening a fresh one, R2.2, and `parked` the suspended key it replaces, R15.3.
     async fn launch(self: &Arc<Self>, req: StartSession, resume: Option<String>, parked: Option<&str>) -> Result<Record, RunnerError> {
         let harness = self.config.harness.get(&req.harness).ok_or_else(|| RunnerError::UnknownHarness(req.harness.clone()))?;
-        if let Some(attempt_id) = req.attempt_id.as_deref() {
-            // R5.4: one live session per attempt, swarm wide. The suspended key being resumed
-            // is that session.
-            let bound = self
-                .mesh
-                .live_by_attempt(attempt_id)
-                .map(|r| r.record.session_key)
-                .or_else(|| self.roster.live_by_attempt(attempt_id).map(|r| r.session_key));
-            if let Some(session_key) = bound.filter(|k| Some(k.as_str()) != parked) {
-                return Err(RunnerError::AttemptBound { attempt_id: attempt_id.to_string(), session_key });
-            }
-        }
         let dir = self.config.runner.holder_dir.clone();
         holder::ensure_dir(&dir)?;
         let paths = Paths::new(&dir, &ulid::Ulid::new().to_string().to_lowercase());
@@ -598,25 +571,16 @@ impl Runner {
         let policy = self.effective_policy(&req.harness, req.permission_policy);
         let recap = req.recap.unwrap_or(self.config.runner.recap);
 
-        // R5.1: the workspace variables and the socket, so hooks inside the harness work too.
-        // ROSTERD_SESSION_KEY cannot be exported: the key is the adapter's own pid and start
-        // time, which exist only after this spawn. Hooks identify by pid plus start_ticks.
+        // R5.1: the socket, so hooks inside the harness work too. ROSTERD_SESSION_KEY cannot be
+        // exported: the key is the adapter's own pid and start time, which exist only after this
+        // spawn. Hooks identify by pid plus start_ticks.
         let mut env = req.env.clone();
-        if let Some(url) = &self.config.workspace.url {
-            env.insert("WORKSPACE_URL".into(), url.clone());
-        }
-        if let Some(attempt_id) = &req.attempt_id {
-            env.insert("WORKSPACE_ATTEMPT_ID".into(), attempt_id.clone());
-        }
-        if let Some(token) = &req.attempt_token {
-            env.insert("WORKSPACE_ATTEMPT_TOKEN".into(), token.clone());
-        }
         env.insert("ROSTERD_SOCKET".into(), self.config.socket_path().to_string_lossy().into_owned());
         let meta = Meta {
             name: req.name.clone(),
+            parent_session_key: req.parent_session_key.clone(),
             permission_policy: Some(req.permission_policy.unwrap_or(self.config.runner.default_permission_policy)),
             recap: Some(recap),
-            attempt_token: req.attempt_token.clone(),
             model: req.model.clone(),
             env: req.env.clone(),
             resumed_from: resume.clone(),
@@ -629,8 +593,6 @@ impl Runner {
             paths: &paths,
             harness: &req.harness,
             cwd: &cwd,
-            attempt_id: req.attempt_id.as_deref(),
-            parent_attempt_id: req.parent_attempt_id.as_deref(),
             meta: &meta,
             adapter: &harness.adapter,
             args: &harness.args,
@@ -639,8 +601,8 @@ impl Runner {
         let started = async {
             let state = holder::wait_state(&paths, &reaper, HOLDER_START_TIMEOUT).await?;
             let stream = holder::connect_retry(&paths.socket, 40).await.map_err(|e| RunnerError::Holder(format!("connect {}: {e}", paths.socket.display())))?;
-            // R15.3: from here the new key owns the attempt; the old one ends with reason
-            // suspended and its state file goes.
+            // R15.3: from here the new key owns the harness session; the old one ends with
+            // reason suspended and its state file goes.
             if let Some(old) = parked {
                 self.unpark(old);
             }
@@ -666,7 +628,7 @@ impl Runner {
             let patch = Patch { session_key: Some(session.key.clone()), session_id: Some(session_id), harness: Some(session.harness.clone()), ..Patch::default() };
             self.roster.apply(Source::Acp, patch)?;
         }
-        tracing::info!(key = %session.key, harness = %session.harness, attempt = ?session.attempt_id, "session started, R5.1");
+        tracing::info!(key = %session.key, harness = %session.harness, "session started, R5.1");
         self.record(&session.key)
     }
 
@@ -679,7 +641,7 @@ impl Runner {
         let answer = match resume {
             Some(session_id) if session.can_load() => session.load_session(&session_id, cwd, mcp).await?,
             Some(session_id) => {
-                tracing::warn!(key = %session.key, session_id, "agent cannot load sessions; starting a fresh one on the same attempt");
+                tracing::warn!(key = %session.key, session_id, "agent cannot load sessions; starting a fresh one");
                 session.new_session(cwd, mcp).await?
             }
             None => match session.new_session(cwd, mcp).await {
@@ -719,7 +681,7 @@ impl Runner {
     }
 
     /// A connected holder becomes a session: key from the adapter's pid and start time, the
-    /// launcher and acp registrations, the attempt token, and the effect drain.
+    /// launcher and acp registrations, and the effect drain.
     async fn attach(
         self: &Arc<Self>,
         state: HolderState,
@@ -739,10 +701,10 @@ impl Runner {
         Ok(session)
     }
 
-    /// The launcher and acp registrations of a holder's session, and the attempt token.
+    /// The launcher and acp registrations of a holder's session.
     fn register(&self, state: &HolderState, key: &str, policy: PermissionPolicy, start_ticks: Option<u64>) -> Result<(), RunnerError> {
         let meta = Meta::of(state);
-        let mut patch = launcher_patch(state, key, policy, meta.name);
+        let mut patch = launcher_patch(state, key, policy, meta);
         patch.start_ticks = start_ticks;
         self.roster.apply(Source::Launcher, patch)?;
         if let Some(session_id) = &state.session_id {
@@ -750,9 +712,6 @@ impl Runner {
                 Source::Acp,
                 Patch { session_key: Some(key.to_string()), session_id: Some(session_id.clone()), harness: Some(state.harness.clone()), ..Patch::default() },
             )?;
-        }
-        if let (Some(attempt_id), Some(token)) = (&state.attempt_id, &meta.attempt_token) {
-            self.bridge.bind_attempt(attempt_id, token);
         }
         Ok(())
     }
@@ -833,22 +792,9 @@ impl Runner {
                         tracing::warn!(%key, %error, "acp registration refused");
                     }
                 }
-                Effect::Span { span_id, label, kind } => {
-                    if let Some(attempt_id) = session.attempt_id.clone() {
-                        self.bridge.send(Outbound::Span { attempt_id, span_id, label, kind, at: Utc::now() });
-                    }
-                }
-                Effect::Recap(text) => {
-                    if let Some(attempt_id) = session.attempt_id.clone() {
-                        self.bridge.send(Outbound::Recap { attempt_id, text, at: Utc::now() });
-                    }
-                }
                 Effect::Usage(usage) => {
-                    if let Err(error) = self.roster.set_usage(&key, usage.clone()) {
+                    if let Err(error) = self.roster.set_usage(&key, usage) {
                         tracing::warn!(%key, %error, "usage refused");
-                    }
-                    if let Some(attempt_id) = session.attempt_id.clone() {
-                        self.bridge.send(Outbound::Usage { attempt_id, usage, at: Utc::now() });
                     }
                 }
                 Effect::Mode(mode) => {
@@ -860,9 +806,6 @@ impl Runner {
                     if let Err(error) = self.roster.update(&key, |r| r.plan = Some(plan)) {
                         tracing::warn!(%key, %error, "plan refused");
                     }
-                }
-                Effect::Decision { request, reply } => {
-                    tokio::spawn(self.clone().rule(key.clone(), request, reply));
                 }
                 Effect::Exited { code, signal } => {
                     if session.suspending.load(Ordering::Relaxed) {
@@ -923,8 +866,7 @@ impl Runner {
     }
 
     /// R15.2: a live session idle past its timeout is suspended. One in needs_attention only
-    /// when `suspend_on_needs_attention`, or under `decision`, where the request already lives
-    /// in the workspace. Nothing else, and never a resume, on a timer.
+    /// when `suspend_on_needs_attention`. Nothing else, and never a resume, on a timer.
     async fn sweep_idle(self: Arc<Self>) {
         loop {
             tokio::time::sleep(Duration::from_millis(self.idle_tick_ms.load(Ordering::Relaxed))).await;
@@ -936,7 +878,7 @@ impl Runner {
                 let timeout = Meta::of(&session.state()).idle_timeout_s.unwrap_or(self.config.runner.idle_timeout_s);
                 let eligible = match record.activity {
                     Activity::Idle => true,
-                    Activity::NeedsAttention => self.config.runner.suspend_on_needs_attention || session.policy() == PermissionPolicy::Decision,
+                    Activity::NeedsAttention => self.config.runner.suspend_on_needs_attention,
                     Activity::Active | Activity::Unknown => false,
                 };
                 if timeout == 0 || !eligible || now - at < chrono::Duration::seconds(timeout as i64) {
@@ -949,106 +891,28 @@ impl Runner {
         }
     }
 
-    /// R5.3 decision: asks the bridge. A live session answers the ACP request from the ruling;
-    /// a session suspended meanwhile is resumed when `resume_on_ruling` and the ruling reaches
-    /// it there, R15.3 item 2. Boxed: resuming runs `launch`, whose drain spawns this again.
-    fn rule(
-        self: Arc<Self>,
-        key: String,
-        request: DecisionRequest,
-        reply: oneshot::Sender<Result<Ruling, BridgeError>>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-        Box::pin(async move {
-            let ruling = self.bridge.request_decision(request.clone()).await;
-            if self.owns(&key) {
-                let _ = reply.send(ruling);
-                return;
-            }
-            drop(reply);
-            match ruling {
-                Ok(ruling @ (Ruling::Choice { .. } | Ruling::FreeText { .. })) if self.config.runner.resume_on_ruling => {
-                    if let Err(error) = self.deliver(&key, &request, ruling).await {
-                        tracing::warn!(%key, %error, "ruling not delivered");
-                    }
-                }
-                Ok(ruling) => tracing::info!(%key, ?ruling, "ruling for a session without a holder; not delivered"),
-                Err(error) => tracing::warn!(%key, %error, "decision request failed"),
-            }
-        })
-    }
-
-    /// The ruling reaches the session under its current key: as the answer to a permission
-    /// still pending for the same tool, else as a prompt saying what was ruled.
-    async fn deliver(self: &Arc<Self>, key: &str, request: &DecisionRequest, ruling: Ruling) -> Result<(), RunnerError> {
-        let record = self.resume(key).await?;
-        let session = self.session(&record.session_key)?;
-        let pending = session.view().pending.into_iter().find(|p| p.tool == request.title);
-        match pending {
-            Some(pending) => {
-                let answer = match acp::ruling_option(&ruling, &pending.options) {
-                    Some(option_id) => PermissionAnswer::Selected { option_id },
-                    None => PermissionAnswer::Cancelled,
-                };
-                session.answer(&pending.request_id, answer)
-            }
-            None => {
-                let text = match &ruling {
-                    Ruling::Choice { id } => id.clone(),
-                    Ruling::FreeText { text } => text.clone(),
-                    Ruling::Withdrawn | Ruling::Expired => return Ok(()),
-                };
-                session.prompt(&format!("Ruling on {}: {text}", request.summary)).await.map(drop)
-            }
-        }
-    }
-
-    /// R2.2: one resume per crash, bound to the same attempt, under a new session key.
-    // ponytail: "attempt still open in the workspace" is unknown here; every attempt counts as
-    // open until the bridge can say otherwise.
+    /// R2.2: one resume per crash, loading the same harness session under a new session key.
     fn maybe_resume(self: &Arc<Self>, state: HolderState) {
         if !self.config.runner.resume_on_crash {
             return;
         }
-        let (Some(session_id), Some(attempt_id)) = (state.session_id.clone(), state.attempt_id.clone()) else {
+        let Some(session_id) = state.session_id.clone() else {
             return;
         };
         let now = Utc::now();
-        let previous = self.crashes.lock().unwrap().insert(attempt_id.clone(), now);
+        let previous = self.crashes.lock().unwrap().insert(session_id.clone(), now);
         if previous.is_some_and(|p| now - p < RESUME_COOLDOWN) {
-            tracing::warn!(attempt_id, "second crash within {} s; not resumed", RESUME_COOLDOWN.num_seconds());
+            tracing::warn!(session_id, "second crash within {} s; not resumed", RESUME_COOLDOWN.num_seconds());
             return;
         }
         let req = Meta::of(&state).relaunch(&state);
         let runner = self.clone();
         tokio::spawn(async move {
             match runner.launch(req, Some(session_id.clone()), None).await {
-                Ok(record) => tracing::info!(attempt_id, key = %record.session_key, "session resumed, R2.2"),
-                Err(error) => tracing::error!(attempt_id, %error, "resume failed"),
+                Ok(record) => tracing::info!(session_id, key = %record.session_key, "session resumed, R2.2"),
+                Err(error) => tracing::error!(session_id, %error, "resume failed"),
             }
         });
-    }
-
-    /// R8: prompts typed into a session from the workspace. A suspended one resumes, R15.3.
-    async fn route_inbound(self: Arc<Self>) {
-        let mut inbound = self.bridge.inbound();
-        loop {
-            match inbound.recv().await {
-                Ok(Inbound::Prompt { attempt_id, text }) => match self.key_by_attempt(&attempt_id) {
-                    Some(key) => {
-                        let runner = self.clone();
-                        tokio::spawn(async move {
-                            let req = PromptRequest { prompt: text, wait_until: None, timeout_ms: None };
-                            if let Err(error) = runner.prompt(&key, req).await {
-                                tracing::warn!(%key, %error, "inbound prompt failed");
-                            }
-                        });
-                    }
-                    None => tracing::warn!(attempt_id, "inbound prompt for an attempt this node does not run"),
-                },
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => return,
-            }
-        }
     }
 
     // ---- Lookups ---------------------------------------------------------------------------
@@ -1063,15 +927,8 @@ impl Runner {
         Err(RunnerError::NotFound(session_key.into()))
     }
 
-    fn session_by_attempt(&self, attempt_id: &str) -> Option<Arc<Session>> {
-        self.sessions.lock().unwrap().values().find(|s| s.attempt_id.as_deref() == Some(attempt_id)).cloned()
-    }
-
-    /// The key of the live or suspended session bound to an attempt on this node.
-    fn key_by_attempt(&self, attempt_id: &str) -> Option<String> {
-        self.session_by_attempt(attempt_id).map(|s| s.key.clone()).or_else(|| {
-            self.parked.lock().unwrap().iter().find(|(_, p)| p.state.attempt_id.as_deref() == Some(attempt_id)).map(|(k, _)| k.clone())
-        })
+    fn session_by_session_id(&self, session_id: &str) -> Option<Arc<Session>> {
+        self.sessions.lock().unwrap().values().find(|s| s.state().session_id.as_deref() == Some(session_id)).cloned()
     }
 
     fn record(&self, session_key: &str) -> Result<Record, RunnerError> {
@@ -1107,21 +964,19 @@ fn policy_name(policy: PermissionPolicy) -> &'static str {
     match policy {
         PermissionPolicy::Auto => "auto",
         PermissionPolicy::Attention => "attention",
-        PermissionPolicy::Decision => "decision",
     }
 }
 
 /// What the launcher asserts about a holder's session, R4 and R5.1.
-fn launcher_patch(state: &HolderState, key: &str, policy: PermissionPolicy, name: Option<String>) -> Patch {
+fn launcher_patch(state: &HolderState, key: &str, policy: PermissionPolicy, meta: Meta) -> Patch {
     Patch {
         session_key: Some(key.to_string()),
         pid: Some(state.adapter_pid),
         started_at: Some(state.started_at),
         harness: Some(state.harness.clone()),
         lane: Some(Lane::Headless),
-        name,
-        attempt_id: state.attempt_id.clone(),
-        parent_attempt_id: state.parent_attempt_id.clone(),
+        name: meta.name,
+        parent_session_key: meta.parent_session_key,
         cwd: Some(state.cwd.clone()),
         holder: Some(HolderHandle { socket: state.socket.clone() }),
         permission_policy: Some(policy),
@@ -1137,9 +992,9 @@ mod tests {
     fn meta_round_trips_through_the_state_file() {
         let meta = Meta {
             name: Some("worker".into()),
-            permission_policy: Some(PermissionPolicy::Decision),
+            parent_session_key: Some("n:1:1".into()),
+            permission_policy: Some(PermissionPolicy::Auto),
             recap: Some(false),
-            attempt_token: Some("tok".into()),
             model: None,
             env: HashMap::from([("A".to_string(), "1".to_string())]),
             resumed_from: None,
@@ -1152,8 +1007,6 @@ mod tests {
             session_id: None,
             harness: "claude".into(),
             cwd: "/w".into(),
-            attempt_id: Some("att".into()),
-            parent_attempt_id: None,
             adapter_pid: 4,
             holder_pid: 3,
             started_at: Utc::now(),
@@ -1163,18 +1016,18 @@ mod tests {
         };
         let back = Meta::of(&state);
         assert_eq!(back.name.as_deref(), Some("worker"));
-        assert_eq!(back.permission_policy, Some(PermissionPolicy::Decision));
+        assert_eq!(back.permission_policy, Some(PermissionPolicy::Auto));
         assert_eq!(back.recap, Some(false));
         assert_eq!(back.env["A"], "1");
         assert_eq!(back.idle_timeout_s, Some(60));
         assert_eq!(Meta::of(&HolderState { meta: HashMap::new(), ..state.clone() }).name, None);
         let req = back.clone().relaunch(&state);
         assert_eq!(req.harness, "claude");
-        assert_eq!(req.attempt_id.as_deref(), Some("att"));
         assert_eq!(req.effort.as_deref(), Some("high"));
         assert_eq!(req.idle_timeout_s, Some(60));
-        let patch = launcher_patch(&state, "n:4:9", PermissionPolicy::Auto, back.name);
+        let patch = launcher_patch(&state, "n:4:9", PermissionPolicy::Auto, back);
         assert_eq!(patch.lane, Some(Lane::Headless));
+        assert_eq!(patch.parent_session_key.as_deref(), Some("n:1:1"));
         assert_eq!(patch.holder.unwrap().socket, "/h/x.sock");
         assert_eq!(patch.session_key.as_deref(), Some("n:4:9"));
     }
@@ -1197,8 +1050,6 @@ mod tests {
             activity_event: None,
             activity_at: None,
             activity_seq: 0,
-            attempt_id: None,
-            parent_attempt_id: None,
             parent_session_key: None,
             cwd: None,
             origin: None,
@@ -1213,7 +1064,6 @@ mod tests {
             load: None,
             mode: None,
             plan: None,
-            conflict: false,
             permission_policy: None,
         };
         assert!(!reached(&record, WaitUntil::Idle));

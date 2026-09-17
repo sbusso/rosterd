@@ -1,6 +1,6 @@
 //! `list` and `watch`, R14.3: the roster as a table, or the API frame byte for byte. They read
-//! /snapshot, /swarm/snapshot, /events and /swarm/events only, so they answer when the runner,
-//! the bridge or the mesh is broken, R14.2.
+//! /snapshot, /swarm/snapshot, /events and /swarm/events only, so they answer when the runner
+//! or the mesh is broken, R14.2.
 
 use std::io::Write;
 

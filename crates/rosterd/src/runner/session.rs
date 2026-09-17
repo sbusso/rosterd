@@ -2,7 +2,7 @@
 //! turns ACP traffic into `Effect`s. The runner applies effects to the roster and the bridge, so
 //! this file needs neither and is tested against a fake agent on a pipe.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -16,7 +16,6 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use super::acp::{self, Message};
 use super::{AuthMethod, PendingPermission, PendingQuestion, PermissionAnswer, QuestionAction, QuestionAnswer, RunnerError, SessionState};
-use crate::bridge::{BridgeError, DecisionRequest, Ruling, SpanKind};
 
 /// Raw notifications kept for a slow `stream()` reader before it starts skipping, R5.5.
 const STREAM_CAPACITY: usize = 256;
@@ -30,18 +29,12 @@ pub enum Effect {
     Claim { activity: Activity, event: &'static str },
     /// The harness session id, after session/new or session/load.
     SessionId(String),
-    /// R5.4.
-    Span { span_id: String, label: String, kind: SpanKind },
-    /// R5.5.
-    Recap(String),
     /// R3.
     Usage(Usage),
     /// The agent's current mode, from session/new or `current_mode_update`.
     Mode(String),
     /// The agent's `plan`, whole.
     Plan(Plan),
-    /// R5.3 `decision`: the runner asks the bridge and answers on `reply`.
-    Decision { request: DecisionRequest, reply: oneshot::Sender<Result<Ruling, BridgeError>> },
     /// The adapter exited, `HolderFrame::Exited`.
     Exited { code: Option<i32>, signal: Option<i32> },
     /// The holder socket closed and did not come back.
@@ -54,7 +47,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
 pub struct Session {
     pub key: String,
     pub harness: String,
-    pub attempt_id: Option<String>,
     pub holder_pid: u32,
     pub socket: PathBuf,
     /// Set by `stop`, so the exit that follows is reported as killed, not a crash.
@@ -75,8 +67,6 @@ pub struct Session {
     recap: AtomicBool,
     last_recap: Mutex<Option<String>>,
     turn_text: Mutex<String>,
-    /// Tool call ids of subagents whose span is open, R5.4.
-    spans: Mutex<HashSet<String>>,
     state: Mutex<HolderState>,
     load_session: AtomicBool,
     /// session/load in flight: replayed history claims nothing.
@@ -101,7 +91,6 @@ impl Session {
         let session = Arc::new(Session {
             key,
             harness: state.harness.clone(),
-            attempt_id: state.attempt_id.clone(),
             holder_pid: state.holder_pid,
             socket: PathBuf::from(&state.socket),
             stopping: AtomicBool::new(false),
@@ -121,7 +110,6 @@ impl Session {
             recap: AtomicBool::new(recap),
             last_recap: Mutex::new(None),
             turn_text: Mutex::new(String::new()),
-            spans: Mutex::new(HashSet::new()),
             state: Mutex::new(state),
             load_session: AtomicBool::new(false),
             loading: AtomicBool::new(false),
@@ -343,7 +331,6 @@ impl Session {
         let recap = (self.recap.load(Ordering::Relaxed) && !text.trim().is_empty()).then_some(text);
         if let Some(text) = &recap {
             *self.last_recap.lock().unwrap() = Some(text.clone());
-            let _ = self.effects.send(Effect::Recap(text.clone()));
         }
         self.claim(Activity::Idle, "turn_end");
         recap
@@ -486,18 +473,6 @@ impl Session {
         if let (Some(text), false) = (acp::message_text(update), replay) {
             self.turn_text.lock().unwrap().push_str(text);
         }
-        let tool_call_id = update.get("toolCallId").and_then(Value::as_str).unwrap_or("");
-        // R5.4: the span id is derived, so an end after a daemon restart still matches.
-        let span_id = format!("{}:{tool_call_id}", self.key);
-        if let Some(label) = acp::subagent_label(update) {
-            self.spans.lock().unwrap().insert(tool_call_id.to_string());
-            if !replay {
-                let _ = self.effects.send(Effect::Span { span_id, label, kind: SpanKind::SpanStart });
-            }
-        } else if acp::tool_call_done(update) && self.spans.lock().unwrap().remove(tool_call_id) && !replay {
-            let title = update.get("title").and_then(Value::as_str).unwrap_or("subagent").to_string();
-            let _ = self.effects.send(Effect::Span { span_id, label: title, kind: SpanKind::SpanEnd });
-        }
         if let (false, Some(usage)) = (replay, acp::usage_of(update)) {
             let _ = self.effects.send(Effect::Usage(usage));
         }
@@ -530,38 +505,6 @@ impl Session {
                     at: Utc::now(),
                 });
                 self.claim(Activity::NeedsAttention, "permission");
-            }
-            PermissionPolicy::Decision => {
-                self.claim(Activity::NeedsAttention, "permission");
-                let Some(attempt_id) = self.attempt_id.clone() else {
-                    tracing::warn!(key = %self.key, "decision policy without an attempt; permission cancelled");
-                    self.respond(&id, outcome(None));
-                    self.claim(Activity::Active, "permission_answered");
-                    return;
-                };
-                let request = DecisionRequest {
-                    attempt_id,
-                    title,
-                    summary,
-                    choices: acp::decision_choices(),
-                    default_choice_id: None,
-                    context: params.get("toolCall").cloned(),
-                };
-                let (reply, ruled) = oneshot::channel();
-                let _ = self.effects.send(Effect::Decision { request, reply });
-                let session = self.clone();
-                tokio::spawn(async move {
-                    let option = match ruled.await {
-                        Ok(Ok(ruling)) => acp::ruling_option(&ruling, &options),
-                        Ok(Err(error)) => {
-                            tracing::warn!(key = %session.key, %error, "decision request failed; permission cancelled");
-                            None
-                        }
-                        Err(_) => None,
-                    };
-                    session.respond(&id, outcome(option));
-                    session.claim(Activity::Active, "permission_answered");
-                });
             }
         }
     }
@@ -622,8 +565,6 @@ mod tests {
             session_id: None,
             harness: "fake".into(),
             cwd: "/tmp".into(),
-            attempt_id: Some("att_1".into()),
-            parent_attempt_id: None,
             adapter_pid: 1,
             holder_pid: 2,
             started_at: Utc::now(),
@@ -678,7 +619,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_turn_becomes_claims_spans_usage_and_a_recap() {
+    async fn a_turn_becomes_claims_usage_and_a_recap() {
         let (session, mut effects, mut agent) = open(PermissionPolicy::Auto);
         handshake(&session, &mut agent, &mut effects).await;
 
@@ -693,20 +634,8 @@ mod tests {
         expect_claim(&mut effects, Activity::Active, "message").await;
 
         agent.update(json!({"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Task: explore", "status": "pending", "rawInput": {"description": "look around"}})).await;
-        match next(&mut effects).await {
-            Effect::Span { span_id, label, kind } => {
-                assert_eq!(span_id, "n:1:2:t1");
-                assert_eq!(label, "look around");
-                assert_eq!(kind, SpanKind::SpanStart);
-            }
-            other => panic!("{other:?}"),
-        }
-        expect_claim(&mut effects, Activity::Active, "tool_call").await;
-
-        agent.update(json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "in_progress"})).await;
         expect_claim(&mut effects, Activity::Active, "tool_call").await;
         agent.update(json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed"})).await;
-        assert!(matches!(next(&mut effects).await, Effect::Span { span_id, kind: SpanKind::SpanEnd, .. } if span_id == "n:1:2:t1"));
 
         // auto: answered with allow_once, no claim, R5.3.
         agent.send(json!({"jsonrpc": "2.0", "id": "p1", "method": "session/request_permission", "params": {
@@ -727,7 +656,6 @@ mod tests {
         let (stop, recap) = turn.await.unwrap().unwrap();
         assert_eq!(stop.as_deref(), Some("end_turn"));
         assert_eq!(recap.as_deref(), Some("Hello world"));
-        assert!(matches!(next(&mut effects).await, Effect::Recap(t) if t == "Hello world"));
         expect_claim(&mut effects, Activity::Idle, "turn_end").await;
         assert_eq!(session.view().last_recap.as_deref(), Some("Hello world"));
 
@@ -816,46 +744,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn decision_asks_the_bridge_and_maps_the_ruling() {
-        let (session, mut effects, mut agent) = open(PermissionPolicy::Decision);
-        handshake(&session, &mut agent, &mut effects).await;
-        let permission = |id: u64| {
-            json!({"jsonrpc": "2.0", "id": id, "method": "session/request_permission", "params": {
-                "toolCall": {"title": "Bash", "rawInput": {"command": "ls"}},
-                "options": [{"optionId": "y", "kind": "allow_once"}, {"optionId": "n", "kind": "reject_once"}, {"optionId": "ya", "kind": "allow_always"}],
-            }})
-        };
-        agent.send(permission(1)).await;
-        expect_claim(&mut effects, Activity::NeedsAttention, "permission").await;
-        let reply = match next(&mut effects).await {
-            Effect::Decision { request, reply } => {
-                assert_eq!(request.attempt_id, "att_1");
-                assert_eq!(request.title, "Bash");
-                assert_eq!(request.summary, "Bash {\"command\":\"ls\"}");
-                assert_eq!(request.choices.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["allow", "deny", "allow_always"]);
-                reply
-            }
-            other => panic!("{other:?}"),
-        };
-        reply.send(Ok(Ruling::Choice { id: "allow_always".into() })).unwrap();
-        assert_eq!(agent.recv().await["result"]["outcome"]["optionId"], "ya");
-        expect_claim(&mut effects, Activity::Active, "permission_answered").await;
-
-        agent.send(permission(2)).await;
-        expect_claim(&mut effects, Activity::NeedsAttention, "permission").await;
-        let Effect::Decision { reply, .. } = next(&mut effects).await else { panic!("decision") };
-        reply.send(Ok(Ruling::Expired)).unwrap();
-        assert_eq!(agent.recv().await["result"]["outcome"], json!({"outcome": "cancelled"}));
-        expect_claim(&mut effects, Activity::Active, "permission_answered").await;
-
-        // Policy changes apply to the next request, R5.3.
-        session.set_policy(PermissionPolicy::Auto);
-        let _state_frame = agent.recv().await;
-        agent.send(permission(3)).await;
-        assert_eq!(agent.recv().await["result"]["outcome"]["optionId"], "y");
-    }
-
-    #[tokio::test]
     async fn replay_rebuilds_pending_and_claims_the_newest_once() {
         let (session, mut effects, mut agent) = open(PermissionPolicy::Attention);
         let frames = vec![
@@ -866,12 +754,9 @@ mod tests {
         agent.send(serde_json::to_value(HolderFrame::Replay { frames }).unwrap()).await;
         expect_claim(&mut effects, Activity::NeedsAttention, "permission").await;
         assert_eq!(session.view().pending.len(), 1);
-        // The span map is rebuilt without re-sending its start; its end still matches.
-        agent.update(json!({"sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "completed"})).await;
-        assert!(matches!(next(&mut effects).await, Effect::Span { kind: SpanKind::SpanEnd, span_id, .. } if span_id == "n:1:2:t1"));
 
         // Without a pending permission only the newest activity is claimed.
-        let (_, mut effects2, mut agent2) = open(PermissionPolicy::Attention);
+        let (session2, mut effects2, mut agent2) = open(PermissionPolicy::Attention);
         let frames = vec![
             json!({"jsonrpc": "2.0", "method": "session/update", "params": {"update": {"sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Bash"}}}),
             json!({"jsonrpc": "2.0", "method": "session/update", "params": {"update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "a"}}}}),
@@ -883,8 +768,8 @@ mod tests {
         agent2.update(json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "b"}})).await;
         expect_claim(&mut effects2, Activity::Active, "message").await;
         agent2.send(json!({"jsonrpc": "2.0", "id": 1, "result": {"stopReason": "end_turn"}})).await;
-        assert!(matches!(next(&mut effects2).await, Effect::Recap(t) if t == "b"));
         expect_claim(&mut effects2, Activity::Idle, "turn_end").await;
+        assert_eq!(session2.view().last_recap.as_deref(), Some("b"));
     }
 
     #[tokio::test]
