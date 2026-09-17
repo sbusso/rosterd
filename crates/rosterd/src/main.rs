@@ -61,6 +61,14 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     };
     let config_path = cli.config.unwrap_or_else(config_path);
+    // `rosterd status | head` ends with a closed pipe, not a panic: the default SIGPIPE ends a
+    // CLI command quietly. The daemon keeps Rust's ignore; a dead adapter's stdin is an error.
+    #[cfg(unix)]
+    if !matches!(command, Command::Daemon) {
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        }
+    }
     if matches!(command, Command::Daemon) {
         tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
