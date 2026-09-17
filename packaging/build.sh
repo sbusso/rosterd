@@ -29,6 +29,7 @@ for t in "${targets[@]}"; do
     native | "$native")
       cargo build --release
       copy "$native" "$out/release"
+      case "$native" in *-apple-darwin) packaging/sign.sh dist/"$native"/* ;; esac
       ;;
     *)
       cargo zigbuild --release --target "$t" -p rosterd -p rosterd-holder
