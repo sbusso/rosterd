@@ -12,6 +12,7 @@
 
 mod mcp;
 mod routes;
+mod send;
 
 use std::io;
 use std::net::SocketAddr;
@@ -251,9 +252,14 @@ mod tests {
     /// A node with listen off, an ephemeral loopback port, and the socket under a temp dir;
     /// `serve` runs in the background. Nothing here reaches the runner or the mesh.
     async fn start(tag: &str) -> Harness {
+        start_with(tag, |_| {}).await
+    }
+
+    async fn start_with(tag: &str, tweak: impl FnOnce(&mut Config)) -> Harness {
         let dir = std::env::temp_dir().join(format!("rosterd-api-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut config = Config::default();
+        tweak(&mut config);
         config.node.name = "gibson".into();
         config.node.listen = "off".into();
         config.node.ui_listen = "loopback".into();
@@ -609,7 +615,7 @@ mod tests {
         assert_eq!(listed.status(), StatusCode::OK);
         let listed: Value = listed.json().await.unwrap();
         let names: Vec<&str> = listed["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["roster.list", "roster.watch", "session.name", "session.spawn", "session.prompt", "session.read_state", "swarm.nodes"]);
+        assert_eq!(names, ["roster.list", "roster.watch", "session.name", "session.spawn", "session.prompt", "session.read_state", "session.send", "session.find", "swarm.nodes"]);
 
         let named: Value = call(json!({
             "jsonrpc": "2.0", "id": 2, "method": "tools/call",
@@ -644,6 +650,86 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(listed["result"]["structuredContent"]["records"][0]["name"], "coordinator");
+
+        // session.find resolves a name to the record and its node; session.send refuses the
+        // caller's own session, R5.5.
+        let found: Value = call(json!({
+            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+            "params": { "name": "session.find", "arguments": { "name": "coordinator" } }
+        }))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+        assert_eq!(found["result"]["structuredContent"]["session_key"], record.session_key, "{found}");
+        assert_eq!(found["result"]["structuredContent"]["peer_state"], "local");
+        let refused: Value = call(json!({
+            "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+            "params": { "name": "session.send", "arguments": { "to": "coordinator", "prompt": "hi" } }
+        }))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+        assert_eq!(refused["result"]["isError"], true, "{refused}");
+        assert!(refused["result"]["content"][0]["text"].as_str().unwrap().starts_with("400"), "{refused}");
+        let missing: Value = call(json!({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": { "name": "session.send", "arguments": { "to": "nobody", "prompt": "hi" } }
+        }))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+        assert!(missing["result"]["content"][0]["text"].as_str().unwrap().starts_with("404"), "{missing}");
+    }
+
+    /// R5.5 agent to agent over the socket: a session named `worker` on the fake harness is
+    /// prompted by name and the answer carries its recap. Skips when the holder or the fake
+    /// adapter cannot be had, like the runner's e2e tests.
+    #[tokio::test]
+    async fn send_prompts_a_session_by_name_and_answers_with_its_recap() {
+        let Some((bin, fake)) = crate::runner::e2e_test::binaries() else { return };
+        // A holder socket path must fit in sockaddr_un; the holders go under a short dir.
+        let holders = std::env::temp_dir().join(format!("rsend{}", std::process::id()));
+        let h = start_with("send", |c| {
+            c.runner.holder_dir = holders.clone();
+            c.runner.holder_bin = Some(bin);
+            c.runner.default_permission_policy = rosterd_proto::PermissionPolicy::Auto;
+            c.runner.resume_on_crash = false;
+            c.harness.insert("fake".into(), crate::config::HarnessConfig { adapter: fake.to_string_lossy().into_owned(), ..Default::default() });
+        })
+        .await;
+        let started = h.socket.post("http://rosterd/sessions").json(&json!({ "harness": "fake", "name": "worker" })).send().await.unwrap();
+        assert_eq!(started.status(), StatusCode::CREATED);
+        let key = started.json::<Value>().await.unwrap()["session_key"].as_str().unwrap().to_string();
+
+        let sent = h.socket.post("http://rosterd/send").json(&json!({ "to": "worker", "prompt": "hello" })).send().await.unwrap();
+        assert_eq!(sent.status(), StatusCode::OK);
+        let sent: Value = sent.json().await.unwrap();
+        assert_eq!(sent["session_key"], key, "{sent}");
+        assert_eq!(sent["node"], "gibson");
+        assert_eq!(sent["reached"], true, "{sent}");
+        assert_eq!(sent["recap"], "You said: hello", "{sent}");
+        assert!(sent["stop_reason"].is_string(), "{sent}");
+        assert_eq!(sent["activity"], "idle");
+        assert_eq!(sent["pending"], json!([]));
+
+        // By key and by pid as well; an unknown name is 404.
+        let by_key: Value = h.socket.post("http://rosterd/send").json(&json!({ "to": key, "prompt": "again" })).send().await.unwrap().json().await.unwrap();
+        assert_eq!(by_key["recap"], "You said: again", "{by_key}");
+        let pid = h.node.roster.get(&key).unwrap().pid.to_string();
+        let by_pid: Value = h.socket.post("http://rosterd/send").json(&json!({ "to": pid, "prompt": "pid" })).send().await.unwrap().json().await.unwrap();
+        assert_eq!(by_pid["session_key"], key, "{by_pid}");
+        let missing = h.socket.post("http://rosterd/send").json(&json!({ "to": "nobody", "prompt": "x" })).send().await.unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+        let stopped = h.socket.delete(format!("http://rosterd/sessions/{key}")).send().await.unwrap();
+        assert_eq!(stopped.status(), StatusCode::OK);
+        let _ = std::fs::remove_dir_all(&holders);
     }
 
     #[tokio::test]

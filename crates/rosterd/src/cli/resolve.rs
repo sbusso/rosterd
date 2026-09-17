@@ -17,26 +17,42 @@ pub fn display_name(record: &Record) -> String {
     }
 }
 
-/// `records` is the scope; `local_node_id` says which of them may match by pid.
-pub fn resolve<'a>(key: &str, local_node_id: &str, records: &'a [Record]) -> Result<&'a Record, Exit> {
+/// Why a KEY did not resolve.
+pub enum Miss<'a> {
+    None,
+    Ambiguous(Vec<&'a Record>),
+}
+
+/// `records` is the scope; `local_node_id` says which of them may match by pid. Shared with
+/// the daemon's own resolution (`Node::resolve_session`), so a name means the same everywhere.
+pub fn find<'a>(key: &str, local_node_id: &str, records: &'a [Record]) -> Result<&'a Record, Miss<'a>> {
     if let Some(record) = records.iter().find(|r| r.session_key == key) {
         return Ok(record);
     }
     let live = || records.iter().filter(|r| r.liveness != Liveness::Ended);
     if let Ok(pid) = key.parse::<u32>() {
         let by_pid: Vec<&Record> = live().filter(|r| r.node_id == local_node_id && r.pid == pid).collect();
-        match by_pid.as_slice() {
-            [one] => return Ok(one),
-            [] => {}
-            many => return Err(ambiguous(key, many)),
+        match by_pid.len() {
+            1 => return Ok(by_pid[0]),
+            0 => {}
+            _ => return Err(Miss::Ambiguous(by_pid)),
         }
     }
-    let by_name: Vec<&Record> = live().filter(|r| display_name(r) == key).collect();
-    match by_name.as_slice() {
-        [one] => Ok(one),
-        [] => Err(Exit::user(format!("no session {key}"))),
-        many => Err(ambiguous(key, many)),
+    // A cwd basename matches with or without its brackets.
+    let bracketed = format!("[{key}]");
+    let by_name: Vec<&Record> = live().filter(|r| { let name = display_name(r); name == key || name == bracketed }).collect();
+    match by_name.len() {
+        1 => Ok(by_name[0]),
+        0 => Err(Miss::None),
+        _ => Err(Miss::Ambiguous(by_name)),
     }
+}
+
+pub fn resolve<'a>(key: &str, local_node_id: &str, records: &'a [Record]) -> Result<&'a Record, Exit> {
+    find(key, local_node_id, records).map_err(|miss| match miss {
+        Miss::None => Exit::user(format!("no session {key}")),
+        Miss::Ambiguous(candidates) => ambiguous(key, &candidates),
+    })
 }
 
 fn ambiguous(key: &str, candidates: &[&Record]) -> Exit {
@@ -100,6 +116,7 @@ mod tests {
         assert_eq!(resolve("remote:42:1", "local", &records).unwrap().node, "remote", "exact beats liveness");
         assert_eq!(resolve("42", "local", &records).unwrap().session_key, "local:42:1", "pid on the local node beats a name");
         assert_eq!(resolve("[proj]", "local", &records).unwrap().pid, 43, "cwd basename in brackets is the fallback name");
+        assert_eq!(resolve("proj", "local", &records).unwrap().pid, 43, "and without them");
         assert_eq!(resolve("builder", "local", &records).unwrap().pid, 42, "an ended record never competes");
         records[2].liveness = Liveness::Live;
         let err = resolve("builder", "local", &records).unwrap_err();

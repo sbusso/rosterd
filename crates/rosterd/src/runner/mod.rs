@@ -10,7 +10,7 @@
 
 mod acp;
 #[cfg(test)]
-mod e2e_test;
+pub(crate) mod e2e_test;
 pub mod health;
 mod holder;
 mod session;
@@ -42,6 +42,8 @@ const STOP_WAIT: Duration = Duration::from_secs(5);
 const SUSPEND_WAIT: Duration = Duration::from_secs(10);
 /// R15.2: how often live sessions are checked against the idle timeout.
 const IDLE_TICK: Duration = Duration::from_secs(30);
+/// R5.5: how long a reached wait gives the turn's task to return its recap.
+const TURN_SETTLE: Duration = Duration::from_millis(500);
 /// R15.3: the sliding window of `max_resumes_per_hour`.
 const RESUME_WINDOW: chrono::Duration = chrono::Duration::hours(1);
 
@@ -378,6 +380,9 @@ impl Runner {
         };
         let session_key = session_key.as_str();
         let text = req.prompt;
+        // The turn claims active from its own task, later than a wait for idle first reads the
+        // record; claimed here first, the wait cannot answer with the idle before the turn.
+        self.claim(session_key, Activity::Active, "prompt");
         let runner = self.clone();
         let turn = tokio::spawn(async move {
             let outcome = session.prompt(&text).await;
@@ -389,8 +394,13 @@ impl Runner {
         let (reached, outcome) = match req.wait_until {
             Some(wanted) if !timeout.is_zero() => {
                 let reached = tokio::time::timeout(timeout, self.wait_for(session_key, wanted)).await.is_ok();
-                // A turn still running finishes in the background.
-                let outcome = if turn.is_finished() { Some(join(turn).await?) } else { None };
+                // Idle and ended land a few instructions before the turn's task returns; it gets
+                // a moment to. A turn still running after that finishes in the background.
+                let settle = if reached && wanted != WaitUntil::NeedsAttention { TURN_SETTLE } else { Duration::ZERO };
+                let outcome = match tokio::time::timeout(settle, join(turn)).await {
+                    Ok(outcome) => Some(outcome?),
+                    Err(_) => None,
+                };
                 (reached, outcome)
             }
             wanted => {

@@ -172,7 +172,7 @@ async fn a_session_through_the_real_holder_survives_a_daemon_restart() {
 // ---- R15 through the runner ---------------------------------------------------------------
 
 /// The holder and the fake adapter, or None when neither can be had.
-fn binaries() -> Option<(PathBuf, PathBuf)> {
+pub(crate) fn binaries() -> Option<(PathBuf, PathBuf)> {
     let bin = holder_bin()?;
     let fake = target_debug().join("examples").join("fake_acp");
     if !fake.exists() {
