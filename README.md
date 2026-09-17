@@ -146,6 +146,7 @@ Every command takes `--json`, which prints the API frame for the resource byte f
 rosterd list|watch [--swarm|--node N]      one row per session; watch reprints on every change
 rosterd changes                            one line per change across the swarm
 rosterd status | nodes                     this node; swarm membership and health
+rosterd usage [--swarm] [--since 7d]       tokens and cost per day, harness and model
 rosterd read KEY | explain KEY             one session in full; which source set each field
 rosterd start --harness H --cwd DIR [--name L] [--policy auto|attention] [--model M]
               [--effort E] [--env K=V ...]
@@ -164,6 +165,12 @@ KEY is an exact session key, a PID on this node, or a unique display name (the n
 cwd basename shown in brackets); an ambiguous name lists the candidates. `list` and `watch` read
 the roster only and answer with the runner or mesh broken. The agent-facing summary is
 `skill/SKILL.md`.
+
+Usage. `rosterd usage` rolls up the tokens each harness reported in its own transcripts on this
+node (`~/.claude/projects`, `~/.codex/sessions`), per day, harness and model, with a cost from a
+built-in price table (`-` for a model it does not know). `--swarm` asks every reachable node and
+adds a swarm total; `--since` takes `7d`, `12h`, a date or a datetime. Only the usage fields are
+read, never the text of a turn, and nothing leaves the machine except the roll-up a peer asks for.
 
 Hook. Put `rosterd-hook` on PATH and add this to `~/.claude/settings.json`; the same object without
 `Notification` goes in `~/.codex/hooks.json` (Codex raises `PermissionRequest`):

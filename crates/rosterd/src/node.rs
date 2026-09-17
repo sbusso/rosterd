@@ -7,6 +7,7 @@ use crate::identity::Identity;
 use crate::mesh::Mesh;
 use crate::roster::Roster;
 use crate::runner::Runner;
+use crate::usage::Roots;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -18,4 +19,6 @@ pub struct Node {
     pub runner: Arc<Runner>,
     /// The loopback bearer token, R6. Stored at `<config dir>/loopback.token`, mode 0600.
     pub loopback_token: String,
+    /// Where the harnesses keep their transcripts, for GET /usage.
+    pub usage_roots: Roots,
 }
