@@ -207,7 +207,7 @@ fn render(tray: &TrayIcon, view: &View) {
                 for r in group {
                     let text = row_text(r, now);
                     let key = r.session_key.as_str();
-                    if k == 0 {
+                    if k == 0 && r.activity_event.as_deref() == Some("permission") {
                         let sub = Submenu::new(&text, true);
                         #[cfg(any(target_os = "macos", target_os = "windows"))]
                         sub.set_icon(Some(disc(Shade::Attention, false)));
@@ -221,6 +221,7 @@ fn render(tray: &TrayIcon, view: &View) {
                         let _ = menu.append(&sub);
                     } else {
                         let (shade, hollow) = match k {
+                            0 => (Shade::Attention, false),
                             1 => (Shade::Active, false),
                             2 => (Shade::Idle, false),
                             3 => (Shade::Idle, true),

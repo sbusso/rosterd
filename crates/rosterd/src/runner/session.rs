@@ -9,13 +9,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
-use rosterd_proto::{Activity, HolderFrame, HolderState, PermissionPolicy, Usage};
+use rosterd_proto::{Activity, HolderFrame, HolderState, PermissionPolicy, Plan, Usage};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use super::acp::{self, Message};
-use super::{PendingPermission, PermissionAnswer, RunnerError, SessionState};
+use super::{AuthMethod, PendingPermission, PendingQuestion, PermissionAnswer, QuestionAction, QuestionAnswer, RunnerError, SessionState};
 use crate::bridge::{BridgeError, DecisionRequest, Ruling, SpanKind};
 
 /// Raw notifications kept for a slow `stream()` reader before it starts skipping, R5.5.
@@ -36,6 +36,10 @@ pub enum Effect {
     Recap(String),
     /// R3.
     Usage(Usage),
+    /// The agent's current mode, from session/new or `current_mode_update`.
+    Mode(String),
+    /// The agent's `plan`, whole.
+    Plan(Plan),
     /// R5.3 `decision`: the runner asks the bridge and answers on `reply`.
     Decision { request: DecisionRequest, reply: oneshot::Sender<Result<Ruling, BridgeError>> },
     /// The adapter exited, `HolderFrame::Exited`.
@@ -63,6 +67,10 @@ pub struct Session {
     next_id: AtomicU64,
     pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, Value>>>>,
     permissions: Mutex<Vec<PendingPermission>>,
+    questions: Mutex<Vec<PendingQuestion>>,
+    auth_methods: Mutex<Vec<AuthMethod>>,
+    /// session/new was refused with the auth error; the agent wants a login on this node.
+    login: AtomicBool,
     policy: Mutex<PermissionPolicy>,
     recap: AtomicBool,
     last_recap: Mutex<Option<String>>,
@@ -106,6 +114,9 @@ impl Session {
             next_id: AtomicU64::new(Utc::now().timestamp_millis() as u64),
             pending: Mutex::new(HashMap::new()),
             permissions: Mutex::new(Vec::new()),
+            questions: Mutex::new(Vec::new()),
+            auth_methods: Mutex::new(Vec::new()),
+            login: AtomicBool::new(false),
             policy: Mutex::new(policy),
             recap: AtomicBool::new(recap),
             last_recap: Mutex::new(None),
@@ -160,6 +171,8 @@ impl Session {
             activity: Activity::Unknown,
             last_recap: self.last_recap(),
             pending: self.permissions.lock().unwrap().clone(),
+            questions: self.questions.lock().unwrap().clone(),
+            login: self.login.load(Ordering::Relaxed).then(|| self.auth_methods.lock().unwrap().clone()),
             permission_policy: self.policy(),
         }
     }
@@ -184,7 +197,14 @@ impl Session {
         let result = self.request("initialize", acp::initialize_params()).await?;
         let load = result["agentCapabilities"]["loadSession"].as_bool().unwrap_or(false);
         self.load_session.store(load, Ordering::Relaxed);
+        *self.auth_methods.lock().unwrap() = acp::auth_methods(&result);
         Ok(())
+    }
+
+    /// The agent refused a session for want of a login: the record waits on it.
+    pub fn need_login(&self) {
+        self.login.store(true, Ordering::Relaxed);
+        self.claim(Activity::NeedsAttention, "login");
     }
 
     /// Returns the agent's whole answer; `sessionId` is stored.
@@ -195,6 +215,7 @@ impl Session {
             .ok_or_else(|| RunnerError::Acp("session/new returned no sessionId".into()))?
             .to_string();
         self.set_session_id(id);
+        self.mode_from(&result);
         Ok(result)
     }
 
@@ -205,7 +226,14 @@ impl Session {
         self.loading.store(false, Ordering::Relaxed);
         let result = result?;
         self.set_session_id(session_id.to_string());
+        self.mode_from(&result);
         Ok(result)
+    }
+
+    fn mode_from(&self, v: &Value) {
+        if let Some(mode) = acp::mode_of(v) {
+            let _ = self.effects.send(Effect::Mode(mode));
+        }
     }
 
     /// One session config option the agent advertised in its session/new or session/load answer.
@@ -259,6 +287,26 @@ impl Session {
         Ok(())
     }
 
+    /// Answers an `elicitation/create` the page took; a missing id answers the oldest one.
+    pub fn answer_question(&self, request_id: Option<&Value>, answer: QuestionAnswer) -> Result<(), RunnerError> {
+        let pending = {
+            let mut questions = self.questions.lock().unwrap();
+            let at = match request_id {
+                Some(id) => questions.iter().position(|q| &q.request_id == id).ok_or_else(|| RunnerError::NoPending(id.to_string()))?,
+                None if questions.is_empty() => return Err(RunnerError::NoPending("(no question)".into())),
+                None => 0,
+            };
+            questions.remove(at)
+        };
+        let mut result = json!({"action": answer.action});
+        if let (QuestionAction::Accept, Some(content)) = (&answer.action, answer.content) {
+            result["content"] = Value::Object(content);
+        }
+        self.respond(&pending.request_id, result);
+        self.claim(Activity::Active, "question_answered");
+        Ok(())
+    }
+
     // ---- JSON-RPC plumbing -----------------------------------------------------------------
 
     fn send(&self, v: &Value) {
@@ -279,6 +327,7 @@ impl Session {
         self.send(&acp::request(id, method, params));
         match rx.await {
             Ok(Ok(result)) => Ok(result),
+            Ok(Err(error)) if acp::auth_required(&error) => Err(RunnerError::AuthRequired),
             Ok(Err(error)) => Err(RunnerError::Acp(format!("{method}: {error}"))),
             Err(_) => Err(RunnerError::Acp(format!("{method}: connection closed"))),
         }
@@ -406,6 +455,8 @@ impl Session {
             Message::Request { id, method, params } => {
                 if method == "session/request_permission" {
                     self.handle_permission(id.clone(), params);
+                } else if method == "elicitation/create" {
+                    self.handle_question(id.clone(), params);
                 } else {
                     // fs/* and terminal/*: capabilities this client did not advertise.
                     self.send(&acp::error_response(id, acp::METHOD_NOT_FOUND, &format!("{method} is not supported")));
@@ -449,6 +500,10 @@ impl Session {
         }
         if let (false, Some(usage)) = (replay, acp::usage_of(update)) {
             let _ = self.effects.send(Effect::Usage(usage));
+        }
+        self.mode_from(update);
+        if let Some(plan) = acp::plan_of(update) {
+            let _ = self.effects.send(Effect::Plan(plan));
         }
         if self.loading.load(Ordering::Relaxed) {
             return None;
@@ -509,6 +564,23 @@ impl Session {
                 });
             }
         }
+    }
+}
+
+impl Session {
+    /// An `elicitation/create`: form mode waits for the page, anything else is declined.
+    fn handle_question(&self, id: Value, params: &Value) {
+        if params.get("mode").and_then(Value::as_str) != Some("form") {
+            self.respond(&id, json!({"action": "decline"}));
+            return;
+        }
+        self.questions.lock().unwrap().push(PendingQuestion {
+            request_id: id,
+            message: params.get("message").and_then(Value::as_str).unwrap_or("").to_string(),
+            schema: params.get("requestedSchema").cloned().unwrap_or_else(|| json!({})),
+            at: Utc::now(),
+        });
+        self.claim(Activity::NeedsAttention, "question");
     }
 }
 
@@ -690,6 +762,57 @@ mod tests {
         assert_eq!(agent.recv().await["result"]["outcome"]["optionId"], "yes");
         expect_claim(&mut effects, Activity::Active, "permission_answered").await;
         assert!(session.view().pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_form_question_waits_for_the_page_and_a_url_one_is_declined() {
+        let (session, mut effects, mut agent) = open(PermissionPolicy::Attention);
+        handshake(&session, &mut agent, &mut effects).await;
+        agent.send(json!({"jsonrpc": "2.0", "id": 7, "method": "elicitation/create", "params": {
+            "sessionId": "s1", "message": "Which branch?", "mode": "form",
+            "requestedSchema": {"type": "object", "properties": {"branch": {"type": "string"}}, "required": ["branch"]},
+        }})).await;
+        expect_claim(&mut effects, Activity::NeedsAttention, "question").await;
+        let view = session.view();
+        assert_eq!(view.questions[0].message, "Which branch?");
+        assert_eq!(view.questions[0].schema["required"], json!(["branch"]));
+
+        let content = json!({"branch": "main"}).as_object().cloned();
+        session.answer_question(None, QuestionAnswer { action: QuestionAction::Accept, content }).unwrap();
+        assert_eq!(agent.recv().await["result"], json!({"action": "accept", "content": {"branch": "main"}}));
+        expect_claim(&mut effects, Activity::Active, "question_answered").await;
+        assert!(session.view().questions.is_empty());
+
+        agent.send(json!({"jsonrpc": "2.0", "id": 8, "method": "elicitation/create", "params": {
+            "sessionId": "s1", "message": "Log in", "mode": "url", "elicitationId": "e1", "url": "https://x",
+        }})).await;
+        assert_eq!(agent.recv().await["result"], json!({"action": "decline"}));
+    }
+
+    #[tokio::test]
+    async fn mode_and_plan_updates_reach_the_record() {
+        let (session, mut effects, mut agent) = open(PermissionPolicy::Attention);
+        handshake(&session, &mut agent, &mut effects).await;
+        agent.send(json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {
+            "sessionUpdate": "current_mode_update", "currentModeId": "plan"}}})).await;
+        // Each update also claims activity; those are not under test here.
+        async fn skip_claims(effects: &mut mpsc::UnboundedReceiver<Effect>) -> Effect {
+            loop {
+                match next(effects).await {
+                    Effect::Claim { .. } => continue,
+                    other => return other,
+                }
+            }
+        }
+        assert!(matches!(skip_claims(&mut effects).await, Effect::Mode(m) if m == "plan"));
+        agent.send(json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {
+            "sessionUpdate": "plan", "entries": [{"content": "read", "priority": "high", "status": "completed"}, {"content": "edit", "priority": "medium", "status": "in_progress"}]}}})).await;
+        let Effect::Plan(plan) = skip_claims(&mut effects).await else { panic!("plan") };
+        assert_eq!(plan.entries.len(), 2);
+        assert_eq!(plan.entries[1].status, "in_progress");
+        agent.send(json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {
+            "sessionUpdate": "usage_update", "used": 40, "size": 200}}})).await;
+        assert!(matches!(skip_claims(&mut effects).await, Effect::Usage(u) if u.context_used == Some(40) && u.context_size == Some(200)));
     }
 
     #[tokio::test]

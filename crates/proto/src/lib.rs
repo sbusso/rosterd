@@ -151,9 +151,29 @@ pub struct Usage {
     pub output_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    /// Context window fill, ACP `usage_update` `used` / `size`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_used: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_size: Option<u64>,
     /// Whatever else the harness sent, kept verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw: Option<serde_json::Value>,
+}
+
+/// The agent's plan for the turn, ACP `plan`. Each notification replaces the whole list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Plan {
+    pub entries: Vec<PlanEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanEntry {
+    pub content: String,
+    /// `high` | `medium` | `low`.
+    pub priority: String,
+    /// `pending` | `in_progress` | `completed`.
+    pub status: String,
 }
 
 /// What the session's process tree takes from the machine, from the last scan pass.
@@ -218,6 +238,11 @@ pub struct Record {
     pub usage: Option<Usage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub load: Option<Load>,
+    /// The harness mode the session runs in (ACP `current_mode_update`), e.g. `plan` or `code`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<Plan>,
     /// R5.4. A second live process claimed an attempt already bound elsewhere in the swarm.
     #[serde(default)]
     pub conflict: bool,
@@ -436,6 +461,8 @@ mod tests {
             ended_reason: None,
             usage: None,
             load: None,
+            mode: None,
+            plan: None,
             conflict: false,
             permission_policy: None,
         });

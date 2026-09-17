@@ -129,6 +129,38 @@ pub enum PermissionAnswer {
     Cancelled,
 }
 
+/// An ACP `elicitation/create` the agent is waiting on, form mode.
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingQuestion {
+    pub request_id: serde_json::Value,
+    pub message: String,
+    /// The form's `requestedSchema`, a flat object schema.
+    pub schema: serde_json::Value,
+    pub at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuestionAction {
+    Accept,
+    Decline,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct QuestionAnswer {
+    pub action: QuestionAction,
+    #[serde(default)]
+    pub content: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// One way to log the agent in, from its initialize answer.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AuthMethod {
+    pub id: String,
+    pub name: String,
+}
+
 /// session.read_state, R6: activity and the last recap, never the transcript.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionState {
@@ -136,6 +168,11 @@ pub struct SessionState {
     pub activity: Activity,
     pub last_recap: Option<String>,
     pub pending: Vec<PendingPermission>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<PendingQuestion>,
+    /// Set when the agent refused session/new for want of a login: the methods it offers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<Vec<AuthMethod>>,
     pub permission_policy: PermissionPolicy,
 }
 
@@ -147,7 +184,7 @@ pub enum RunnerError {
     AttemptBound { attempt_id: String, session_key: String },
     #[error("unknown harness {0}; add [harness.{0}] to the config")]
     UnknownHarness(String),
-    #[error("no pending permission {0}")]
+    #[error("no pending request {0}")]
     NoPending(String),
     /// R15.1: the key names a suspended session and the call needs a running one.
     #[error("session {0} is suspended")]
@@ -157,6 +194,8 @@ pub enum RunnerError {
     ResumeLimit { session_key: String, retry_after_s: u64 },
     #[error("{0}")]
     Acp(String),
+    #[error("the agent wants a login on its node first")]
+    AuthRequired,
     #[error("holder: {0}")]
     Holder(String),
     #[error(transparent)]
@@ -493,6 +532,8 @@ impl Runner {
                     activity: Activity::Unknown,
                     last_recap: parked.last_recap,
                     pending: Vec::new(),
+                    questions: Vec::new(),
+                    login: None,
                     permission_policy: self.effective_policy(&parked.state.harness, Meta::of(&parked.state).permission_policy),
                 }
             }
@@ -511,6 +552,16 @@ impl Runner {
         answer: PermissionAnswer,
     ) -> Result<Record, RunnerError> {
         self.session(session_key)?.answer(request_id, answer)?;
+        self.record(session_key)
+    }
+
+    pub async fn answer_question(
+        self: &Arc<Self>,
+        session_key: &str,
+        request_id: Option<&serde_json::Value>,
+        answer: QuestionAnswer,
+    ) -> Result<Record, RunnerError> {
+        self.session(session_key)?.answer_question(request_id, answer)?;
         self.record(session_key)
     }
 
@@ -631,7 +682,14 @@ impl Runner {
                 tracing::warn!(key = %session.key, session_id, "agent cannot load sessions; starting a fresh one on the same attempt");
                 session.new_session(cwd, mcp).await?
             }
-            None => session.new_session(cwd, mcp).await?,
+            None => match session.new_session(cwd, mcp).await {
+                // ponytail: no auth/authenticate relay; log in on the node, then stop and start again.
+                Err(RunnerError::AuthRequired) => {
+                    session.need_login();
+                    return Ok(());
+                }
+                answer => answer?,
+            },
         };
         if let Some(effort) = effort {
             match acp::effort_option(&answer) {
@@ -791,6 +849,16 @@ impl Runner {
                     }
                     if let Some(attempt_id) = session.attempt_id.clone() {
                         self.bridge.send(Outbound::Usage { attempt_id, usage, at: Utc::now() });
+                    }
+                }
+                Effect::Mode(mode) => {
+                    if let Err(error) = self.roster.update(&key, |r| r.mode = Some(mode)) {
+                        tracing::warn!(%key, %error, "mode refused");
+                    }
+                }
+                Effect::Plan(plan) => {
+                    if let Err(error) = self.roster.update(&key, |r| r.plan = Some(plan)) {
+                        tracing::warn!(%key, %error, "plan refused");
                     }
                 }
                 Effect::Decision { request, reply } => {
@@ -1143,6 +1211,8 @@ mod tests {
             ended_reason: None,
             usage: None,
             load: None,
+            mode: None,
+            plan: None,
             conflict: false,
             permission_policy: None,
         };

@@ -31,7 +31,7 @@ use crate::gate;
 use crate::mesh::{MeshError, PeerAuth};
 use crate::node::{Node, VERSION};
 use crate::roster::{Patch, RosterError};
-use crate::runner::{PatchSession, PermissionAnswer, PromptRequest, RunnerError, SessionState, StartSession};
+use crate::runner::{PatchSession, PermissionAnswer, PromptRequest, QuestionAnswer, RunnerError, SessionState, StartSession};
 
 /// The single page client, R9. Written by the ui agent; served as is.
 const UI: &str = include_str!("../../../../ui/index.html");
@@ -91,6 +91,7 @@ impl From<RunnerError> for ApiError {
                 return refused;
             }
             RunnerError::Roster(error) => return ApiError::from(error),
+            RunnerError::AuthRequired => StatusCode::UNAUTHORIZED,
             RunnerError::Acp(_) | RunnerError::Holder(_) | RunnerError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         ApiError::new(status, error.to_string())
@@ -189,6 +190,7 @@ pub fn sessions() -> Router<Arc<Node>> {
         .route("/sessions/{key}/open", post(open_session))
         .route("/sessions/{key}/stream", get(stream))
         .route("/sessions/{key}/permission", post(permission))
+        .route("/sessions/{key}/answer", post(answer_question))
         .route("/sessions/{key}/name", post(session_name))
         .route("/sessions/{key}/explain", get(explain))
         .route("/sessions/{key}/suspend", post(suspend))
@@ -552,6 +554,8 @@ pub(super) fn session_state(node: &Node, record: &Record) -> Option<SessionState
             activity: record.activity,
             last_recap: None,
             pending: Vec::new(),
+            questions: Vec::new(),
+            login: None,
             permission_policy: record.permission_policy.unwrap_or(node.config.runner.default_permission_policy),
         });
     }
@@ -732,6 +736,23 @@ async fn permission(captures: Captures, Body(body): Body<Value>) -> Result<Respo
     }
     gate::answer(&captures.key, request_id.as_ref(), answer, reason)?;
     ok(captures.record()?)
+}
+
+#[derive(serde::Deserialize)]
+struct AnswerBody {
+    /// The oldest pending question when absent.
+    request_id: Option<Value>,
+    #[serde(flatten)]
+    answer: QuestionAnswer,
+}
+
+/// Answers an agent's `elicitation/create`, the form the page built from its schema.
+async fn answer_question(captures: Captures, Body(body): Body<Value>) -> Result<Response, ApiError> {
+    if let Some(node_id) = captures.remote()? {
+        return captures.proxy(node_id, Method::POST, captures.path("/answer"), Some(body)).await;
+    }
+    let AnswerBody { request_id, answer } = parse(&body)?;
+    ok(captures.node.runner.answer_question(&captures.key, request_id.as_ref(), answer).await?)
 }
 
 async fn session_name(captures: Captures, Body(body): Body<Value>) -> Result<Response, ApiError> {

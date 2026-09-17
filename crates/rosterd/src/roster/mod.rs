@@ -459,6 +459,8 @@ impl Roster {
                 ended_reason: None,
                 usage: None,
                 load: None,
+            mode: None,
+            plan: None,
                 conflict: false,
                 permission_policy: None,
             },
@@ -691,7 +693,8 @@ impl Roster {
         }
     }
 
-    fn update(&self, session_key: &str, f: impl FnOnce(&mut Record)) -> Result<Record, RosterError> {
+    /// A field ACP alone writes (usage, mode, plan): no precedence, published on change.
+    pub fn update(&self, session_key: &str, f: impl FnOnce(&mut Record)) -> Result<Record, RosterError> {
         let mut table = self.table.write().unwrap();
         let key = table.resolve(session_key);
         let entry = table.entries.get_mut(&key).ok_or_else(|| RosterError::NotFound(session_key.into()))?;

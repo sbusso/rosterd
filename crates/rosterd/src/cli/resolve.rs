@@ -84,6 +84,8 @@ mod tests {
             ended_reason: None,
             usage: None,
             load: None,
+            mode: None,
+            plan: None,
             conflict: false,
             permission_policy: None,
         }

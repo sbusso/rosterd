@@ -37,9 +37,13 @@
   .acts { grid-column: 3; grid-row: 2; display: flex; gap: 6px; align-items: center; justify-content: flex-end; flex-wrap: wrap }
   .pend { grid-column: 2 / -1; border-left: 2px solid var(--needs_attention); padding: 4px 10px; margin: 4px 0 2px; display: flex; gap: 6px 10px; align-items: center; flex-wrap: wrap }
   .pend b { font-weight: 600 } .pend small { color: var(--dim) }
+  .pend label { display: flex; gap: 4px; align-items: center; font-size: 12px } .pend .msg { flex-basis: 100%; white-space: pre-wrap }
+  .ctx { display: inline-block; width: 28px; height: 7px; border: 1px solid currentColor; border-radius: 3px; vertical-align: 0; margin-right: 4px; overflow: hidden } .ctx i { display: block; height: 100%; background: currentColor }
+  .plan { grid-column: 2 / -1; font-size: 12px; color: var(--dim) } .plan summary { cursor: pointer } .plan ol { margin: 4px 0 2px; padding-left: 18px }
+  .plan .completed { text-decoration: line-through; opacity: 0.6 } .plan .in_progress { color: var(--fg) } .plan .high::marker { color: var(--needs_attention) }
   button { font: inherit; font-size: 12px; cursor: pointer; background: #232327; color: var(--fg); border: 1px solid #36363c; border-radius: 6px; padding: 4px 10px }
   button:hover { background: #2b2b31 } button.go { background: #2a3a20; border-color: #3f5a2f } button.no { color: var(--err) }
-  input { font: inherit; font-size: 12px; background: #0d0d0f; color: var(--fg); border: 1px solid #333; border-radius: 6px; padding: 4px 8px }
+  input, select { font: inherit; font-size: 12px; background: #0d0d0f; color: var(--fg); border: 1px solid #333; border-radius: 6px; padding: 4px 8px }
   form.p { display: flex; gap: 6px } form.p input { width: 180px }
   @media (max-width: 720px) { .s { grid-template-columns: 8px minmax(0, 1fr) } .acts { grid-column: 2; grid-row: auto; justify-content: flex-start } .meta { white-space: normal } form.p input { width: 120px } }
   pre#log { white-space: pre-wrap; word-break: break-word; font: 12px/1.4 ui-monospace, monospace; padding: 10px 16px; margin: 0; min-height: 40vh }
@@ -102,7 +106,7 @@ async function sse(path, onEvent, onStatus) {
   }
 }
 
-const state = { swarm: null, local: '', pending: {}, seen: {}, drafts: {}, status: 'connecting', attention: [], decisions: {}, wsErr: '' };
+const state = { swarm: null, local: '', pending: {}, questions: {}, login: {}, seen: {}, drafts: {}, status: 'connecting', attention: [], decisions: {}, wsErr: '' };
 const nodeOf = (key) => key.split(':')[0];
 // Session actions reach the owning node through this node, R7.5: local keys directly, peers under /swarm/{node_id}/.
 const spath = (key, suffix = '') => (nodeOf(key) === state.local ? `/sessions/${key}${suffix}` : `/swarm/${nodeOf(key)}/sessions/${key}${suffix}`);
@@ -116,7 +120,15 @@ const RANK = { needs_attention: 0, active: 1, idle: 2, unknown: 3, suspended: 4,
 const CPU = '<svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1"/><path d="M6 1v3M10 1v3M6 12v3M10 12v3M1 6h3M1 10h3M12 6h3M12 10h3"/></svg>';
 const CLOCK = '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5V8l2.5 1.5"/></svg>';
 const mem = (mb) => mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
-const statsHtml = (r) => `${r.load ? `<span>${CPU}${r.load.cpu_pct}%</span><span>${mem(r.load.rss_mb)}</span>` : ''}<span>${CLOCK}${ago(r.started_at)}</span>`;
+// Context fill as a meter, ACP usage_update's used over size.
+const ctxHtml = (u) => { if (!u?.context_size) return ''; const pct = Math.min(100, Math.round(100 * (u.context_used || 0) / u.context_size)); return `<span title="${u.context_used || 0} / ${u.context_size}"><span class="ctx"><i style="width:${pct}%"></i></span>${pct}%</span>`; };
+const statsHtml = (r) => `${r.mode ? `<span class="proj">${esc(r.mode)}</span>` : ''}${ctxHtml(r.usage)}${r.load ? `<span>${CPU}${r.load.cpu_pct}%</span><span>${mem(r.load.rss_mb)}</span>` : ''}<span>${CLOCK}${ago(r.started_at)}</span>`;
+// The agent's plan, folded: done over total and the entry in progress on the summary line.
+function planHtml(r) {
+  const e = r.plan?.entries || []; if (!e.length || r.liveness !== 'live') return '';
+  const done = e.filter((x) => x.status === 'completed').length, now = e.find((x) => x.status === 'in_progress');
+  return `<details class="plan"><summary>plan ${done}/${e.length}${now ? ` · ${esc(now.content)}` : ''}</summary><ol>${e.map((x) => `<li class="${esc(x.status)} ${esc(x.priority)}">${esc(x.content)}</li>`).join('')}</ol></details>`;
+}
 const tilde = (p) => p.replace(/^(\/Users\/[^/]+|\/home\/[^/]+|\/root)(?=\/|$)/, '~');
 const projOf = (r) => r.cwd ? r.cwd.replace(/\/+$/, '').split('/').pop() : '';
 // The harness by its logo: Claude's, OpenAI's for codex, pi's; any other by name.
@@ -136,10 +148,40 @@ function openCommands(r) {
 }
 // ACP option kinds: allow_* are the go, reject_* the no; the gate of R16.2 uses allow, allow_always, deny.
 const optClass = (o) => (/allow/.test(o.kind || o.option_id) ? 'go' : /reject|deny/.test(o.kind || o.option_id) ? 'no' : '');
+// One form field per property of an elicitation's requestedSchema: enum → select, boolean → checkbox,
+// number/integer → number, array of enum → multi select, anything else → text.
+function fieldHtml(name, p, required) {
+  const label = esc(p.title || name), attrs = `name="${esc(name)}"${required ? ' required' : ''}`;
+  if (p.enum) return `<label>${label} <select ${attrs}>${p.enum.map((v) => `<option>${esc(String(v))}</option>`).join('')}</select></label>`;
+  if (p.type === 'boolean') return `<label><input type="checkbox" ${attrs}> ${label}</label>`;
+  if (p.type === 'number' || p.type === 'integer') return `<label>${label} <input type="number" ${attrs} step="${p.type === 'integer' ? 1 : 'any'}"${p.minimum != null ? ` min="${p.minimum}"` : ''}${p.maximum != null ? ` max="${p.maximum}"` : ''}></label>`;
+  if (p.type === 'array' && p.items?.enum) return `<label>${label} <select ${attrs} multiple>${p.items.enum.map((v) => `<option>${esc(String(v))}</option>`).join('')}</select></label>`;
+  return `<label>${label} <input type="${p.format === 'email' ? 'email' : p.format === 'uri' ? 'url' : 'text'}" ${attrs}></label>`;
+}
+// A form's values typed back by the schema, ACP's content shape.
+function formContent(f, schema) {
+  const out = {}, props = schema.properties || {};
+  for (const [name, p] of Object.entries(props)) {
+    const el = f.elements[name]; if (!el) continue;
+    if (p.type === 'boolean') out[name] = el.checked;
+    else if (p.type === 'array') out[name] = el.multiple ? [...el.selectedOptions].map((o) => o.value) : el.value.split(',').map((v) => v.trim()).filter(Boolean);
+    else if (p.type === 'number' || p.type === 'integer') { if (el.value !== '') out[name] = Number(el.value); }
+    else if (el.value !== '' || (schema.required || []).includes(name)) out[name] = el.value;
+  }
+  return out;
+}
 function pendingHtml(key) {
-  return (state.pending[key] || []).map((p) => `<div class="pend"><span><b>${esc(p.tool)}</b> <small>${esc(p.summary)} · ${ago(p.at)}</small></span>
-    ${p.options.map((o) => `<button class="${optClass(o)}" data-perm="${esc(key)}" data-req='${esc(JSON.stringify(p.request_id))}' data-opt="${esc(o.option_id)}">${esc(o.name)}</button>`).join('')}
-    <button data-perm="${esc(key)}" data-req='${esc(JSON.stringify(p.request_id))}'>cancel</button></div>`).join('');
+  const req = (id) => `data-req='${esc(JSON.stringify(id))}'`;
+  const perms = (state.pending[key] || []).map((p) => `<div class="pend"><span><b>${esc(p.tool)}</b> <small>${esc(p.summary)} · ${ago(p.at)}</small></span>
+    ${p.options.map((o) => `<button class="${optClass(o)}" data-perm="${esc(key)}" ${req(p.request_id)} data-opt="${esc(o.option_id)}">${esc(o.name)}</button>`).join('')}
+    <button data-perm="${esc(key)}" ${req(p.request_id)}>cancel</button></div>`);
+  const questions = (state.questions[key] || []).map((q) => { const props = q.schema.properties || {}, required = q.schema.required || [];
+    return `<form class="pend" data-answer="${esc(key)}" ${req(q.request_id)}><span class="msg"><b>${esc(q.schema.title || 'question')}</b> <small>${ago(q.at)}</small><br>${esc(q.message)}</span>
+    ${Object.entries(props).map(([n, p]) => fieldHtml(n, p, required.includes(n))).join('')}
+    <button class="go">send</button><button type="button" class="no" data-answer="${esc(key)}" ${req(q.request_id)} data-act="decline">decline</button><button type="button" data-answer="${esc(key)}" ${req(q.request_id)} data-act="cancel">cancel</button></form>`; });
+  const node = (state.swarm?.nodes || []).find((n) => n.node_id === nodeOf(key))?.name || nodeOf(key);
+  const login = state.login[key] ? [`<div class="pend"><span><b>login</b> <small>on ${esc(node)} · ${state.login[key].map((m) => esc(m.name)).join(' · ')}</small></span></div>`] : [];
+  return [...perms, ...questions, ...login].join('');
 }
 function sessionHtml(r) {
   const k = r.session_key, o = openCommands(r), st = stateOf(r), ended = st === 'ended';
@@ -158,7 +200,7 @@ function sessionHtml(r) {
     <div class="stats">${statsHtml(r)}</div>
     <div class="acts">${acts}</div>
     <div class="meta">${[r.lane === 'headless' ? 'headless' : '', r.attempt_id ? `attempt ${esc(r.attempt_id)}${r.parent_attempt_id ? ` ← ${esc(r.parent_attempt_id)}` : ''}` : '', r.origin ? esc(r.origin) : '', r.cwd ? esc(tilde(r.cwd)) : ''].filter(Boolean).join(' · ')}</div>
-    ${pendingHtml(k)}</article>`;
+    ${planHtml(r)}${pendingHtml(k)}</article>`;
 }
 function renderRoster() {
   const sw = state.swarm, live = (sw?.records || []).filter((r) => r.liveness !== 'ended'), need = live.filter((r) => r.activity === 'needs_attention').length;
@@ -179,9 +221,16 @@ function renderRoster() {
     state.seen[r.session_key] = r.activity_seq; refreshPending(r.session_key);
   }
 }
+// What a session waits on: permissions, questions and a login, from its state.
+function takePending(key, st) {
+  state.pending[key] = st?.pending || []; state.questions[key] = st?.questions || []; state.login[key] = st?.login || null;
+}
+// The page's own render: the roster, or the session page's head.
+let sessionHead = () => {};
+const rerender = () => (sessionKey ? sessionHead() : renderRoster());
 async function refreshPending(key) {
-  try { state.pending[key] = (await api(spath(key))).state?.pending || []; } catch { state.pending[key] = []; }
-  renderRoster();
+  try { takePending(key, (await api(spath(key))).state); } catch { takePending(key, null); }
+  rerender();
 }
 async function renderAttention() {
   const w = ws(); const el = $('#attention');
@@ -220,19 +269,26 @@ document.addEventListener('click', async (e) => {
     else if (d.cancel) await api(spath(d.cancel, '/cancel'), {});
     else if (d.resume) await api(spath(d.resume, '/resume'), {});
     else if (d.perm) { await api(spath(d.perm, '/permission'), d.opt ? { request_id: JSON.parse(d.req), outcome: 'selected', option_id: d.opt } : { request_id: JSON.parse(d.req), outcome: 'cancelled' }); await refreshPending(d.perm); }
+    else if (d.answer && d.act) { await api(spath(d.answer, '/answer'), { request_id: JSON.parse(d.req), action: d.act }); await refreshPending(d.answer); }
     else if (d.open) await api(spath(d.open, '/open'), {});
     else if (d.decision) { state.decisions[d.decision] = await wsCall(`/decisions/${d.decision}`); renderAttention(); }
     else if (d.rule) { await wsCall(`/decisions/${d.rule}/rule`, { choiceId: d.choice, surface: 'phone' }); delete state.decisions[d.rule]; pollAttention(); }
-  } catch (err) { state.status = String(err.message || err); renderRoster(); }
+  } catch (err) { state.status = String(err.message || err); rerender(); }
 });
 document.addEventListener('submit', async (e) => {
   const f = e.target; if (f.closest('dialog')) return; e.preventDefault();
+  if (f.dataset.answer) {
+    const id = JSON.parse(f.dataset.req), q = (state.questions[f.dataset.answer] || []).find((x) => JSON.stringify(x.request_id) === f.dataset.req);
+    try { await api(spath(f.dataset.answer, '/answer'), { request_id: id, action: 'accept', content: formContent(f, q?.schema || {}) }); await refreshPending(f.dataset.answer); }
+    catch (err) { state.status = String(err.message || err); rerender(); }
+    return;
+  }
   const input = f.querySelector('input'); const text = input.value.trim(); if (!text) return;
   try {
     if (f.dataset.prompt) { await api(spath(f.dataset.prompt, '/prompt'), { prompt: text }); state.drafts[f.dataset.prompt] = ''; renderRoster(); }
     else if (f.dataset.ruleText) { await wsCall(`/decisions/${f.dataset.ruleText}/rule`, { text, surface: 'phone' }); delete state.decisions[f.dataset.ruleText]; pollAttention(); }
     else if (f.id === 'sendPrompt') { await api(spath(sessionKey, '/prompt'), { prompt: text }); input.value = ''; }
-  } catch (err) { state.status = String(err.message || err); renderRoster(); }
+  } catch (err) { state.status = String(err.message || err); rerender(); }
 });
 document.addEventListener('input', (e) => { const f = e.target.closest('form[data-prompt]'); if (f) state.drafts[f.dataset.prompt] = e.target.value; });
 $('#ws').addEventListener('close', () => {
@@ -265,8 +321,9 @@ async function sessionPage() {
   let last = null;
   const head = () => { const st = last ? stateOf(last) : 'unknown';
     $('#hdr').innerHTML = `<a href="/ui">← roster</a> <b>${last ? labelOf(last) : esc(sessionKey)}</b> <span class="state ${st}">${st.replace('_', ' ')}</span><span class="stats">${last ? statsHtml(last) : ''}</span><span class="st ${state.status === 'live' ? '' : 'bad'}">${esc(state.status)}</span>`;
-    $('#recap').innerHTML = (last?.state?.last_recap ? `last recap: ${esc(last.state.last_recap)}` : '') + pendingHtml(sessionKey); };
-  const refresh = async () => { try { last = await api(spath(sessionKey)); state.pending[sessionKey] = last.state?.pending || []; } catch (e) { state.status = e.message; } head(); };
+    $('#recap').innerHTML = (last?.state?.last_recap ? `last recap: ${esc(last.state.last_recap)}` : '') + (last ? planHtml(last) : '') + pendingHtml(sessionKey); };
+  sessionHead = head;
+  const refresh = async () => { try { last = await api(spath(sessionKey)); takePending(sessionKey, last.state); } catch (e) { state.status = e.message; } head(); };
   await refresh(); setInterval(refresh, 10000);
   $('#recap').insertAdjacentHTML('afterend', `<form class="p" id="sendPrompt" style="padding:10px 16px"><input placeholder="prompt" style="flex:1;width:auto"><button>send</button></form>`);
   sse(spath(sessionKey, '/stream'), logLine, (s) => { state.status = s || 'live'; head(); });

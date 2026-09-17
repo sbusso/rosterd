@@ -2,10 +2,10 @@
 //! pure mappings of R5.2 (traffic to activity), R5.3 (permission options per policy), R5.4
 //! (subagent spans) and R3 (usage as the harness reported it). No I/O here.
 
-use rosterd_proto::{Activity, Usage};
+use rosterd_proto::{Activity, Plan, PlanEntry, Usage};
 use serde_json::{Value, json};
 
-use super::PermissionOption;
+use super::{AuthMethod, PermissionOption};
 use crate::bridge::{Choice, Ruling};
 
 pub const PROTOCOL_VERSION: u64 = 1;
@@ -59,8 +59,59 @@ pub fn classify(v: &Value) -> Option<Message<'_>> {
 pub fn initialize_params() -> Value {
     json!({
         "protocolVersion": PROTOCOL_VERSION,
-        "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false},
+        "clientCapabilities": {
+            "fs": {"readTextFile": false, "writeTextFile": false},
+            "terminal": false,
+            "elicitation": {"form": {}},
+        },
     })
+}
+
+/// The auth error code, the agent wants a login on its node first.
+pub const AUTH_REQUIRED: i64 = -32000;
+
+pub fn auth_required(error: &Value) -> bool {
+    error.get("code").and_then(Value::as_i64) == Some(AUTH_REQUIRED)
+}
+
+/// The initialize answer's `authMethods`, id and name only.
+pub fn auth_methods(init: &Value) -> Vec<AuthMethod> {
+    init["authMethods"]
+        .as_array()
+        .map(|methods| {
+            methods
+                .iter()
+                .filter_map(|m| {
+                    let id = m.get("id")?.as_str()?.to_string();
+                    let name = m.get("name").and_then(Value::as_str).unwrap_or(&id).to_string();
+                    Some(AuthMethod { id, name })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The current mode, from a session/new or session/load answer or a `current_mode_update`.
+pub fn mode_of(v: &Value) -> Option<String> {
+    v["currentModeId"].as_str().or_else(|| v["modes"]["currentModeId"].as_str()).map(String::from)
+}
+
+/// A `plan` update's entries.
+pub fn plan_of(update: &Value) -> Option<Plan> {
+    if update.get("sessionUpdate").and_then(Value::as_str) != Some("plan") {
+        return None;
+    }
+    let text = |e: &Value, k: &str| e.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let entries = update["entries"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|e| PlanEntry { content: text(e, "content"), priority: text(e, "priority"), status: text(e, "status") })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(Plan { entries })
 }
 
 /// The rosterd MCP server every driven harness gets, R6, in ACP's http shape.
@@ -214,6 +265,8 @@ pub fn usage_of(update: &Value) -> Option<Usage> {
         input_tokens: num(&["inputTokens", "input_tokens"]),
         output_tokens: num(&["outputTokens", "output_tokens"]),
         cost_usd: cost,
+        context_used: num(&["used"]),
+        context_size: num(&["size"]),
         raw: Some(src.clone()),
     })
 }
