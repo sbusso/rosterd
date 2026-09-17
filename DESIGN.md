@@ -175,7 +175,8 @@ taken from each. Stars and dates as of 2026-09-17.
 | acpx (openclaw, 3.3k) | headless CLI client for stateful ACP sessions, TypeScript | overlaps the runner plus holder; not adopted because it would add a node runtime to a one-binary install |
 | termio (termio-sh, 515) | Swift daemon and CLI with working/idle/needs-you, hooks, tray, iPhone mirror, remote hosts by copying one binary over ssh | the closest cousin: same three states, same daemon idea. Mac only, ssh fan-out instead of a mesh, its own session store |
 | cmux (manaflow-ai, 27k) | Ghostty-based macOS terminal with notifications for agents, CLI and socket API | a front: `ROSTERD_TERMINAL_CMD` can hand tmux targets to it |
-| cove, ccs, ccmux | Claude Code session managers over tmux | confirm the pattern; one machine each |
+| ccmux (Alec-Raymond, shell, macOS) | one tmux window per agent, a sidebar pane, hooks to state and macOS alerts that return to the exact window, a usage meter, Ghostty optional | the single-machine version of rosterd's interactive lane: same substrate, same hook source, same refusal to read prompts; no daemon, API or mesh. Worth copying: the board (one tmux session, a sidebar drawn from `rosterd list`) and alert click → `rosterd-open` |
+| cove, ccs | Claude Code session managers over tmux | confirm the pattern; one machine each |
 | agentd, agentd-hub, Tightbeam | the tools rosterd borrowed from (R0) | vocabulary, hook contract, gateway idea; hub replaced by the swarm |
 
 Reading: every project in the category picks one of three things, a board, a terminal front, or
