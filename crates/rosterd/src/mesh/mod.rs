@@ -154,8 +154,13 @@ pub struct Mesh {
     file: PathBuf,
     state: Arc<Mutex<SwarmState>>,
     client: reqwest::Client,
+    /// The peer TLS trust of `client`, for the websocket of R9.
+    tls_client: Arc<rustls::ClientConfig>,
     cert: tls::NodeCert,
 }
+
+/// A websocket to a peer, R9.
+pub type PeerWebSocket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct JoinRequest {
@@ -204,17 +209,19 @@ impl Mesh {
         let membership = Membership::load(&file)?;
         let state = Arc::new(Mutex::new(SwarmState { membership, advertised, ..SwarmState::default() }));
         let pins = state.clone();
-        let client = tls::client(Arc::new(move |spki: &[u8]| {
+        let pin_check: tls::PinCheck = Arc::new(move |spki: &[u8]| {
             let state = pins.lock().unwrap_or_else(|e| e.into_inner());
             state.pins.iter().any(|pin| pin == spki)
                 || state
                     .membership
                     .as_ref()
                     .is_some_and(|m| m.active().any(|member| spki_der(&member.public_key).is_ok_and(|der| der == spki)))
-        }))?;
+        });
+        let client = tls::client(pin_check.clone())?;
+        let tls_client = tls::client_config(pin_check)?;
         let cert = tls::node_cert(&identity, &config.node.name)?;
         let (changed, _) = watch::channel(0);
-        Ok(Arc::new(Mesh { config, identity, roster, version, changed, file, state, client, cert }))
+        Ok(Arc::new(Mesh { config, identity, roster, version, changed, file, state, client, tls_client, cert }))
     }
 
     pub fn identity(&self) -> &Identity {
@@ -506,6 +513,31 @@ impl Mesh {
         let text = response.text().await.map_err(anyhow::Error::from)?;
         let value = if text.is_empty() { Value::Null } else { serde_json::from_str(&text).unwrap_or(json!({ "error": text })) };
         Ok((status, value))
+    }
+
+    /// A websocket to a peer's route, signed like `proxy`: the attach relay of R9. The query
+    /// travels but is not signed, as with `proxy`.
+    pub async fn websocket(&self, node_id: &str, path: &str) -> Result<PeerWebSocket, MeshError> {
+        let (address, swarm_key) = {
+            let state = self.lock();
+            let membership = state.membership.as_ref().ok_or(MeshError::NoSwarm)?;
+            let member = membership.member(node_id).ok_or_else(|| MeshError::UnknownNode(node_id.into()))?;
+            if member.revoked {
+                return Err(MeshError::Revoked(node_id.into()));
+            }
+            (state.address_of(node_id).ok_or_else(|| MeshError::Unreachable(node_id.into()))?, membership.swarm_key)
+        };
+        let signed_path = path.split('?').next().unwrap_or(path);
+        let headers = signed_headers(&self.identity, &swarm_key, &Method::GET, signed_path, &[]);
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = format!("wss://{address}{path}").into_client_request().map_err(anyhow::Error::from)?;
+        request.headers_mut().extend(headers);
+        let connector = tokio_tungstenite::Connector::Rustls(self.tls_client.clone());
+        let (stream, _) = tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector)).await.map_err(|error| {
+            tracing::debug!(%node_id, %address, %error, "websocket failed");
+            MeshError::Unreachable(node_id.into())
+        })?;
+        Ok(stream)
     }
 
     /// The self-signed certificate whose key is the node key, R7.6.

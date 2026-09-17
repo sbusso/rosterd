@@ -140,7 +140,7 @@ fn sse_data(event: &str) -> String {
 /// The daemon's socket as the daemon itself resolves it: `node.socket` or the platform default
 /// of R6, which `ROSTERD_SOCKET` overrides. A daemon under launchd or the system unit has no
 /// shell TMPDIR or XDG_RUNTIME_DIR, R11; the scripts probe the same two places.
-fn socket_path(config: &Config) -> PathBuf {
+pub(super) fn socket_path(config: &Config) -> PathBuf {
     let configured = config.socket_path();
     if configured.exists() {
         return configured;

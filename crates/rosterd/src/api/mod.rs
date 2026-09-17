@@ -10,6 +10,7 @@
 //!
 //! OWNER: the api agent.
 
+mod attach;
 mod mcp;
 mod routes;
 mod send;
@@ -154,11 +155,19 @@ async fn require_bearer(State(node): State<Arc<Node>>, request: Request, next: N
     if path == "/ui" || path.starts_with("/ui/") {
         return next.run(request).await;
     }
+    // A browser websocket carries no header: the attach route takes the bearer as `?token=`, R9.
+    let query_token = if path.ends_with("/attach") {
+        request.uri().query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("token="))).map(str::to_string)
+    } else {
+        None
+    };
     let presented = request
         .headers()
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::to_string)
+        .or(query_token);
     match presented {
         Some(token) if constant_time_eq(token.as_bytes(), node.loopback_token.as_bytes()) => next.run(request).await,
         _ => ApiError::new(StatusCode::UNAUTHORIZED, "missing or wrong bearer token").into_response(),

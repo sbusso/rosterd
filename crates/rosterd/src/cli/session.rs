@@ -87,6 +87,10 @@ pub async fn run(client: &Client, config: &Config, command: Command, json: bool)
             action(client, &key, Method::POST, "/name", Some(json!({ "name": label })), json, done).await
         }
         Command::Open { key } => open(client, config, &key).await,
+        Command::Attach { key } => {
+            let key = session_key(client, &key).await?;
+            super::attach::attach(&super::client::socket_path(config), &key).await.map_err(Into::into)
+        }
         Command::Ui => open_ui(config, "/ui"),
         Command::Allow { key, always } => answer(client, &key, if always { Choice::AllowAlways } else { Choice::Allow }, None, json).await,
         Command::Deny { key, reason } => answer(client, &key, Choice::Deny, reason, json).await,

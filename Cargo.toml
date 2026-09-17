@@ -20,7 +20,7 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 tokio-stream = { version = "0.1", features = ["sync", "io-util"] }
 futures = "0.3"
 bytes = "1"
-axum = { version = "0.8", features = ["json", "macros"] }
+axum = { version = "0.8", features = ["json", "macros", "ws"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }

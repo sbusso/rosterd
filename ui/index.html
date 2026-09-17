@@ -2,7 +2,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>rosterd</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
 <style>
+  dialog#term { width: 96vw; max-width: none; height: 92vh; max-height: none; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: #000; color: var(--fg) }
+  dialog#term::backdrop { background: rgba(0,0,0,.6) }
+  dialog#term .thead { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--card) }
+  dialog#term .thead button { margin-left: auto }
+  #termBox { height: calc(100% - 34px); padding: 4px }
+  #termBox .xterm { height: 100% }
   :root { color-scheme: dark; --bg: #0f0f10; --fg: #e4e4e7; --dim: #8b8b92; --line: #232326; --card: #17171a; --hover: #1c1c21;
     --active: #4caf50; --idle: #8899aa; --needs_attention: #ffb300; --unknown: #6b6b73; --off: #55555c; --err: #ef5350; --link: #8ab4f8 }
   * { box-sizing: border-box }
@@ -57,6 +66,7 @@
 <main id="roster"></main>
 <pre id="log" hidden></pre>
 <div id="recap" hidden></div>
+<dialog id="term"><div class="thead"><b id="termTitle"></b><button onclick="this.closest('dialog').close()">close</button></div><div id="termBox"></div></dialog>
 <dialog id="qr"><form method="dialog"><div id="qrSvg"></div><a id="qrLink"></a><div class="row"><button type="button" id="qrCopy">copy link</button><button>close</button></div></form></dialog>
 <script>
 'use strict';
@@ -135,7 +145,7 @@ const driven = (r) => r.lane === 'headless' || !!r.holder;
 // the API (POST /open runs rosterd-open on the machine that has the pane).
 function openCommands(r) {
   if (driven(r)) return { link: `/ui/sessions/${r.session_key}`, label: 'conversation' };
-  if (r.tmux) return { open: r.session_key, label: 'tmux' };
+  if (r.tmux) return { open: r.session_key, label: 'tmux', attach: r.session_key };
   // A Codex thread with no pane lives in the ChatGPT app: its own scheme jumps to the thread.
   if (r.harness === 'codex' && r.session_id) return { link: `codex://threads/${r.session_id}`, label: 'thread' };
   return {};
@@ -163,11 +173,36 @@ function pendingHtml(key) {
   const login = state.login[key] ? [`<div class="pend"><span><b>login</b> <small>on ${esc(node)} · ${state.login[key].map((m) => esc(m.name)).join(' · ')}</small></span></div>`] : [];
   return [...perms, ...questions, ...login].join('');
 }
+// The session's terminal in the page, R9: a websocket to /sessions/{key}/attach, binary frames
+// both ways, resize as a text frame; the local daemon relays to the owner when the pane is elsewhere.
+let term = null, termWs = null;
+function attachTo(key) {
+  const r = (state.swarm?.records || []).find((x) => x.session_key === key);
+  const dlg = $('#term'); $('#termTitle').innerHTML = r ? labelOf(r) : esc(key); dlg.showModal();
+  term = new Terminal({ fontSize: 13, fontFamily: 'ui-monospace, Menlo, monospace', theme: { background: '#000000' }, cursorBlink: true, scrollback: 2000 });
+  const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open($('#termBox')); fit.fit();
+  const t = sessionStorage.getItem('rosterd.token');
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${spath(key, '/attach')}?cols=${term.cols}&rows=${term.rows}${t ? `&token=${encodeURIComponent(t)}` : ''}`;
+  termWs = new WebSocket(url); termWs.binaryType = 'arraybuffer';
+  const enc = new TextEncoder();
+  termWs.onmessage = (e) => {
+    if (typeof e.data !== 'string') return term.write(new Uint8Array(e.data));
+    const m = JSON.parse(e.data);
+    if (m.exit) term.write(`\r\n[exit ${m.exit.code}]`);
+    if (m.error) term.write(`\r\n${m.error}`);
+  };
+  termWs.onclose = () => term && term.write('\r\n[disconnected]');
+  term.onData((d) => termWs.readyState === 1 && termWs.send(enc.encode(d)));
+  term.onResize(({ cols, rows }) => termWs.readyState === 1 && termWs.send(JSON.stringify({ resize: { cols, rows } })));
+  const onResize = () => fit.fit(); window.addEventListener('resize', onResize); term.focus();
+  dlg.onclose = () => { window.removeEventListener('resize', onResize); termWs.close(); term.dispose(); term = null; termWs = null; };
+}
 function sessionHtml(r) {
   const k = r.session_key, o = openCommands(r), st = stateOf(r), ended = st === 'ended';
   const when = r.activity_at ? ago(r.activity_at) : ago(r.started_at);
   const acts = ended ? '' : [
     o.link ? `<a href="${esc(o.link)}">open ${esc(o.label)}</a>` : '',
+    o.attach ? `<button data-attach="${esc(o.attach)}">attach</button>` : '',
     o.open ? `<button data-open="${esc(o.open)}">open ${esc(o.label)}</button>` : '',
     driven(r) && st === 'active' ? `<button data-cancel="${esc(k)}">cancel turn</button>` : '',
     st === 'suspended' ? `<button data-resume="${esc(k)}">resume</button>` : '',
@@ -223,6 +258,7 @@ document.addEventListener('click', async (e) => {
     else if (d.perm) { await api(spath(d.perm, '/permission'), d.opt ? { request_id: JSON.parse(d.req), outcome: 'selected', option_id: d.opt } : { request_id: JSON.parse(d.req), outcome: 'cancelled' }); await refreshPending(d.perm); }
     else if (d.answer) { await api(spath(d.answer, '/answer'), d.act ? { request_id: JSON.parse(d.req), action: d.act } : { request_id: JSON.parse(d.req), action: 'accept', content: JSON.parse(d.content) }); await refreshPending(d.answer); }
     else if (d.open) await api(spath(d.open, '/open'), {});
+    else if (d.attach) attachTo(d.attach);
   } catch (err) { state.status = String(err.message || err); rerender(); }
 });
 // ---------- session page, /ui/sessions/{key}: the live ACP stream as a plain log plus the last recap ----------

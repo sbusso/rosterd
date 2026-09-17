@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::rejection::PathRejection;
+use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, Path, Query, Request, State};
 use axum::http::request::Parts;
 use axum::http::{Method, StatusCode};
@@ -219,6 +220,7 @@ pub fn sessions() -> Router<Arc<Node>> {
         .route("/sessions/{key}/prompt", post(prompt))
         .route("/sessions/{key}/cancel", post(cancel))
         .route("/sessions/{key}/open", post(open_session))
+        .route("/sessions/{key}/attach", get(attach_session))
         .route("/sessions/{key}/stream", get(stream))
         .route("/sessions/{key}/permission", post(permission))
         .route("/sessions/{key}/answer", post(answer_question))
@@ -1024,6 +1026,19 @@ async fn open_session(captures: Captures) -> Result<Response, ApiError> {
         return Err(ApiError::bad_request(String::from_utf8_lossy(&out.stderr).trim().to_string()));
     }
     ok(json!({ "opened": "tmux" }))
+}
+
+/// The session's terminal over a websocket, R9: the owner serves it from a pty running
+/// `tmux attach`; any other node relays to the owner over the mesh.
+async fn attach_session(captures: Captures, Query(size): Query<super::attach::Size>, ws: WebSocketUpgrade) -> Result<Response, ApiError> {
+    if let Some(node_id) = captures.remote()? {
+        let path = format!("{}?cols={}&rows={}", captures.path("/attach"), size.cols, size.rows);
+        let upstream = captures.node.mesh.websocket(&node_id, &path).await?;
+        return Ok(ws.on_upgrade(move |socket| super::attach::relay(socket, upstream)));
+    }
+    let record = captures.record()?;
+    let Some(tmux) = record.tmux.clone() else { return Err(ApiError::bad_request(format!("nothing to attach for {}: no tmux handle", captures.key))) };
+    Ok(ws.on_upgrade(move |socket| super::attach::serve(socket, tmux, size)))
 }
 
 /// The raw ACP notification stream, R5.5. Served by the owner only: `Mesh::proxy` carries one

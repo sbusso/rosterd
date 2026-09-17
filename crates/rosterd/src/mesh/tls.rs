@@ -98,9 +98,8 @@ impl ServerCertVerifier for Pinned {
     }
 }
 
-/// One client for every peer request. No overall timeout: the /events subscription lives for
-/// hours; callers put one on each short request.
-pub fn client(allowed: PinCheck) -> Result<reqwest::Client> {
+/// The rustls side of `client`, shared with the websocket client of the attach relay, R9.
+pub fn client_config(allowed: PinCheck) -> Result<Arc<rustls::ClientConfig>> {
     let provider = rustls::crypto::ring::default_provider();
     let verifier = Pinned { allowed, algorithms: provider.signature_verification_algorithms };
     let config = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
@@ -108,8 +107,14 @@ pub fn client(allowed: PinCheck) -> Result<reqwest::Client> {
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(verifier))
         .with_no_client_auth();
+    Ok(Arc::new(config))
+}
+
+/// One client for every peer request. No overall timeout: the /events subscription lives for
+/// hours; callers put one on each short request.
+pub fn client(allowed: PinCheck) -> Result<reqwest::Client> {
     reqwest::Client::builder()
-        .use_preconfigured_tls(config)
+        .use_preconfigured_tls((*client_config(allowed)?).clone())
         .connect_timeout(Duration::from_secs(5))
         .no_proxy()
         .build()

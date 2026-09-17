@@ -4,6 +4,7 @@
 //!
 //! OWNER: the cli agent.
 
+mod attach;
 mod attention;
 mod client;
 mod list;
@@ -152,6 +153,8 @@ pub enum Command {
     },
     /// Jump to the session: tmux or the /ui page.
     Open { key: String },
+    /// The session's terminal in this one, R9: over the mesh when it runs elsewhere; the tmux detach key returns.
+    Attach { key: String },
     /// Open the roster page in the browser.
     Ui,
     /// Answer the pending permission request with allow.
