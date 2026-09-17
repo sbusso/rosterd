@@ -16,7 +16,7 @@ agentd. Same four activity words, same identity rule, same full-snapshot output,
 
 agentd-hub. Replaced by the swarm. No central aggregator, every node is a hub.
 
-herdr. Same holder shape for process persistence. rosterd does not render terminals and does not replace tmux or herdr for the interactive lane. It can read them.
+herdr. Same holder shape for process persistence. rosterd does not render terminals and does not replace tmux for the interactive lane; tmux is the one session substrate it reads and opens. Herdr handles were dropped: a second daemon per machine with its own session model.
 
 Tightbeam. Same idea of a gateway that owns headless sessions, resumes them, and delivers decisions to any surface. Deliberately without Tightbeam's gates, verbs, statutes, credential onboarding, or identity repository. Harnesses use their own vendor login. Rules and history live in the client, not in the daemon.
 
@@ -102,7 +102,6 @@ One record per session. Schema marker rosterd.snapshot.v1. Consumers ignore unkn
 | cwd | text or null | |
 | tty | text or null | |
 | tmux | object or null | session, window_index, window_name, pane_id |
-| herdr | object or null | session, workspace_id, pane_id, agent_name, read from the herdr socket when present |
 | holder | object or null | socket path, headless only |
 | liveness | enum | live, stale, ended |
 | ended_at, ended_reason | | exit, crash, reboot, killed |
@@ -116,7 +115,7 @@ In-process subagents are not records (R5.4).
 
 Precedence for any single field, highest first: launcher, acp, hook, files, scan. A lower source never overwrites a value set by a higher one, but every source can fill a null.
 
-launcher. A script or tool that starts a session registers it first. POST /local/register with pid, start_ticks, harness, lane, name, cwd, tmux or herdr handle. The launcher exports ROSTERD_SOCKET and ROSTERD_HARNESS to the harness environment.
+launcher. A script or tool that starts a session registers it first. POST /local/register with pid, start_ticks, harness, lane, name, cwd, tmux handle. The launcher exports ROSTERD_SOCKET and ROSTERD_HARNESS to the harness environment.
 
 acp. Everything the runner sees from a session it drives.
 
@@ -124,7 +123,7 @@ hook. SessionStart, UserPromptSubmit, PreToolUse, Stop, Notification for Claude 
 
 files. Opt-in per node, off by default. Watches the harness session directories and reads only session ids, timestamps, and subagent boundaries. Never message bodies. When enabled the node advertises files_enabled true so clients can show it.
 
-scan. Process enumeration. On Linux /proc. On macOS libproc. On Windows toolhelp. Identity is pid plus start time everywhere. The scanner also runs one bounded tmux list-panes per pass and one herdr pane list when a herdr socket exists, to fill runtime handles.
+scan. Process enumeration. On Linux /proc. On macOS libproc. On Windows toolhelp. Identity is pid plus start time everywhere. The scanner also runs one bounded tmux list-panes per pass to fill runtime handles.
 
 ## R5. Runner
 
@@ -170,7 +169,7 @@ A child inherits the parent's permission policy unless the spawn call overrides 
 
 ### R5.5 Prompting and reading
 
-POST /local/sessions/{key}/prompt sends a turn. Optional wait_until with idle, needs_attention, or ended and a timeout, mirroring herdr agent wait. GET /local/sessions/{key}/stream is the raw ACP notification stream for clients that render a conversation. rosterd does not store it. The final assistant message of each turn is kept as the recap if the session was started with recap true, readable through GET /sessions/{key}, and nothing else from the transcript.
+POST /local/sessions/{key}/prompt sends a turn. Optional wait_until with idle, needs_attention, or ended and a timeout, as a wait on an agent. GET /local/sessions/{key}/stream is the raw ACP notification stream for clients that render a conversation. rosterd does not store it. The final assistant message of each turn is kept as the recap if the session was started with recap true, readable through GET /sessions/{key}, and nothing else from the transcript.
 
 Agent to agent. A session prompts another with the MCP tool session.send (or POST /send) naming it as the CLI does, R14.1: an exact session_key, a unique display name (the name, else the cwd basename, with or without its brackets) among sessions that have not ended anywhere in the swarm, or a pid on the local node. An ambiguous name is 409 listing the candidates' session_key and node; no match is 404; a session naming itself is 400. The prompt runs on the owning node through R7.5 and the answer is the target's key and node, reached, stop_reason, recap, activity and what it left pending, waiting until idle for 120 s unless told otherwise. session.find resolves a name the same way without sending. This is the coordination pattern: a parent spawns children (R5.4, parent_session_key), sends them work, reads their recap. rosterd relays; it never schedules.
 
@@ -227,7 +226,7 @@ At first start a node generates an Ed25519 keypair under its config directory an
 
 Tailscale first. The node runs tailscale status in JSON mode, takes every online peer, and probes https://<peer tailscale ip>:<port>/node/hello. A peer that answers with a valid hello is a candidate. Static peers in config are probed the same way and are the fallback when Tailscale is absent. mDNS on the local network is optional and off by default.
 
-Hello response: node_id, name, public key, version, swarm_id, capabilities (installed harnesses, files_enabled, herdr present, tmux present), and a signature over the response with the node key.
+Hello response: node_id, name, public key, version, swarm_id, capabilities (installed harnesses, files_enabled, tmux present), and a signature over the response with the node key.
 
 The signature is over the canonical JSON the sender wrote, and the receiver checks it over the bytes it received before parsing them, so a field it does not know is still covered and simply dropped. A release may add a field to the hello at any time; one that changes what the hello means bumps the compatibility floor, a version constant, and a node whose hello is below the floor is answered 426 and listed with peer_state incompatible and its version, on both sides, instead of unreachable.
 
@@ -247,7 +246,7 @@ Tailscale ACLs remain the network boundary. The swarm key is the application bou
 
 Each node keeps a long lived SSE connection to every peer's /events, authenticated with a request signed by the node key. It stores the latest complete snapshot per peer with the time it was received. That is the whole protocol. There is no diff format, no vector clock, no merge conflict, because every node is the only writer of its own roster.
 
-On peer loss the last snapshot is kept and served with peer_age_ms growing and peer_state unreachable. Clients render it dimmed, as herdr does. After 24 hours it is dropped. Nothing else changes when a peer is unreachable.
+On peer loss the last snapshot is kept and served with peer_age_ms growing and peer_state unreachable. Clients render it dimmed. After 24 hours it is dropped. Nothing else changes when a peer is unreachable.
 
 ### R7.5 Cross node actions
 
@@ -281,7 +280,7 @@ A client is anything a human uses to see and act: the Omarchy bar widget, a macO
 
 The reference clients ship as three thin pieces: a Quickshell bar module for Omarchy, a menu bar app for macOS, and a single HTML page served by every node at /ui that works on a phone over Tailscale.
 
-The open action resolves the runtime handle. For tmux and herdr it hands the target to the opener script. For headless it opens the conversation view at /ui/sessions/{key}, which renders the ACP stream live and shows the last recap.
+The open action resolves the runtime handle. For tmux it hands the target to the opener script, which attaches in a terminal here or over ssh on the owning node. For headless it opens the conversation view at /ui/sessions/{key}, which renders the ACP stream live and shows the last recap.
 
 Sound, urgency, badges, and toasts remain the client's job. rosterd supplies lists and events only.
 
@@ -326,8 +325,8 @@ Keys and tokens live in the config directory with mode 0600. Adapters are pinned
 ## R11. Cross platform notes
 
 Linux. /proc, systemd user unit for a desktop, system unit for a server with lingering off.
-macOS. libproc for pids, paths, start time, tty. LaunchAgent in the GUI session, so open reaches the display, the tmux server and the Herdr socket; a logout ends those anyway. Holder sockets under $TMPDIR.
-Windows. Toolhelp for enumeration, process creation time from the handle, named pipes, a service. Interactive lane on Windows is hooks only, no tmux or herdr handles.
+macOS. libproc for pids, paths, start time, tty. LaunchAgent in the GUI session, so open reaches the display and the tmux server; a logout ends those anyway. Holder sockets under $TMPDIR.
+Windows. Toolhelp for enumeration, process creation time from the handle, named pipes, a service. Interactive lane on Windows is hooks only, no tmux handles.
 
 The holder, the hook script, and the opener are the only platform-conditional code. Everything else is shared.
 
@@ -443,7 +442,7 @@ rosterd spawn KEY --harness H --cwd DIR [--name LABEL] [--json]
 
 `cancel` sends ACP cancel and leaves the session live. `stop` ends the holder. `suspend` and `resume` are R15. `handoff` is R15.5: NODE by name or id, prints `<name> → <node> <new session_key>`.
 
-`open` resolves the runtime handle and calls the opener for tmux and herdr, or prints the /ui URL for headless sessions and opens it with the platform opener when a display is present.
+`open` resolves the runtime handle and calls the opener for tmux, or prints the /ui URL for headless sessions and opens it with the platform opener when a display is present.
 
 `allow` and `deny` answer the pending permission request of a session in policy attention. `--always` answers with the allow-always option when the harness offers it. Both are proxied to the owning node when KEY lives elsewhere.
 

@@ -88,7 +88,7 @@ rosterd handoff KEY --to NODE --json            move a suspended or live session
 rosterd name KEY LABEL | name KEY --clear
 rosterd allow KEY [--always] | deny KEY [--reason TEXT]
 rosterd spawn KEY --harness H --cwd DIR [--name L] --json
-rosterd open KEY                                jump to the session (tmux, herdr, /ui)
+rosterd open KEY                                jump to the session (tmux, /ui)
 ```
 
 `prompt --wait` returns when the session reaches that activity or ends, with `reached`,

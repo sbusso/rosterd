@@ -91,7 +91,6 @@ mod tests {
             origin: None,
             tty: None,
             tmux: None,
-            herdr: None,
             holder: None,
             liveness: Liveness::Live,
             ended_at: None,

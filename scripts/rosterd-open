@@ -2,9 +2,8 @@
 # rosterd-open, R9: resolves a runtime handle and jumps to the session. The handle is the roster
 # record's (snake_case, camelCase accepted), on stdin or as --handle:
 #
-#   {"kind": "tmux|herdr|headless|none", "machine": "gibson",
+#   {"kind": "tmux|headless|none", "machine": "gibson",
 #    "tmux": {"session": "agents", "window_index": 2, "pane_id": "%7"},
-#    "herdr": {"session": "default", "workspace_id": "w3", "pane_id": "w3:p2", "agent_name": "builder"},
 #    "session_key": "abc:42:7"}
 #
 #   rosterd-open --handle '<json>'         jump
@@ -12,9 +11,8 @@
 #   rosterd-open --self-test
 #
 # tmux: switch-client/select-window/select-pane from inside tmux, tmux attach in a terminal outside
-# it, over ssh when the machine is not this one. herdr: the herdr:// link when a handler is
-# registered (examples/herdr-url-handler), else `herdr [--remote <machine>] --session <s> agent
-# attach <name>` in a terminal. headless: the conversation view /ui/sessions/{key} in the browser.
+# it, over ssh when the machine is not this one. headless: the conversation view
+# /ui/sessions/{key} in the browser.
 #
 # ROSTERD_MACHINE names this machine (default: hostname -s). ROSTERD_TERMINAL_CMD runs a command
 # in a terminal window (the command is its last argument); default Terminal.app or x-terminal-emulator.
@@ -47,12 +45,6 @@ tmux select-pane -t %7'
   # Through ssh the remote shell strips one level, so tmux's ; separators travel as \\;.
   check "tmux remote" "ROSTERD_MACHINE=wintermute TMUX=" "$tmux" 'terminal ssh gibson -t tmux attach -t agents \\; select-window -t agents:2 \\; select-pane -t %7'
   check "tmux camelCase" "ROSTERD_MACHINE=gibson TMUX=/tmp/x" '{"kind":"tmux","machine":"gibson","tmux":{"session":"a","windowIndex":1,"paneId":"%3"}}' 'tmux select-pane -t %3'
-  herdr='{"kind":"herdr","machine":"gibson","herdr":{"session":"default","workspace_id":"w3","pane_id":"w3:p2","agent_name":"builder"}}'
-  check "herdr local" "ROSTERD_MACHINE=gibson ROSTERD_HERDR_LINK=0" "$herdr" 'herdr --session default agent focus w3:p2'
-  check "herdr remote" "ROSTERD_MACHINE=wintermute ROSTERD_HERDR_LINK=0" "$herdr" 'terminal herdr --remote gibson --session default'
-  check "herdr link" "ROSTERD_MACHINE=wintermute ROSTERD_HERDR_LINK=1" "$herdr" 'browser herdr://gibson/agents/attach/builder?session=default'
-  check "herdr pane only" "ROSTERD_MACHINE=gibson ROSTERD_HERDR_LINK=0" '{"kind":"herdr","machine":"gibson","herdr":{"session":"s","workspace_id":"w","pane_id":"w:p9"}}' \
-    'herdr --session s agent focus w:p9'
   check "headless" "ROSTERD_LOOPBACK_PORT=8790 ROSTERD_CONFIG_DIR=/nonexistent" '{"kind":"headless","machine":"gibson","session_key":"abc:42:7"}' \
     'browser http://127.0.0.1:8790/ui/sessions/abc:42:7'
   check "none" "" '{"kind":"none","machine":"gibson"}' 'nothing to open'
@@ -65,7 +57,7 @@ command -v jq >/dev/null 2>&1 || { echo "rosterd-open: jq is needed to read the 
 [ -n "$handle" ] || handle=$(cat)
 field() { printf '%s' "$handle" | jq -r "$1 // empty" 2>/dev/null; }
 
-# Everything that reaches a shell is one word of a plain alphabet, as herdr-open does: the handle
+# Everything that reaches a shell is one word of a plain alphabet: the handle
 # came from a page or a peer.
 safe() {
   case "$1" in
@@ -91,14 +83,6 @@ terminal() {
     *) exec "$(command -v x-terminal-emulator || command -v xterm)" -e sh -lc "$*" ;;
   esac
 }
-# Whether a herdr:// handler is registered, R9; ROSTERD_HERDR_LINK=0|1 overrides.
-herdr_link_registered() {
-  case "${ROSTERD_HERDR_LINK-}" in 1) return 0 ;; 0) return 1 ;; esac
-  case "$(uname)" in
-    Darwin) [ -d "$HOME/Applications/Herdr Link.app" ] ;;
-    *) [ -n "$(xdg-mime query default x-scheme-handler/herdr 2>/dev/null)" ] ;;
-  esac
-}
 
 here=${ROSTERD_MACHINE:-$(hostname -s 2>/dev/null || hostname)}
 machine=$(field .machine)
@@ -117,28 +101,6 @@ case "$(field .kind)" in
       terminal "tmux attach -t $session \\; select-window -t $session:$window \\; select-pane -t $pane"
     else
       terminal "ssh $machine -t tmux attach -t $session \\\\; select-window -t $session:$window \\\\; select-pane -t $pane"
-    fi
-    ;;
-  herdr)
-    session=$(safe "$(field '.herdr.session')" 'herdr session') || exit 2
-    agent=$(field '.herdr.agent_name // .herdr.agentName')
-    pane=$(safe "$(field '.herdr.pane_id // .herdr.paneId')" 'herdr pane') || exit 2
-    if [ -n "$agent" ]; then
-      agent=$(safe "$agent" 'agent name') || exit 2
-      link="herdr://$machine/agents/attach/$agent?session=$session"
-    else
-      link="herdr://$machine/panes/observe/$pane?session=$session"
-    fi
-    # Local: focus the pane inside the running Herdr, no new terminal. Remote: a terminal on the
-    # remote session, since `herdr --remote` takes no subcommand.
-    if [ "$local" = 1 ]; then
-      if [ "$dry" = 1 ]; then echo "herdr --session $session agent focus $pane"; else
-        herdr --session "$session" agent focus "$pane" >/dev/null 2>&1 || herdr --session "$session" workspace focus "${pane%%:*}" >/dev/null
-      fi
-    elif herdr_link_registered; then
-      browser "$link"
-    else
-      terminal "herdr --remote $machine --session $session"
     fi
     ;;
   headless)

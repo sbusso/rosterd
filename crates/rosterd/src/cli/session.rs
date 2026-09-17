@@ -229,27 +229,20 @@ fn matches_choice(option: &Value, choice: Choice) -> bool {
     }
 }
 
-/// `open`: tmux and herdr through `rosterd-open` when it is on PATH, else the command to run;
+/// `open`: tmux through `rosterd-open` when it is on PATH, else the command to run;
 /// headless prints the /ui URL and opens it when a display is present.
 async fn open(client: &Client, config: &Config, key: &str) -> Out<()> {
     let key = session_key(client, key).await?;
     let record: Record = parse(&client.call(Method::GET, &format!("/sessions/{key}"), None).await?)?;
-    let (kind, command) = if let Some(h) = &record.herdr {
-        let sub = match &h.agent_name {
-            Some(agent) => format!("agent attach {agent}"),
-            None => format!("terminal session observe {}", h.pane_id),
-        };
-        ("herdr", format!("herdr --session {} {sub}", h.session))
-    } else if let Some(t) = &record.tmux {
-        ("tmux", format!("tmux attach -t {0} \\; select-window -t {0}:{1} \\; select-pane -t {2}", t.session, t.window_index, t.pane_id))
+    let command = if let Some(t) = &record.tmux {
+        format!("tmux attach -t {0} \\; select-window -t {0}:{1} \\; select-pane -t {2}", t.session, t.window_index, t.pane_id)
     } else if record.holder.is_some() || record.lane == rosterd_proto::Lane::Headless {
         return open_ui(config, &format!("/ui/sessions/{key}"));
     } else {
-        return Err(Exit::user(format!("nothing to open for {key}: no tmux, herdr or holder handle")));
+        return Err(Exit::user(format!("nothing to open for {key}: no tmux or holder handle")));
     };
     if which("rosterd-open") {
-        let mut handle = json!({ "kind": kind, "machine": record.node, "session_key": key });
-        handle[kind] = if kind == "tmux" { json!(record.tmux) } else { json!(record.herdr) };
+        let handle = json!({ "kind": "tmux", "machine": record.node, "session_key": key, "tmux": record.tmux });
         let status = std::process::Command::new("rosterd-open").arg("--handle").arg(handle.to_string()).status()?;
         return if status.success() { Ok(()) } else { Err(Exit::user(format!("rosterd-open exited with {status}"))) };
     }
@@ -285,10 +278,9 @@ fn read_text(session: &Value) -> String {
     for (name, value) in fields.iter().filter(|(k, _)| !matches!(k.as_str(), "state" | "children" | "warnings")) {
         out += &format!("{name:<20} {}\n", scalar(value));
     }
-    let runtime = match (fields.get("herdr"), fields.get("tmux"), fields.get("holder")) {
-        (Some(h), _, _) if !h.is_null() => "herdr",
-        (_, Some(t), _) if !t.is_null() => "tmux",
-        (_, _, Some(h)) if !h.is_null() => "headless",
+    let runtime = match (fields.get("tmux"), fields.get("holder")) {
+        (Some(t), _) if !t.is_null() => "tmux",
+        (_, Some(h)) if !h.is_null() => "headless",
         _ => "none",
     };
     out += &format!("{:<20} {runtime}\n", "runtime");

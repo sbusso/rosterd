@@ -159,15 +159,6 @@ pub struct TmuxHandle {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HerdrHandle {
-    pub session: String,
-    pub workspace_id: String,
-    pub pane_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_name: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HolderHandle {
     /// Socket path on Unix, pipe name on Windows.
     pub socket: String,
@@ -252,8 +243,6 @@ pub struct Record {
     #[serde(default)]
     pub tmux: Option<TmuxHandle>,
     #[serde(default)]
-    pub herdr: Option<HerdrHandle>,
-    #[serde(default)]
     pub holder: Option<HolderHandle>,
     #[serde(default)]
     pub liveness: Liveness,
@@ -334,8 +323,6 @@ pub struct Capabilities {
     pub harnesses: Vec<String>,
     #[serde(default)]
     pub files_enabled: bool,
-    #[serde(default)]
-    pub herdr: bool,
     #[serde(default)]
     pub tmux: bool,
     /// Harnesses that cannot work right now, R7.7; empty means all ok, and an empty list stays
@@ -785,7 +772,6 @@ mod tests {
             origin: None,
             tty: None,
             tmux: None,
-            herdr: None,
             holder: None,
             liveness: Liveness::Live,
             ended_at: None,

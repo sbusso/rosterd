@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- rosterd, R11: a LaunchAgent in the user's GUI session, like the tray, so open reaches the
-     display, the tmux server and the Herdr socket. A logout ends those anyway, so nothing is
+     display and the tmux server. A logout ends those anyway, so nothing is
      lost by not being a LaunchDaemon. Loaded without sudo:
        launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.rosterd.daemon.plist -->
 <plist version="1.0">

@@ -13,7 +13,7 @@ crates/rosterd   the daemon
   src/identity.rs   Ed25519 node key and node_id, R7.1
   src/node.rs       what a handler can reach
   src/roster/       the table, precedence, snapshot, events         R3 R4
-  src/scanner/      process enumeration, tmux and herdr handles     R4
+  src/scanner/      process enumeration, tmux handles               R4
   src/runner/       ACP client, holders, policy, resume             R5 R2.2
   src/mesh/         discovery, membership, snapshot exchange, proxy R7
   src/api/          socket, loopback, Tailscale listeners, MCP      R6 R9
@@ -75,7 +75,7 @@ arrives, R4.
 - the page's view: every node of the swarm, this node first, then the reachable peers, then the unreachable ones; the sessions of each ranked needs attention, active, idle, unknown, suspended
 - each row: name and project, harness, state, age of the last activity
 - needs attention → Allow, Allow always, Deny
-- any other row → jumps to it: the tmux pane, the herdr pane, or the conversation view
+- any other row → jumps to it: the tmux pane or the conversation view
 - Open in browser → the roster page
 - macOS: the attention count beside the icon. Linux: the icon colour (KDE and most desktops; GNOME needs the AppIndicator extension)
 - a notification on every `attention` event of /swarm/changes; the page and the phone post theirs too, and the page's tab title carries the count
@@ -135,7 +135,7 @@ rosterd leave             # take this node out
 ```
 
 Tailscale ACLs are the network boundary, the swarm key the application boundary. Windows joins
-headless only: hooks, no tmux or herdr handles.
+headless only: hooks, no tmux handles.
 
 Every node also reports which of its harnesses cannot work right now: `login_required` when
 the agent asked for a login, `rate_limited` when a turn ended on a rate limit or quota error,
@@ -251,8 +251,8 @@ the variables below, registers the session with the daemon as source `launcher`,
 harness with the rosterd MCP server in its config (`--mcp-config` for Claude Code,
 `-c mcp_servers.rosterd.*` for Codex).
 
-Open. `rosterd-open --handle '<runtime handle json>'` jumps to a session from a shell: tmux, herdr,
-or the conversation view; `rosterd open KEY` resolves the handle first.
+Open. `rosterd-open --handle '<runtime handle json>'` jumps to a session from a shell: tmux (attached
+here, or over ssh on the owning node) or the conversation view; `rosterd open KEY` resolves the handle first.
 
 Environment.
 
@@ -262,5 +262,5 @@ Environment.
 | `ROSTERD_HARNESS` | hook | the harness name when the process tree does not say |
 | `ROSTERD_CONFIG_DIR`, `ROSTERD_STATE_DIR` | daemon, scripts | override the config and state directories |
 | `ROSTERD_CONFIG` | CLI, daemon | the config file (`--config`) |
-| `ROSTERD_MACHINE`, `ROSTERD_TERMINAL_CMD`, `ROSTERD_HERDR_LINK` | opener | this machine's name, how to open a terminal, whether a `herdr://` handler is registered |
+| `ROSTERD_MACHINE`, `ROSTERD_TERMINAL_CMD` | opener | this machine's name, how to open a terminal |
 | `RUST_LOG` | daemon | log filter, `info` by default |

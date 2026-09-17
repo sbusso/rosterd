@@ -19,7 +19,7 @@ use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
-use rosterd_proto::{Activity, Change, HarnessState, HerdrHandle, JournalEntry, Lane, Liveness, NodeUsage, PeerState, PermissionPolicy, Record, SessionExport, Source, SwarmSnapshot, SwarmUsage, TmuxHandle};
+use rosterd_proto::{Activity, Change, HarnessState, JournalEntry, Lane, Liveness, NodeUsage, PeerState, PermissionPolicy, Record, SessionExport, Source, SwarmSnapshot, SwarmUsage, TmuxHandle};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -264,7 +264,6 @@ struct RegisterBody {
     cwd: Option<String>,
     tty: Option<String>,
     tmux: Option<TmuxHandle>,
-    herdr: Option<HerdrHandle>,
 }
 
 fn local_source(source: Option<Source>) -> Result<Source, ApiError> {
@@ -291,7 +290,6 @@ async fn register(State(node): State<Arc<Node>>, Body(body): Body<RegisterBody>)
             cwd: body.cwd,
             tty: body.tty,
             tmux: body.tmux,
-            herdr: body.herdr,
             ..Patch::default()
         },
     )?;
@@ -994,7 +992,7 @@ async fn cancel(captures: Captures) -> Result<Response, ApiError> {
     ok(record)
 }
 
-/// Jumps to the session on the machine that has it: `rosterd-open` with the tmux or herdr handle,
+/// Jumps to the session on the machine that has it: `rosterd-open` with the tmux handle,
 /// run by the owner node so a page on a phone focuses the pane on the desk. Headless sessions have
 /// no pane; the page links their conversation view itself.
 async fn open_session(captures: Captures) -> Result<Response, ApiError> {
@@ -1002,12 +1000,8 @@ async fn open_session(captures: Captures) -> Result<Response, ApiError> {
         return captures.proxy(node_id, Method::POST, captures.path("/open"), None).await;
     }
     let record = captures.record()?;
-    let (kind, handle) = match (&record.herdr, &record.tmux) {
-        (Some(h), _) => ("herdr", json!(h)),
-        (_, Some(t)) => ("tmux", json!(t)),
-        _ => return Err(ApiError::bad_request(format!("nothing to open for {}: no tmux or herdr handle", captures.key))),
-    };
-    let handle = json!({ "kind": kind, "machine": record.node, "session_key": captures.key, kind: handle });
+    let Some(tmux) = &record.tmux else { return Err(ApiError::bad_request(format!("nothing to open for {}: no tmux handle", captures.key))) };
+    let handle = json!({ "kind": "tmux", "machine": record.node, "session_key": captures.key, "tmux": tmux });
     let opener = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("rosterd-open"))).filter(|p| p.is_file());
     let opener = opener.or_else(|| crate::integrate::which(&std::env::var_os("PATH").unwrap_or_default(), "rosterd-open"));
     let Some(opener) = opener else { return Err(ApiError::bad_request("rosterd-open is not installed on this node".to_string())) };
@@ -1015,7 +1009,7 @@ async fn open_session(captures: Captures) -> Result<Response, ApiError> {
     if !out.status.success() {
         return Err(ApiError::bad_request(String::from_utf8_lossy(&out.stderr).trim().to_string()));
     }
-    ok(json!({ "opened": kind }))
+    ok(json!({ "opened": "tmux" }))
 }
 
 /// The raw ACP notification stream, R5.5. Served by the owner only: `Mesh::proxy` carries one

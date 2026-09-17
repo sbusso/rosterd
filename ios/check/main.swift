@@ -3,8 +3,8 @@ import Foundation
 
 let swarm = """
 {"schema":"rosterd.swarm.v1","generated_at":"2026-09-16T10:00:00.123456Z",
- "nodes":[{"node_id":"n1","name":"mato","address":null,"state":"local","peer_age_ms":0,"version":"0.1.0","capabilities":{"harnesses":["claude","codex"],"files_enabled":false,"herdr":false,"tmux":true},"revoked":false}],
- "records":[{"node":"mato","node_id":"n1","session_key":"n1:12:34","pid":12,"start_ticks":34,"started_at":"2026-09-16T09:00:00Z","harness":"claude","session_id":null,"lane":"headless","sources":["launcher"],"name":null,"activity":"needs_attention","activity_event":"gate:bash","activity_at":"2026-09-16T09:59:00.5Z","activity_seq":7,"parent_session_key":null,"cwd":"/Users/mato/Code/gtm/workspace","tty":null,"tmux":null,"herdr":null,"holder":{"socket":"/tmp/h.sock"},"liveness":"live","ended_at":null,"ended_reason":null,"usage":null,"load":{"cpu_pct":12,"rss_mb":1536},"permission_policy":"attention","peer_state":"local","peer_age_ms":0}]}
+ "nodes":[{"node_id":"n1","name":"mato","address":null,"state":"local","peer_age_ms":0,"version":"0.1.0","capabilities":{"harnesses":["claude","codex"],"files_enabled":false,"tmux":true},"revoked":false}],
+ "records":[{"node":"mato","node_id":"n1","session_key":"n1:12:34","pid":12,"start_ticks":34,"started_at":"2026-09-16T09:00:00Z","harness":"claude","session_id":null,"lane":"headless","sources":["launcher"],"name":null,"activity":"needs_attention","activity_event":"gate:bash","activity_at":"2026-09-16T09:59:00.5Z","activity_seq":7,"parent_session_key":null,"cwd":"/Users/mato/Code/gtm/workspace","tty":null,"tmux":null,"holder":{"socket":"/tmp/h.sock"},"liveness":"live","ended_at":null,"ended_reason":null,"usage":null,"load":{"cpu_pct":12,"rss_mb":1536},"permission_policy":"attention","peer_state":"local","peer_age_ms":0}]}
 """
 let session = """
 {"node":"mato","node_id":"n1","session_key":"n1:12:34","pid":12,"start_ticks":34,"started_at":"2026-09-16T09:00:00Z","harness":"claude","lane":"interactive","sources":["hook"],"activity":"needs_attention","activity_seq":7,"liveness":"live",

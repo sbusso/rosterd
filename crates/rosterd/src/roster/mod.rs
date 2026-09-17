@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rosterd_proto::{
-    Activity, Capabilities, EndedReason, Explain, FieldOrigin, HerdrHandle, HolderHandle, Lane, Liveness, Load,
+    Activity, Capabilities, EndedReason, Explain, FieldOrigin, HolderHandle, Lane, Liveness, Load,
     PermissionPolicy, Record, RejectedClaim, Snapshot, Source, TmuxHandle, Usage,
 };
 use tokio::sync::watch;
@@ -36,7 +36,6 @@ pub struct Patch {
     pub origin: Option<String>,
     pub tty: Option<String>,
     pub tmux: Option<TmuxHandle>,
-    pub herdr: Option<HerdrHandle>,
     pub holder: Option<HolderHandle>,
     pub usage: Option<Usage>,
     pub permission_policy: Option<PermissionPolicy>,
@@ -66,13 +65,12 @@ enum Field {
     Origin,
     Tty,
     Tmux,
-    Herdr,
     Holder,
 }
 
 impl Field {
     /// Declaration order, the order `explain` lists them in.
-    const ALL: [Field; 13] = [
+    const ALL: [Field; 12] = [
         Field::StartedAt,
         Field::Harness,
         Field::SessionId,
@@ -84,7 +82,6 @@ impl Field {
         Field::Origin,
         Field::Tty,
         Field::Tmux,
-        Field::Herdr,
         Field::Holder,
     ];
 
@@ -102,7 +99,6 @@ impl Field {
             Field::Origin => "origin",
             Field::Tty => "tty",
             Field::Tmux => "tmux",
-            Field::Herdr => "herdr",
             Field::Holder => "holder",
         }
     }
@@ -120,7 +116,6 @@ impl Field {
             Field::Origin => serde_json::to_value(&record.origin),
             Field::Tty => serde_json::to_value(&record.tty),
             Field::Tmux => serde_json::to_value(&record.tmux),
-            Field::Herdr => serde_json::to_value(&record.herdr),
             Field::Holder => serde_json::to_value(&record.holder),
         };
         value.unwrap_or(serde_json::Value::Null)
@@ -388,7 +383,6 @@ impl Roster {
                 origin: None,
                 tty: None,
                 tmux: None,
-                herdr: None,
                 holder: None,
                 liveness: Liveness::Live,
                 ended_at: None,
@@ -413,7 +407,6 @@ impl Roster {
         changed |= fill(origins, source, now, Field::Origin, &mut record.origin, patch.origin);
         changed |= fill(origins, source, now, Field::Tty, &mut record.tty, patch.tty);
         changed |= fill(origins, source, now, Field::Tmux, &mut record.tmux, patch.tmux);
-        changed |= fill(origins, source, now, Field::Herdr, &mut record.herdr, patch.herdr);
         changed |= fill(origins, source, now, Field::Holder, &mut record.holder, patch.holder);
         if let Some(usage) = patch.usage {
             changed |= record.usage.as_ref() != Some(&usage);

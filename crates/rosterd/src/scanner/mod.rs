@@ -1,7 +1,7 @@
 //! Process enumeration and runtime handles, R4 `scan`: every 2 s, confirm registered PIDs are
 //! alive, add stray harness processes as unknown, collapse nested harness processes of one
 //! session into the root, set `parent_session_key` when the parent is another harness, and fill
-//! tmux and herdr handles from one bounded `tmux list-panes` and one herdr pane list per pass.
+//! tmux handles from one bounded `tmux list-panes` per pass.
 //!
 //! R11: sysinfo does /proc, libproc and toolhelp underneath, so one code path serves Linux,
 //! macOS and Windows. Identity is pid plus start time (seconds since the epoch) everywhere.
@@ -9,13 +9,12 @@
 //! OWNER: the roster/scanner agent.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, TimeZone, Utc};
-use rosterd_proto::{Activity, EndedReason, HerdrHandle, Lane, Liveness, Load, Record, Source, TmuxHandle};
+use rosterd_proto::{Activity, EndedReason, Lane, Liveness, Load, Record, Source, TmuxHandle};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 use crate::config::Config;
@@ -23,7 +22,7 @@ use crate::roster::{Patch, Roster};
 
 /// Ended records stay this long so clients see the ending.
 const KEEP_ENDED: Duration = Duration::from_secs(600);
-/// Budget for one tmux or herdr call, R4.
+/// Budget for one tmux call, R4.
 const HANDLE_TIMEOUT: Duration = Duration::from_millis(500);
 /// The harness names every node knows without config, R4. `ccd-cli` is the Claude desktop app's
 /// copy of Claude Code, laid out as `~/.claude/remote/ccd-cli/<version>`.
@@ -303,8 +302,8 @@ async fn pass(roster: &Roster, names: &BTreeMap<String, String>) {
         }
     }
 
-    // Runtime handles, R4: one tmux list-panes and one herdr pane list per pass, only when a
-    // live record still lacks the handle.
+    // Runtime handles, R4: one tmux list-panes per pass, only when a live record still lacks
+    // the handle.
     let tmux_present = on_path("tmux");
     if tmux_present && live.iter().any(|r| r.tmux.is_none() || r.tty.is_none()) {
         let panes = tmux_panes().await;
@@ -323,26 +322,8 @@ async fn pass(roster: &Roster, names: &BTreeMap<String, String>) {
             }
         }
     }
-    let sockets = herdr_sockets();
-    if !sockets.is_empty() && live.iter().any(|r| r.herdr.is_none()) {
-        let panes = herdr_panes(&sockets).await;
-        for rec in live.iter().filter(|r| r.herdr.is_none()) {
-            let chain = chain_of(rec.pid);
-            if let Some(pane) = panes.iter().find(|p| chain.iter().any(|pid| p.pids.contains(pid))) {
-                let patch = Patch {
-                    session_key: Some(rec.session_key.clone()),
-                    herdr: Some(pane.handle.clone()),
-                    tty: pane.tty.clone(),
-                    ..Patch::default()
-                };
-                let _ = roster.apply(Source::Scan, patch);
-            }
-        }
-    }
-
     roster.update_capabilities(|c| {
         c.tmux = tmux_present;
-        c.herdr = !sockets.is_empty();
     });
 
     roster.sweep(now - chrono::Duration::from_std(KEEP_ENDED).unwrap_or_default());
@@ -425,119 +406,6 @@ async fn tmux_panes() -> Vec<TmuxPane> {
         // No server running, or tmux missing: no panes this pass.
         _ => Vec::new(),
     }
-}
-
-// ---- herdr --------------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-struct HerdrPane {
-    handle: HerdrHandle,
-    /// The pane's shell and its foreground processes.
-    pids: Vec<u32>,
-    tty: Option<String>,
-}
-
-/// Herdr sockets on this machine: `HERDR_SOCKET_PATH`, the default session's socket, and every
-/// named session under `~/.config/herdr/sessions/<name>/herdr.sock`.
-fn herdr_sockets() -> Vec<(String, PathBuf)> {
-    let mut found: Vec<(String, PathBuf)> = Vec::new();
-    if let Some(p) = std::env::var_os("HERDR_SOCKET_PATH") {
-        found.push(("default".into(), PathBuf::from(p)));
-    }
-    if let Some(home) = dirs::home_dir() {
-        let root = home.join(".config").join("herdr");
-        found.push(("default".into(), root.join("herdr.sock")));
-        if let Ok(sessions) = std::fs::read_dir(root.join("sessions")) {
-            for entry in sessions.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                found.push((name, entry.path().join("herdr.sock")));
-            }
-        }
-    }
-    found.dedup_by(|a, b| a.1 == b.1);
-    found.retain(|(_, p)| p.exists());
-    found
-}
-
-static HERDR_LOGGED: AtomicBool = AtomicBool::new(false);
-
-/// Every pane of every herdr session with the pids under it. Best effort: an error skips the
-/// session this pass and is logged once.
-async fn herdr_panes(sockets: &[(String, PathBuf)]) -> Vec<HerdrPane> {
-    let mut panes = Vec::new();
-    for (session, socket) in sockets {
-        match herdr_session_panes(session, socket).await {
-            Ok(found) => panes.extend(found),
-            Err(error) => {
-                if !HERDR_LOGGED.swap(true, Ordering::Relaxed) {
-                    tracing::warn!(%session, socket = %socket.display(), %error, "herdr pane list failed; skipping");
-                }
-            }
-        }
-    }
-    panes
-}
-
-async fn herdr_session_panes(session: &str, socket: &Path) -> anyhow::Result<Vec<HerdrPane>> {
-    let list = herdr_call(socket, "pane.list", serde_json::json!({})).await?;
-    let mut panes = Vec::new();
-    for pane in list["panes"].as_array().into_iter().flatten() {
-        let Some(pane_id) = pane["pane_id"].as_str() else { continue };
-        let info = herdr_call(socket, "pane.process_info", serde_json::json!({ "pane_id": pane_id })).await?;
-        let info = &info["process_info"];
-        let mut pids: Vec<u32> = info["shell_pid"].as_u64().map(|p| p as u32).into_iter().collect();
-        pids.extend(
-            info["foreground_processes"].as_array().into_iter().flatten().filter_map(|p| p["pid"].as_u64()).map(|p| p as u32),
-        );
-        panes.push(HerdrPane {
-            handle: HerdrHandle {
-                session: session.to_string(),
-                workspace_id: pane["workspace_id"].as_str().unwrap_or_default().to_string(),
-                pane_id: pane_id.to_string(),
-                agent_name: pane["agent"].as_str().or(pane["display_agent"].as_str()).map(str::to_string),
-            },
-            pids,
-            tty: info["tty"].as_str().map(str::to_string),
-        });
-    }
-    Ok(panes)
-}
-
-/// One request on Herdr's socket: newline delimited JSON,
-/// `{id, method, params}` with a string id, snake_case params, reply by id, error body
-/// `{code, message}`. Herdr 0.8.2 closes the connection after one reply, so each call connects.
-#[cfg(unix)]
-async fn herdr_call(socket: &Path, method: &str, params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    tokio::time::timeout(HANDLE_TIMEOUT, async {
-        let mut stream = tokio::net::UnixStream::connect(socket).await?;
-        let request = serde_json::json!({ "id": "1", "method": method, "params": params });
-        stream.write_all(format!("{request}\n").as_bytes()).await?;
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        loop {
-            line.clear();
-            if reader.read_line(&mut line).await? == 0 {
-                anyhow::bail!("herdr closed the socket before answering {method}");
-            }
-            let mut reply: serde_json::Value = serde_json::from_str(&line)?;
-            if reply["id"].as_str() != Some("1") {
-                continue; // a pushed event, not our reply
-            }
-            if let Some(error) = reply.get("error") {
-                anyhow::bail!("herdr {method}: {error}");
-            }
-            return Ok(reply["result"].take());
-        }
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("herdr {method} timed out"))?
-}
-
-/// R11: no tmux or herdr handles on Windows.
-#[cfg(not(unix))]
-async fn herdr_call(_socket: &Path, method: &str, _params: serde_json::Value) -> anyhow::Result<serde_json::Value> {
-    anyhow::bail!("herdr {method}: no unix socket on this platform")
 }
 
 #[cfg(test)]

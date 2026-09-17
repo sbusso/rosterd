@@ -10,7 +10,7 @@
 #
 # Exports ROSTERD_SOCKET and ROSTERD_HARNESS, registers {source: launcher, pid: $$, ...} with
 # the daemon, then execs the harness: same pid, so the registration names the process the
-# scanner will find, and signals and the tty stay the harness's own. tmux and herdr handles are the
+# scanner will find, and signals and the tty stay the harness's own. tmux handles are the
 # scanner's, not the launcher's. Without a daemon it still starts the harness (fail open, R4).
 set -u
 

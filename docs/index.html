@@ -51,7 +51,7 @@
       <div class="row"><span class="dot active"></span><span><span class="name">docs: pages site</span><span class="meta">claude, headless, ~/Code/rosterd</span></span><span class="st active">active, message</span></div>
       <div class="row"><span class="dot suspended"></span><span><span class="name">migrate: holders</span><span class="meta">claude, headless, session kept</span></span><span class="st">suspended</span></div>
       <div class="node dim"><b>arch</b> peer, unreachable 41s</div>
-      <div class="row dimrow"><span class="dot"></span><span><span class="name">[herdr]</span><span class="meta">pi, herdr pane, ~/src/herdr</span></span><span class="st">idle, stale</span></div>
+      <div class="row dimrow"><span class="dot"></span><span><span class="name">[pi]</span><span class="meta">pi, tmux pane, ~/src/pi</span></span><span class="st">idle, stale</span></div>
       <div class="row dimrow"><span class="dot unknown"></span><span><span class="name">[scratch]</span><span class="meta">claude, no claim yet</span></span><span class="st">unknown</span></div>
     </div>
   </div>
@@ -86,7 +86,7 @@
     </figure>
   </div>
   <div class="cols">
-    <div><h3>Menu bar</h3><p><code>rosterd-tray</code> on macOS and Linux. Sessions grouped by state, the attention count beside the icon, Allow, Allow always and Deny on the row, a click jumps to the tmux pane, the herdr pane or the conversation view.</p></div>
+    <div><h3>Menu bar</h3><p><code>rosterd-tray</code> on macOS and Linux. Sessions grouped by state, the attention count beside the icon, Allow, Allow always and Deny on the row, a click jumps to the tmux pane or the conversation view.</p></div>
     <div><h3>Page and phone</h3><p>A single HTML page served by every node, over loopback or the Tailscale IP. The SwiftUI app is the same page with a scanner for the pairing QR. Buttons only: no prompt box, no free text.</p></div>
     <div><h3>Shell and agents</h3><p>One binary. <code>rosterd list --swarm</code>, <code>watch</code>, <code>changes</code>, <code>allow</code>, <code>prompt</code>, every command with <code>--json</code>. Agents get the same over an MCP server: list, spawn, prompt, read a recap.</p></div>
   </div>
@@ -205,7 +205,7 @@ for event in sse(<span class="s">"/swarm/changes"</span>):
     <rect x="556" y="60" width="158" height="66" rx="8" class="box"/>
     <text x="568" y="82" class="b">mesh</text><text x="568" y="100" class="dim">discovery, membership</text><text x="568" y="116" class="dim">snapshots in, proxy out</text>
     <rect x="556" y="144" width="158" height="66" rx="8" class="box"/>
-    <text x="568" y="166" class="b">scanner</text><text x="568" y="184" class="dim">/proc, libproc, 2 s</text><text x="568" y="200" class="dim">tmux and herdr handles</text>
+    <text x="568" y="166" class="b">scanner</text><text x="568" y="184" class="dim">/proc, libproc, 2 s</text><text x="568" y="200" class="dim">tmux handles</text>
     <rect x="246" y="236" width="308" height="66" rx="8" class="box green"/>
     <text x="258" y="258" class="b">runner</text><text x="258" y="276" class="dim">ACP client: start, prompt, cancel, permission,</text><text x="258" y="292" class="dim">question, login; suspend, resume, crash-resume</text>
     <rect x="566" y="236" width="148" height="66" rx="8" class="box"/>
@@ -219,7 +219,7 @@ for event in sse(<span class="s">"/swarm/changes"</span>):
     <!-- right column -->
     <text x="770" y="28" class="b">Outside the node</text>
     <rect x="770" y="44" width="170" height="82" rx="6" class="box"/><text x="782" y="66" class="b">peers</text><text x="782" y="86" class="dim">other nodes on the tailnet,</text><text x="782" y="102" class="dim">each serving its own roster</text><text x="782" y="118" class="dim mono">https, signed, swarm key</text>
-    <rect x="770" y="236" width="170" height="66" rx="6" class="box"/><text x="782" y="258" class="b">interactive harnesses</text><text x="782" y="276" class="dim">claude, codex, pi in a</text><text x="782" y="292" class="dim">terminal, tmux or herdr</text>
+    <rect x="770" y="236" width="170" height="66" rx="6" class="box"/><text x="782" y="258" class="b">interactive harnesses</text><text x="782" y="276" class="dim">claude, codex, pi in a</text><text x="782" y="292" class="dim">terminal, tmux</text>
     <rect x="770" y="330" width="170" height="100" rx="6" class="box"/><text x="782" y="352" class="b">ACP adapters</text><text x="782" y="372" class="dim">claude-agent-acp,</text><text x="782" y="388" class="dim">codex-acp, pi-acp: one</text><text x="782" y="404" class="dim">headless harness each</text>
     <!-- lines -->
     <path d="M170 61H246" class="ln" marker-end="url(#ar)"/><path d="M170 103H246" class="ln" marker-end="url(#ar)"/><path d="M170 145H246" class="ln" marker-end="url(#ar)"/><path d="M170 187H246" class="ln" marker-end="url(#ar)"/>
@@ -292,14 +292,14 @@ for event in sse(<span class="s">"/swarm/changes"</span>):
     <tr><td><code>sources</code></td><td>subset of <code>launcher</code>, <code>acp</code>, <code>hook</code>, <code>files</code>, <code>scan</code></td></tr>
     <tr><td><code>activity</code>, <code>activity_event</code>, <code>activity_at</code>, <code>activity_seq</code></td><td>one of <code>active</code>, <code>idle</code>, <code>needs_attention</code>, <code>unknown</code>; the event that set it, when, and a sequence clients dedupe on</td></tr>
     <tr><td><code>name</code>, <code>cwd</code>, <code>parent_session_key</code></td><td>display name from launcher, hook or the agent itself; the folder; the spawning session</td></tr>
-    <tr><td><code>tmux</code>, <code>herdr</code>, <code>holder</code>, <code>tty</code></td><td>runtime handles: where a human can reach the session</td></tr>
+    <tr><td><code>tmux</code>, <code>holder</code>, <code>tty</code></td><td>runtime handles: where a human can reach the session</td></tr>
     <tr><td><code>liveness</code>, <code>ended_at</code>, <code>ended_reason</code></td><td><code>live</code>, <code>suspended</code>, <code>ended</code>; <code>exit</code>, <code>crash</code>, <code>reboot</code>, <code>killed</code>, <code>expired</code></td></tr>
     <tr><td><code>usage</code></td><td>tokens, cost, context fill as the harness reported them over ACP. Never estimated.</td></tr>
     <tr><td><code>mode</code>, <code>plan</code>, <code>load</code></td><td>the harness mode (plan, code…), its plan for the turn, and the CPU share and RSS of the process tree from the last scan</td></tr>
   </table>
 
   <h2>Cross platform</h2>
-  <p>Linux reads <code>/proc</code> and runs as a systemd user unit; macOS reads libproc and runs as a LaunchAgent in the GUI session so <em>open</em> reaches the display, the tmux server and the herdr socket; Windows uses toolhelp, named pipes and a service, with an interactive lane of hooks only. The holder, the hook script and the opener are the only platform-conditional code.</p>
+  <p>Linux reads <code>/proc</code> and runs as a systemd user unit; macOS reads libproc and runs as a LaunchAgent in the GUI session so <em>open</em> reaches the display and the tmux server; Windows uses toolhelp, named pipes and a service, with an interactive lane of hooks only. The holder, the hook script and the opener are the only platform-conditional code.</p>
 </section>
 
 <!-- ============================================================ flows -->
@@ -311,7 +311,7 @@ for event in sse(<span class="s">"/swarm/changes"</span>):
   <div class="dia"><svg viewBox="0 0 960 150" role="img" aria-label="Five sources ordered by precedence: launcher, acp, hook, files, scan">
     <defs><marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="arrow"/></marker></defs>
     <path d="M20 40H940" class="ln thin"/><text x="20" y="28" class="dim">highest</text><text x="900" y="28" class="dim">lowest</text>
-    <g><rect x="20" y="52" width="164" height="84" rx="8" class="box amber"/><text x="32" y="74" class="b">launcher</text><text x="32" y="94" class="dim">a script started it and</text><text x="32" y="110" class="dim">registered pid, name, cwd,</text><text x="32" y="126" class="dim">the tmux or herdr handle</text></g>
+    <g><rect x="20" y="52" width="164" height="84" rx="8" class="box amber"/><text x="32" y="74" class="b">launcher</text><text x="32" y="94" class="dim">a script started it and</text><text x="32" y="110" class="dim">registered pid, name, cwd,</text><text x="32" y="126" class="dim">the tmux handle</text></g>
     <g><rect x="208" y="52" width="164" height="84" rx="8" class="box green"/><text x="220" y="74" class="b">acp</text><text x="220" y="94" class="dim">everything the runner sees</text><text x="220" y="110" class="dim">from a session it drives:</text><text x="220" y="126" class="dim">turns, tools, permissions</text></g>
     <g><rect x="396" y="52" width="164" height="84" rx="8" class="box"/><text x="408" y="74" class="b">hook</text><text x="408" y="94" class="dim">SessionStart, UserPrompt,</text><text x="408" y="110" class="dim">PreToolUse, Permission,</text><text x="408" y="126" class="dim">Notification, Stop</text></g>
     <g><rect x="584" y="52" width="164" height="84" rx="8" class="box"/><text x="596" y="74" class="b">files</text><text x="596" y="94" class="dim">opt-in, off by default:</text><text x="596" y="110" class="dim">session ids and timestamps</text><text x="596" y="126" class="dim">from the harness directories</text></g>
@@ -431,7 +431,7 @@ for event in sse(<span class="s">"/swarm/changes"</span>):
   </div>
   <div class="feat">
     <div><h3>Everything still in tmux</h3><p class="who">A developer who runs agents by hand.</p></div>
-    <div><p>Nothing changes in the terminal. The hook posts claims, the scanner fills the tmux or herdr handle, the roster shows the pane; a click on the tray, the page or the phone jumps to it. Sessions nobody registered still appear as <code>unknown</code> with their folder and load.</p><p>Leans on: hooks, the scanner, the opener.</p></div>
+    <div><p>Nothing changes in the terminal. The hook posts claims, the scanner fills the tmux handle, the roster shows the pane; a click on the tray, the page or the phone jumps to it. Sessions nobody registered still appear as <code>unknown</code> with their folder and load.</p><p>Leans on: hooks, the scanner, the opener.</p></div>
   </div>
 </section>
 
@@ -442,9 +442,9 @@ for event in sse(<span class="s">"/swarm/changes"</span>):
 
   <h2>See</h2>
   <div class="cols">
-    <div><h3>Every session, whoever started it</h3><p>Interactive sessions in a terminal, tmux or herdr; headless ones under a holder; strays nobody registered. The scanner walks the process table every two seconds, confirms liveness of every known pid and adds new harness processes as <code>unknown</code>.</p></div>
+    <div><h3>Every session, whoever started it</h3><p>Interactive sessions in a terminal or tmux; headless ones under a holder; strays nobody registered. The scanner walks the process table every two seconds, confirms liveness of every known pid and adds new harness processes as <code>unknown</code>.</p></div>
     <div><h3>Four words, never a guess</h3><p><code>active</code>, <code>idle</code>, <code>needs_attention</code>, <code>unknown</code>, from the last accepted claim. The age shown is the age of that claim, never "time spent working". A session only the scanner knows is <code>unknown</code> until a hook or ACP speaks.</p></div>
-    <div><h3>Where to reach it</h3><p>The tmux pane, the herdr pane or the conversation view at <code>/ui/sessions/{key}</code>. Load from the process tree, the harness mode, the plan for the turn, the context fill, the pending request.</p></div>
+    <div><h3>Where to reach it</h3><p>The tmux pane or the conversation view at <code>/ui/sessions/{key}</code>. Load from the process tree, the harness mode, the plan for the turn, the context fill, the pending request.</p></div>
   </div>
 <pre><code>$ rosterd list --swarm
 gibson   3 active  1 idle  1 needs attention        reachable
@@ -461,7 +461,7 @@ migrate: holders     claude  suspended        2h   headless     mbp     -</code>
   <div class="cols">
     <div><h3>Answer</h3><p>A permission gets Allow, Allow always (when the harness offers it) and Deny. A form question gets its choices. A harness that needs a login gets the login. From the tray, the page, the phone, the CLI or a client's own UI, proxied to the owner.</p></div>
     <div><h3>Drive</h3><p><code>prompt</code> sends a turn, optionally waiting for idle, attention or end. <code>cancel</code> stops the turn and keeps the session; <code>stop</code> ends the holder. <code>name</code> labels it; agents label their own session through MCP.</p></div>
-    <div><h3>Open</h3><p><code>open</code> resolves the runtime handle: the opener script for tmux and herdr, the conversation view for headless. The page renders the ACP stream live with the last recap; it stores none of it.</p></div>
+    <div><h3>Open</h3><p><code>open</code> resolves the runtime handle: the opener script for tmux, the conversation view for headless. The page renders the ACP stream live with the last recap; it stores none of it.</p></div>
   </div>
 
   <h2>Run</h2>
@@ -642,7 +642,7 @@ gate_timeout_s = 3600</code></pre>
     <tr><td><code>ROSTERD_HARNESS</code></td><td>hook</td><td>the harness name when the process tree does not say</td></tr>
     <tr><td><code>ROSTERD_CONFIG_DIR</code>, <code>ROSTERD_STATE_DIR</code>, <code>ROSTERD_CONFIG</code></td><td>daemon, CLI, scripts</td><td>override the directories and the config file</td></tr>
     <tr><td><code>ROSTERD_GATE</code></td><td>pi extension</td><td><code>attention</code> pauses before each tool call until allowed or denied</td></tr>
-    <tr><td><code>ROSTERD_MACHINE</code>, <code>ROSTERD_TERMINAL_CMD</code>, <code>ROSTERD_HERDR_LINK</code></td><td>opener</td><td>this machine's name, how to open a terminal, whether a <code>herdr://</code> handler exists</td></tr>
+    <tr><td><code>ROSTERD_MACHINE</code>, <code>ROSTERD_TERMINAL_CMD</code></td><td>opener</td><td>this machine's name, how to open a terminal</td></tr>
     <tr><td><code>RUST_LOG</code></td><td>daemon</td><td>log filter, <code>info</code> by default</td></tr>
   </table>
 </section>

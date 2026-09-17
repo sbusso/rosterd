@@ -135,7 +135,7 @@ const driven = (r) => r.lane === 'headless' || !!r.holder;
 // the API (POST /open runs rosterd-open on the machine that has the pane).
 function openCommands(r) {
   if (driven(r)) return { link: `/ui/sessions/${r.session_key}`, label: 'conversation' };
-  if (r.tmux || r.herdr) return { open: r.session_key, label: r.tmux ? 'tmux' : 'herdr' };
+  if (r.tmux) return { open: r.session_key, label: 'tmux' };
   return {};
 }
 // ACP option kinds: allow_* are the go, reject_* the no; the gate of R16.2 uses allow, allow_always, deny.

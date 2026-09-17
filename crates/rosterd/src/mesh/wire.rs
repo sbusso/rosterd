@@ -69,7 +69,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// The oldest rosterd this one still exchanges hellos with, R7.2. Bumped only by a release
 /// that changes what the hello means; a new optional field is not that.
-pub const MIN_COMPAT: &str = "0.1.9";
+pub const MIN_COMPAT: &str = "0.1.11";
 
 /// A version below `MIN_COMPAT`. One that does not parse is nobody's business here.
 pub fn too_old(version: &str) -> bool {
@@ -289,8 +289,8 @@ mod tests {
 
     #[test]
     fn the_floor_is_a_version_compare() {
-        assert!(too_old("0.1.8"));
-        assert!(too_old("0.1.9-rc1"));
+        assert!(too_old("0.1.9"));
+        assert!(too_old("0.1.11-rc1"));
         assert!(!too_old(MIN_COMPAT));
         assert!(!too_old("0.2.0-test"));
         assert!(!too_old("test"));

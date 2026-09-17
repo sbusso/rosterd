@@ -150,7 +150,7 @@ pub enum Command {
         #[arg(long)]
         clear: bool,
     },
-    /// Jump to the session: tmux, herdr, or the /ui page.
+    /// Jump to the session: tmux or the /ui page.
     Open { key: String },
     /// Open the roster page in the browser.
     Ui,
