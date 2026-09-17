@@ -17,6 +17,7 @@
   <a class="brand" href="#/">rosterd <small>0.1</small></a>
   <ul>
     <li><a class="pg" href="#/">Overview</a></li>
+    <li><a class="pg" href="#/vision">Vision</a></li>
     <li><a class="pg" href="#/architecture">Architecture</a></li>
     <li><a class="pg" href="#/flows">Flows</a></li>
     <li><a class="pg" href="#/uses">Use cases</a></li>
@@ -71,6 +72,8 @@
     </div>
   </div>
 
+  <p class="lede" style="margin-top:2rem">It is built to be built on. One machine or ten, a tool above it sees one roster, one address space and one set of actions; the network is rosterd's problem. <a href="#/vision">The vision</a>.</p>
+
   <h2>Three surfaces, one truth</h2>
   <div class="shots">
     <figure>
@@ -115,6 +118,61 @@ makepkg -si -p packaging/arch/PKGBUILD
 <span class="c"># then, on every machine: hooks, ACP adapters, the tray at login, a swarm to join</span>
 rosterd setup</code></pre>
   <p><code>rosterd setup</code> is one row per thing the machine needs: binaries on PATH, config, the service, per harness its binary, adapter and hooks, the tray, and optionally a swarm. Space picks, enter runs, <code>--yes</code> runs it headless. It is the only step that edits <code>~/.claude</code> and <code>~/.codex</code>.</p>
+</section>
+
+<!-- ============================================================ vision -->
+<section class="page" id="p-vision">
+  <h1>The brick and the connector.</h1>
+  <p class="lede">rosterd is deliberately small: one daemon per machine that tells the truth about agent sessions, can drive them, and hides the network. Anything built on top sees one roster, one address space and one set of actions, whether there is one machine or ten.</p>
+
+  <div class="dia"><svg viewBox="0 0 960 400" role="img" aria-label="Layers: tools you build, one contract, rosterd on every machine joined by the mesh, harnesses underneath">
+    <defs><marker id="arv" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="arrow"/></marker></defs>
+    <text x="20" y="34" class="b">What you build</text>
+    <g><rect x="20" y="46" width="170" height="40" rx="8" class="box"/><text x="32" y="71">a project board</text>
+       <rect x="204" y="46" width="170" height="40" rx="8" class="box"/><text x="216" y="71">a task runner</text>
+       <rect x="388" y="46" width="170" height="40" rx="8" class="box"/><text x="400" y="71">an approval workflow</text>
+       <rect x="572" y="46" width="170" height="40" rx="8" class="box"/><text x="584" y="71">a coordinator agent</text>
+       <rect x="756" y="46" width="184" height="40" rx="8" class="box"/><text x="768" y="71">a bot, a bar, a dashboard</text></g>
+    <path d="M480 86V118" class="ln" marker-end="url(#arv)" marker-start="url(#arv)"/>
+    <rect x="20" y="124" width="920" height="54" rx="8" class="box amber"/>
+    <text x="32" y="146" class="b">One contract, any node</text>
+    <text x="32" y="166" class="mono">GET /swarm/snapshot · GET /swarm/changes · GET /sessions/{key} · POST prompt, permission, answer, spawn, name · MCP</text>
+    <path d="M480 178V210" class="ln" marker-end="url(#arv)" marker-start="url(#arv)"/>
+    <g><rect x="20" y="216" width="288" height="96" rx="10" class="box dark"/><text x="36" y="240" class="b onDark">rosterd on gibson</text><text x="36" y="262" class="onDark dim">the brick: roster, runner, holders,</text><text x="36" y="278" class="onDark dim">scanner, intake, api</text><text x="36" y="298" class="onDark dim mono">the truth about this machine</text>
+       <rect x="336" y="216" width="288" height="96" rx="10" class="box dark"/><text x="352" y="240" class="b onDark">rosterd on mbp</text><text x="352" y="262" class="onDark dim">same binary, same modules,</text><text x="352" y="278" class="onDark dim">its own key and roster</text><text x="352" y="298" class="onDark dim mono">the truth about this machine</text>
+       <rect x="652" y="216" width="288" height="96" rx="10" class="box dark"/><text x="668" y="240" class="b onDark">rosterd on arch</text><text x="668" y="262" class="onDark dim">same binary, same modules,</text><text x="668" y="278" class="onDark dim">its own key and roster</text><text x="668" y="298" class="onDark dim mono">the truth about this machine</text></g>
+    <rect x="20" y="322" width="920" height="30" rx="6" class="box green"/>
+    <text x="32" y="342" class="b">the connector</text><text x="140" y="342" class="dim">discovery, membership, signed snapshots, proxied actions, peer loss: handled below this line, never seen above it</text>
+    <text x="20" y="386" class="dim">underneath: Claude Code, Codex, pi, in a terminal or under a holder, on whichever machine they happen to run</text>
+  </svg></div>
+
+  <h2>Independent by design</h2>
+  <p>Nothing points up. rosterd holds no URL, token or id of anything that uses it, never dials out, and keeps no history a client could depend on. A client is anything with an HTTP client and a bearer: it pulls a snapshot, follows the change stream, and answers through a handful of POSTs. Replacing a client costs rosterd nothing; replacing rosterd under a client costs the client nothing, because the record is versioned, additive, and unknown fields are ignored.</p>
+  <p>That independence is the point, not a constraint. A daemon that reads no transcript can run on every machine, including the one with the client secrets. A daemon that schedules nothing lets the tool above own timing and policy. A daemon with no database has nothing to migrate, back up or reconcile. A daemon that never dials out needs no per-client configuration and cannot leak to the wrong place.</p>
+
+  <h2>The mesh, abstracted</h2>
+  <p>A tool never addresses a machine. It addresses a session, by key or by name, and asks any node. Which machine owns it, whether that machine is reachable, how the request gets there and how the answer comes back, is rosterd's business: discovery over the tailnet, membership by invite and gossip, one signed snapshot stream per peer, actions proxied to the owner with the sender's signature, a lost peer served dimmed from its last snapshot. From above, a swarm of ten looks exactly like one node with more rows.</p>
+  <p>The same abstraction runs in the other direction. A harness does not know it is on a mesh either. Hooks post to a local socket; ACP flows through a local holder; the MCP server is a local socket. Nothing in a harness's configuration mentions another machine.</p>
+
+  <h2>Control workflows live on top</h2>
+  <p>rosterd ships four activity words and five actions, on purpose. Every richer behaviour is composed above it, by a tool that owns its own rules, and each tool can be different. An approval workflow that only allows <code>git push</code> after the test session reports idle with a green recap is thirty lines against the contract, and nothing inside rosterd had to learn what a test is:</p>
+<pre><code><span class="c"># any language with an HTTP client; here, the shape of it</span>
+for event in sse(<span class="s">"/swarm/changes"</span>):
+    if event.name != <span class="s">"attention"</span> or event.record.activity_event != <span class="s">"permission"</span>: continue
+    key, pending = event.record.session_key, get(<span class="s">f"/sessions/{key}"</span>).pending
+    if not (pending.tool == <span class="s">"Bash"</span> and <span class="s">"git push"</span> in pending.summary):
+        continue                                        <span class="c"># a human answers everything else</span>
+    tests = get(<span class="s">f"/sessions/tests:{event.record.name}"</span>)  <span class="c"># the sibling by name, wherever it runs</span>
+    ok = tests.activity == <span class="s">"idle"</span> and <span class="s">"passed"</span> in tests.recap
+    post(<span class="s">f"/sessions/{key}/permission"</span>, option=<span class="s">"allow"</span> if ok else <span class="s">"reject"</span>)</code></pre>
+  <p>The same shape gives a board its attempts, a runner its queue, a bot its notifications, a coordinator its delegation, a dashboard its spend. Each keeps its own state, on its own side, in its own ids. rosterd keeps the roster.</p>
+
+  <h2>Where it goes</h2>
+  <div class="cols">
+    <div><h3>More bricks</h3><p>The same binary on Windows. A node on a machine with a GPU, a node in a container on a server, a node on a laptop that comes and goes. Each is the same shape; the swarm is the sum.</p></div>
+    <div><h3>More connectors</h3><p>Every harness with an ACP adapter or a hook is a lane; every surface with an HTTP client is a client. The list of both grows without the contract changing.</p></div>
+    <div><h3>Bigger tools</h3><p>Placement, budgets, fleet policies, a control plane for agents the way Kubernetes is for containers: built on the contract, by whoever needs them, with rosterd unchanged underneath.</p></div>
+  </div>
 </section>
 
 <!-- ============================================================ architecture -->
@@ -599,7 +657,7 @@ gate_timeout_s = 3600</code></pre>
 
 <script>
 (function () {
-  var pages = { "": "home", architecture: "architecture", flows: "flows", uses: "uses", walkthrough: "walkthrough", api: "api" };
+  var pages = { "": "home", vision: "vision", architecture: "architecture", flows: "flows", uses: "uses", walkthrough: "walkthrough", api: "api" };
   var links = document.querySelectorAll("nav.top a.pg");
   function route() {
     var h = location.hash.replace(/^#\/?/, "");
