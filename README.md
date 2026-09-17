@@ -146,6 +146,13 @@ and the start goes ahead. Marks expire on their own (five minutes unless the err
 time), so a login or an install on the node needs no step here. rosterd never manages the
 credentials themselves.
 
+A headless session can move: `rosterd handoff KEY --to NODE` suspends it here, sends its launch
+facts and the harness's own transcript (`~/.claude/projects/…/<session_id>.jsonl`,
+`~/.codex/sessions/…/rollout-…-<session_id>.jsonl`) to the other node, which loads the same
+harness session under a new key, at the same cwd path, which must exist there. Only then does
+the record here end with reason `handed_off`; a refused import leaves it suspended here. Clients
+follow the `session_id`, not the key or the node. R15.5.
+
 ## CLI
 
 One binary, R14. `rosterd` alone prints help; everything but `daemon` talks to the local socket.
@@ -164,6 +171,7 @@ rosterd start --harness H --cwd DIR [--name L] [--policy auto|attention] [--mode
               [--effort E] [--env K=V ...]
 rosterd prompt KEY TEXT [--wait idle|needs_attention|ended] [--timeout SECONDS]
 rosterd cancel|stop|suspend|resume|open KEY
+rosterd handoff KEY --to NODE              move a session to another node, same session id
 rosterd name KEY LABEL | name KEY --clear
 rosterd allow KEY [--always] | deny KEY [--reason TEXT]
 rosterd spawn KEY --harness H --cwd DIR --task TASK [--name L]

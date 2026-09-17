@@ -48,7 +48,8 @@ for that harness with 409; check `swarm.nodes` (or `rosterd nodes --json`): each
 A record with `liveness: "suspended"` is a headless session whose holder was stopped on
 purpose (idle timeout or `rosterd suspend`): no process, `session_id` kept. A prompt resumes
 it under a new `session_key` with the same `session_id`. `liveness: "ended"`
-records stay in the snapshot for a while with `ended_reason`.
+records stay in the snapshot for a while with `ended_reason`; `handed_off` means the session
+went on under the same `session_id` on another node.
 
 ## Commands
 
@@ -75,6 +76,9 @@ rosterd start --harness H --cwd DIR [--name L] [--policy auto|attention] [--mode
               [--effort E] [--env K=V ...] --json
 rosterd prompt KEY TEXT [--wait idle|needs_attention|ended] [--timeout S] --json
 rosterd cancel KEY | stop KEY | suspend KEY | resume KEY --json
+rosterd handoff KEY --to NODE --json            move a suspended or live session to NODE
+                                                (name or id); `{from, to}`, same session_id,
+                                                new session_key on NODE; the cwd must exist there
 rosterd name KEY LABEL | name KEY --clear
 rosterd allow KEY [--always] | deny KEY [--reason TEXT]
 rosterd spawn KEY --harness H --cwd DIR [--name L] --json

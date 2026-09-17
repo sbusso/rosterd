@@ -1,6 +1,6 @@
 //! The runner, R5: an ACP client that starts holders, drives sessions, maps ACP traffic to
-//! claims, applies the permission policy, emits spans, resumes after a crash, R2.2, and
-//! suspends and resumes sessions, R15.
+//! claims, applies the permission policy, emits spans, resumes after a crash, R2.2,
+//! suspends and resumes sessions, R15, and packs a suspended one for another node, R15.5.
 //!
 //! `session` is the per-session machine (ACP in, effects out), `holder` the daemon's side of
 //! the holder binary in crates/holder, `acp` the framing and the pure R5 mappings. This file
@@ -14,15 +14,17 @@ pub(crate) mod e2e_test;
 pub mod health;
 mod holder;
 mod session;
+mod transcript;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, TimeZone, Utc};
-use rosterd_proto::{Activity, EndedReason, HarnessHealth, HarnessState, HolderHandle, HolderState, Lane, Liveness, PermissionPolicy, Record, Source};
+use base64::Engine;
+use rosterd_proto::{Activity, EndedReason, HarnessHealth, HarnessState, HolderHandle, HolderState, Lane, Liveness, PermissionPolicy, Record, SESSION_EXPORT_SCHEMA, SessionExport, Source, Transcript};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc};
@@ -46,6 +48,8 @@ const IDLE_TICK: Duration = Duration::from_secs(30);
 const TURN_SETTLE: Duration = Duration::from_millis(500);
 /// R15.3: the sliding window of `max_resumes_per_hour`.
 const RESUME_WINDOW: chrono::Duration = chrono::Duration::hours(1);
+/// R15.5: a transcript bigger than this does not travel.
+pub const TRANSCRIPT_LIMIT: usize = 32 << 20;
 
 /// A turn in flight: stop reason and recap, R5.5.
 type Turn = tokio::task::JoinHandle<Result<(Option<String>, Option<String>), RunnerError>>;
@@ -190,6 +194,13 @@ pub enum RunnerError {
     /// R15.3: over `max_resumes_per_hour`; the session stays suspended.
     #[error("session {session_key} was resumed too often; retry in {retry_after_s} s")]
     ResumeLimit { session_key: String, retry_after_s: u64 },
+    /// R15.5: the import cannot go ahead as sent: no such cwd here, or a transcript already
+    /// here that differs.
+    #[error("{0}")]
+    Conflict(String),
+    /// R15.5: the transcript is over `TRANSCRIPT_LIMIT`.
+    #[error("{0}")]
+    TooLarge(String),
     #[error("{0}")]
     Acp(String),
     #[error("the agent wants a login on its node first")]
@@ -229,11 +240,11 @@ impl Meta {
         serde_json::to_value(&state.meta).ok().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
     }
 
-    /// The launch request that brings this holder's session back, R2.2 and R15.3.
-    fn relaunch(self, state: &HolderState) -> StartSession {
+    /// The launch request that brings this holder's session back, R2.2, R15.3 and R15.5.
+    fn relaunch(self, harness: &str, cwd: &str) -> StartSession {
         StartSession {
-            harness: state.harness.clone(),
-            cwd: Some(state.cwd.clone()),
+            harness: harness.into(),
+            cwd: Some(cwd.into()),
             name: self.name,
             parent_session_key: self.parent_session_key,
             model: self.model,
@@ -495,7 +506,7 @@ impl Runner {
         };
         let session_id = parked.state.session_id.clone().ok_or_else(|| RunnerError::Acp("suspended without a session id".into()))?;
         self.count_resume(session_key, &parked.state)?;
-        let req = Meta::of(&parked.state).relaunch(&parked.state);
+        let req = Meta::of(&parked.state).relaunch(&parked.state.harness, &parked.state.cwd);
         let record = self.launch(req, Some(session_id), Some(session_key)).await?;
         tracing::info!(old = session_key, key = %record.session_key, "session resumed, R15.3");
         Ok(record)
@@ -514,6 +525,70 @@ impl Runner {
         }
         times.push(now);
         Ok(())
+    }
+
+    /// R15.5 step one: suspends the session if it runs, then packs what another node needs to
+    /// load it: the holder's launch facts and the harness's own transcript. The record stays
+    /// suspended here until `handed_off`.
+    pub async fn export(self: &Arc<Self>, session_key: &str) -> Result<SessionExport, RunnerError> {
+        let record = self.suspend(session_key).await?;
+        let parked = self.parked.lock().unwrap().get(session_key).cloned().ok_or_else(|| RunnerError::NotFound(session_key.into()))?;
+        let state = parked.state;
+        let session_id = state.session_id.clone().ok_or_else(|| RunnerError::Acp("suspended without a session id".into()))?;
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let transcript = match transcript::locate(&state.harness, &state.cwd, &session_id, &home) {
+            Some(rel) => {
+                let bytes = std::fs::read(home.join(&rel))?;
+                if bytes.len() > TRANSCRIPT_LIMIT {
+                    return Err(RunnerError::TooLarge(format!("transcript {} is {} bytes; the limit is {TRANSCRIPT_LIMIT}", rel.display(), bytes.len())));
+                }
+                Some(Transcript { path_relative_to_home: rel.to_string_lossy().into_owned(), content_base64: base64::engine::general_purpose::STANDARD.encode(bytes) })
+            }
+            None => None,
+        };
+        Ok(SessionExport {
+            schema: SESSION_EXPORT_SCHEMA.into(),
+            harness: state.harness.clone(),
+            cwd: state.cwd.clone(),
+            session_id,
+            meta: serde_json::to_value(&state.meta).expect("meta"),
+            name: record.name.or(Meta::of(&state).name),
+            transcript,
+        })
+    }
+
+    /// R15.5 step two, once the other node has the session: the record ends with reason
+    /// handed_off and the state file goes, so it cannot be resumed here too.
+    pub fn handed_off(&self, session_key: &str) -> Result<Record, RunnerError> {
+        if let Some(parked) = self.parked.lock().unwrap().remove(session_key) {
+            parked.paths.clean();
+        }
+        Ok(self.roster.end(session_key, EndedReason::HandedOff, Utc::now())?)
+    }
+
+    /// R15.5 on the receiving node: the cwd must exist here; the transcript is written under
+    /// this home at the same relative path (one already there must match, never overwritten);
+    /// then the session is loaded in a new holder like a resume, under a new key here.
+    pub async fn import(self: &Arc<Self>, export: SessionExport) -> Result<Record, RunnerError> {
+        if export.schema != SESSION_EXPORT_SCHEMA {
+            return Err(RunnerError::Conflict(format!("schema {} is not {SESSION_EXPORT_SCHEMA}", export.schema)));
+        }
+        if !Path::new(&export.cwd).is_dir() {
+            return Err(RunnerError::Conflict(format!("cwd {} does not exist on this node", export.cwd)));
+        }
+        if let Some(transcript) = &export.transcript {
+            let bytes = base64::engine::general_purpose::STANDARD.decode(&transcript.content_base64).map_err(|e| RunnerError::Conflict(format!("transcript: {e}")))?;
+            if bytes.len() > TRANSCRIPT_LIMIT {
+                return Err(RunnerError::TooLarge(format!("transcript is {} bytes; the limit is {TRANSCRIPT_LIMIT}", bytes.len())));
+            }
+            transcript::place(&dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")), &transcript.path_relative_to_home, &bytes)?;
+        }
+        let meta: Meta = serde_json::from_value(export.meta).unwrap_or_default();
+        let mut req = meta.relaunch(&export.harness, &export.cwd);
+        req.name = export.name.or(req.name);
+        let record = self.launch(req, Some(export.session_id.clone()), None).await?;
+        tracing::info!(key = %record.session_key, session_id = export.session_id, "session imported, R15.5");
+        Ok(record)
     }
 
     pub async fn patch(self: &Arc<Self>, session_key: &str, patch: PatchSession) -> Result<Record, RunnerError> {
@@ -978,7 +1053,7 @@ impl Runner {
             tracing::warn!(session_id, "second crash within {} s; not resumed", RESUME_COOLDOWN.num_seconds());
             return;
         }
-        let req = Meta::of(&state).relaunch(&state);
+        let req = Meta::of(&state).relaunch(&state.harness, &state.cwd);
         let runner = self.clone();
         tokio::spawn(async move {
             match runner.launch(req, Some(session_id.clone()), None).await {
@@ -1094,7 +1169,7 @@ mod tests {
         assert_eq!(back.env["A"], "1");
         assert_eq!(back.idle_timeout_s, Some(60));
         assert_eq!(Meta::of(&HolderState { meta: HashMap::new(), ..state.clone() }).name, None);
-        let req = back.clone().relaunch(&state);
+        let req = back.clone().relaunch(&state.harness, &state.cwd);
         assert_eq!(req.harness, "claude");
         assert_eq!(req.effort.as_deref(), Some("high"));
         assert_eq!(req.idle_timeout_s, Some(60));

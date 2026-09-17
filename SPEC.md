@@ -191,6 +191,7 @@ POST /claim. Activity claim for a session_key or pid plus start_ticks.
 POST /name. Set or clear a display name.
 POST /send. `{to, prompt, wait_until?, timeout_ms?}`: prompt a session by key, name or pid anywhere in the swarm and get its answer, R5.5. Local router only.
 POST /sessions, GET /sessions/{key}, PATCH, DELETE, /prompt, /cancel, /stream as in R5.
+POST /sessions/{key}/suspend, /resume as in R15; POST /sessions/{key}/export, POST /sessions/import, POST /sessions/{key}/handoff as in R15.5.
 GET /swarm/snapshot. Union of this node's roster and every peer's last snapshot, each tagged with node and peer_age_ms.
 GET /swarm/events. SSE, complete swarm snapshot on any change anywhere.
 GET /swarm/changes. SSE, the swarm snapshot once as event `snapshot`, then one event per change between consecutive frames, in the order records appear: `session_started`, `session_ended`, `session_suspended`, `attention` (an accepted claim landed on needs_attention, sent again for every new claim while it waits, `record.activity_event` names permission, question or login), `attention_cleared`, `activity`, `renamed`, each carrying `at` and the swarm record; `node` (a node joined, changed state, or the health of its harnesses changed, R7.7) and `node_left` carrying the node. Pure function of two frames, so a client that missed events resyncs from the next `snapshot`.
@@ -200,6 +201,8 @@ GET /swarm/usage?since=. The same for every reachable node, asked over the mesh 
 Any /sessions path under /swarm/{node_id}/ is proxied to that node.
 
 The usage roll-up reads the harnesses' own transcripts on each node (Claude Code under ~/.claude/projects, Codex under ~/.codex/sessions), and only the usage fields of each entry: model, token counts, timestamp. Read only, never the text of a turn, which keeps the R0 rule that rosterd shows no transcript. Nothing is collected or stored; a node computes its own roll-up on request and a peer gets the result over the mesh, nothing is sent elsewhere.
+
+Error bodies are `{error}`: 400 validation, 404 not found, 409 conflict or suspended, 413 transcript over the limit, 429 resume limit with `retry_after_s`, 502 a peer refused or was unreachable, 503 no swarm.
 
 MCP server on the same socket, tool names.
 
@@ -244,7 +247,7 @@ On peer loss the last snapshot is kept and served with peer_age_ms growing and p
 
 ### R7.5 Cross node actions
 
-Any client can send an action for a session to any node. The receiving node looks up the owning node_id from the swarm snapshot and proxies the request over the mesh with its own signature. The owner executes it and the response travels back. Actions are prompt, cancel, permission answer, question answer, name, and spawn. Nothing about the record travels this way.
+Any client can send an action for a session to any node. The receiving node looks up the owning node_id from the swarm snapshot and proxies the request over the mesh with its own signature. The owner executes it and the response travels back. Actions are prompt, cancel, permission answer, question answer, name, spawn, suspend, resume, export and handoff. Nothing about the record travels this way; a handoff (R15.5) carries the session's launch facts and transcript, never its record.
 
 ### R7.6 Trust
 
@@ -415,6 +418,7 @@ rosterd cancel KEY
 rosterd stop KEY
 rosterd suspend KEY
 rosterd resume KEY
+rosterd handoff KEY --to NODE [--json]
 rosterd name KEY LABEL
 rosterd name KEY --clear
 rosterd open KEY
@@ -427,7 +431,7 @@ rosterd spawn KEY --harness H --cwd DIR [--name LABEL] [--json]
 
 `prompt` sends one turn. With `--wait` it returns when the session reaches the named activity or ended, printing the final activity and the recap if any. Default timeout 600 s. Timeout exits 1 with the current activity.
 
-`cancel` sends ACP cancel and leaves the session live. `stop` ends the holder. `suspend` and `resume` are R15.
+`cancel` sends ACP cancel and leaves the session live. `stop` ends the holder. `suspend` and `resume` are R15. `handoff` is R15.5: NODE by name or id, prints `<name> → <node> <new session_key>`.
 
 `open` resolves the runtime handle and calls the opener for tmux and herdr, or prints the /ui URL for headless sessions and opens it with the platform opener when a display is present.
 
@@ -480,7 +484,7 @@ live. Holder running, harness process alive. Activity is one of the four words.
 
 suspended. Holder stopped on purpose, session_id kept. No process exists. The roster keeps the record with lane headless, state suspended, and everything needed to resume.
 
-ended. Holder stopped and the session will not come back under this key. Reason exit, crash, reboot, killed, or expired.
+ended. Holder stopped and the session will not come back under this key. Reason exit, crash, reboot, killed, expired, or handed_off (R15.5).
 
 Interactive sessions are never suspended by rosterd. They end when their process ends.
 
@@ -514,6 +518,25 @@ The runner never resumes on a timer. There is no wake up schedule. This keeps th
 ### R15.4 Reboot and crash
 
 R2.2 stays as written with one change. On reboot, sessions found in holder state files are restored as suspended, not resumed. They come back when something addresses them. Crash resume within five minutes stays as written because a crash mid turn is not idleness.
+
+### R15.5 Handoff
+
+A suspended session can move to another node of the swarm and continue there with the same harness session id. The repository must exist at the same path on the target: the caller's responsibility, the target refuses with 409 when the cwd is not there.
+
+`POST /sessions/{key}/handoff {"node": "<name or id>"}` on the owning node (proxied like any other action when KEY lives elsewhere), in this order.
+
+1. Suspend. A live session is suspended first (R15.2 by hand); a suspended one is used as is.
+2. Export. The node builds a `SessionExport`: `schema` `rosterd.session_export.v1`, `harness`, `cwd`, `session_id`, `meta` (the holder's launch facts verbatim: name, policy, model, env, effort, idle timeout), `name`, and `transcript`. The record stays suspended here.
+3. Import. The export goes to the target as `POST /sessions/import` over the mesh. The target checks the cwd, writes the transcript under its own home at the same relative path (a file already there must be byte for byte the same; a differing one is never overwritten, 409; a path that is not plainly relative is refused, 409), then starts a new holder and loads the session as a resume does (R15.3), under a new key on that node. 201 with the new record.
+4. End here. Only once the import answered 2xx does the origin end the record with reason `handed_off` and delete its state file, so the session cannot be resumed twice. The answer is `{from, to}`: the old record, ended, and the new one, live on the target.
+
+A failed import (unreachable target, 409, anything but 2xx) leaves the session suspended on the origin and answers 502 with the target's reason. Nothing was started elsewhere; `resume` still works here.
+
+The transcript rule. Resume is ACP `session/load`, which reads the harness's own local transcript, so the export carries it and the import puts it where the harness will look. Claude Code: `~/.claude/projects/<cwd with every / and . replaced by ->/<session_id>.jsonl`. Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-<stamp>-<session_id>.jsonl`, found by its suffix. pi and any other harness: `transcript` is null and the import only works when the harness needs nothing local. A transcript over 32 MiB does not travel: 413. rosterd never reads what is in the file; it moves it.
+
+`POST /sessions/{key}/export` alone does steps 1, 2 and 4 at once: the caller carries the export away and the record ends `handed_off` immediately. `POST /sessions/import` alone is step 3 and works on the local socket, loopback and the peer listener alike.
+
+The new record has a different `node` and `session_key` and the same `session_id`. Clients follow the harness session id across a handoff, as they do across a resume.
 
 ## R16. pi as a harness
 

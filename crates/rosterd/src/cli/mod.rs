@@ -117,6 +117,13 @@ pub enum Command {
     Suspend { key: String },
     /// R15: bring a suspended session back under a new key.
     Resume { key: String },
+    /// R15.5: move the session to another node; same session id, same cwd path there.
+    Handoff {
+        key: String,
+        /// The target node, by name or id.
+        #[arg(long)]
+        to: String,
+    },
     /// Set the display name, or clear it.
     Name {
         key: String,

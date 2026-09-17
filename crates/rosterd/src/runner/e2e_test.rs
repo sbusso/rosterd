@@ -171,7 +171,7 @@ async fn a_session_through_the_real_holder_survives_a_daemon_restart() {
 
 // ---- R15 through the runner ---------------------------------------------------------------
 
-/// The holder and the fake adapter, or None when neither can be had.
+/// The holder and the fake adapter, or None when neither can be had. The api tests borrow it.
 pub(crate) fn binaries() -> Option<(PathBuf, PathBuf)> {
     let bin = holder_bin()?;
     let fake = target_debug().join("examples").join("fake_acp");
@@ -189,10 +189,9 @@ fn short_dir(tag: &str) -> PathBuf {
 
 /// A runner over a fresh roster and mesh in `dir`; `holders` is the holder directory,
 /// shared between "daemon" instances in the reboot test.
-fn node(dir: &Path, holders: &Path, bin: &Path, fake: &Path, tweak: impl FnOnce(&mut Config)) -> Arc<Runner> {
-    std::fs::create_dir_all(dir).unwrap();
-    // The runner reads the loopback token under the config directory. Nothing else reads
-    // these in tests.
+/// The runner reads the loopback token under the config directory. Nothing else reads these
+/// in tests. Also the fake harness config a runner test starts from.
+pub(crate) fn fake_config(holders: &Path, bin: &Path, fake: &Path) -> Config {
     static ENV: std::sync::Once = std::sync::Once::new();
     ENV.call_once(|| {
         let scratch = std::env::temp_dir().join(format!("rosterd-runner-env-{}", std::process::id()));
@@ -213,7 +212,13 @@ fn node(dir: &Path, holders: &Path, bin: &Path, fake: &Path, tweak: impl FnOnce(
     // The same fake refusing session/new for want of a login.
     config.harness.insert("fakeauth".into(), HarnessConfig { adapter: fake.to_string_lossy().into_owned(), args: vec!["--auth".into()], ..Default::default() });
     // An adapter that cannot be spawned.
-    config.harness.insert("missing".into(), HarnessConfig { adapter: dir.join("no-such-adapter").to_string_lossy().into_owned(), ..Default::default() });
+    config.harness.insert("missing".into(), HarnessConfig { adapter: holders.join("no-such-adapter").to_string_lossy().into_owned(), ..Default::default() });
+    config
+}
+
+fn node(dir: &Path, holders: &Path, bin: &Path, fake: &Path, tweak: impl FnOnce(&mut Config)) -> Arc<Runner> {
+    std::fs::create_dir_all(dir).unwrap();
+    let mut config = fake_config(holders, bin, fake);
     tweak(&mut config);
     let config = Arc::new(config);
     let roster = Roster::new("test", "test-node", Capabilities::default());

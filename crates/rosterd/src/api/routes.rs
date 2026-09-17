@@ -1,7 +1,7 @@
-//! The JSON routes of R6, the session actions of R5 and R15, the gate of R16.2, and the cross
-//! node proxy of R7.5. Success bodies are the plain object; errors are `{error}` with 400
-//! validation, 404 not found, 409 conflict or suspended, 429 resume limit (`retry_after_s`),
-//! 502 proxy failure, 503 no swarm.
+//! The JSON routes of R6, the session actions of R5 and R15, the handoff of R15.5, the gate of
+//! R16.2, and the cross node proxy of R7.5. Success bodies are the plain object; errors are
+//! `{error}` with 400 validation, 404 not found, 409 conflict or suspended, 413 transcript too
+//! large, 429 resume limit (`retry_after_s`), 502 proxy failure, 503 no swarm.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -18,7 +18,7 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
-use rosterd_proto::{Activity, HarnessState, HerdrHandle, Lane, Liveness, NodeUsage, PeerState, PermissionPolicy, Record, Source, SwarmUsage, TmuxHandle};
+use rosterd_proto::{Activity, HarnessState, HerdrHandle, Lane, Liveness, NodeUsage, PeerState, PermissionPolicy, Record, SessionExport, Source, SwarmUsage, TmuxHandle};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -43,6 +43,8 @@ const BODY_LIMIT: usize = 4 << 20;
 const USAGE_FANOUT_TIMEOUT: Duration = Duration::from_secs(5);
 /// GET /usage without `?since=`.
 const USAGE_DEFAULT_SINCE: &str = "7d";
+/// A session export, R15.5: the transcript limit in base64 plus the rest of the body.
+pub const IMPORT_BODY_LIMIT: usize = crate::runner::TRANSCRIPT_LIMIT / 3 * 4 + BODY_LIMIT;
 
 #[derive(Debug)]
 pub struct ApiError {
@@ -86,7 +88,8 @@ impl From<RunnerError> for ApiError {
     fn from(error: RunnerError) -> Self {
         let status = match error {
             RunnerError::NotFound(_) | RunnerError::NoPending(_) => StatusCode::NOT_FOUND,
-            RunnerError::Suspended(_) => StatusCode::CONFLICT,
+            RunnerError::Suspended(_) | RunnerError::Conflict(_) => StatusCode::CONFLICT,
+            RunnerError::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             RunnerError::UnknownHarness(_) => StatusCode::BAD_REQUEST,
             // R15.3: over max_resumes_per_hour the session stays suspended until the window passes.
             RunnerError::ResumeLimit { retry_after_s, .. } => {
@@ -134,12 +137,26 @@ impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for Body<T> {
     type Rejection = ApiError;
 
     async fn from_request(request: Request, _state: &S) -> Result<Self, ApiError> {
-        let bytes = axum::body::to_bytes(request.into_body(), BODY_LIMIT)
-            .await
-            .map_err(|error| ApiError::bad_request(error.to_string()))?;
-        let bytes = if bytes.is_empty() { b"{}".as_slice() } else { &bytes };
-        serde_json::from_slice(bytes).map(Body).map_err(|error| ApiError::bad_request(format!("body: {error}")))
+        read_body(request, BODY_LIMIT, StatusCode::BAD_REQUEST).await.map(Body)
     }
+}
+
+/// A session export is the one body over `BODY_LIMIT`, R15.5.
+pub struct ImportBody(pub Value);
+
+impl<S: Send + Sync> FromRequest<S> for ImportBody {
+    type Rejection = ApiError;
+
+    async fn from_request(request: Request, _state: &S) -> Result<Self, ApiError> {
+        read_body(request, IMPORT_BODY_LIMIT, StatusCode::PAYLOAD_TOO_LARGE).await.map(ImportBody)
+    }
+}
+
+/// `over` answers a body the limit cut short.
+async fn read_body<T: DeserializeOwned>(request: Request, limit: usize, over: StatusCode) -> Result<T, ApiError> {
+    let bytes = axum::body::to_bytes(request.into_body(), limit).await.map_err(|error| ApiError::new(over, error.to_string()))?;
+    let bytes = if bytes.is_empty() { b"{}".as_slice() } else { &bytes };
+    serde_json::from_slice(bytes).map_err(|error| ApiError::bad_request(format!("body: {error}")))
 }
 
 fn parse<T: DeserializeOwned>(value: &Value) -> Result<T, ApiError> {
@@ -204,6 +221,9 @@ pub fn sessions() -> Router<Arc<Node>> {
         .route("/sessions/{key}/suspend", post(suspend))
         .route("/sessions/{key}/resume", post(resume))
         .route("/sessions/{key}/spawn", post(spawn))
+        .route("/sessions/{key}/export", post(export))
+        .route("/sessions/{key}/handoff", post(handoff))
+        .route("/sessions/import", post(import))
 }
 
 async fn snapshot(State(node): State<Arc<Node>>) -> Json<Arc<rosterd_proto::Snapshot>> {
@@ -685,6 +705,57 @@ async fn resume(captures: Captures) -> Result<Response, ApiError> {
         return captures.proxy(node_id, Method::POST, captures.path("/resume"), None).await;
     }
     ok(captures.node.runner.resume(&captures.key).await?)
+}
+
+/// R15.5: the session packed for another node; here it ends with reason handed_off at once,
+/// since the caller carries it away.
+async fn export(captures: Captures) -> Result<Response, ApiError> {
+    if let Some(node_id) = captures.remote()? {
+        return captures.proxy(node_id, Method::POST, captures.path("/export"), None).await;
+    }
+    let export = captures.node.runner.export(&captures.key).await?;
+    captures.node.runner.handed_off(&captures.key)?;
+    ok(export)
+}
+
+/// R15.5 on the receiving node: 409 when the cwd is not here or a differing transcript is;
+/// 201 with the new record, same session_id, this node.
+async fn import(captures: Captures, ImportBody(body): ImportBody) -> Result<Response, ApiError> {
+    if let Some(node_id) = captures.remote()? {
+        return captures.proxy(node_id, Method::POST, "/sessions/import".into(), Some(body)).await;
+    }
+    let export: SessionExport = parse(&body)?;
+    let record = captures.node.runner.import(export).await?;
+    Ok((StatusCode::CREATED, Json(record)).into_response())
+}
+
+#[derive(serde::Deserialize)]
+struct HandoffBody {
+    /// A node name or id.
+    node: String,
+}
+
+/// R15.5: export here, import there, then end here with reason handed_off. A failed import
+/// leaves the session suspended here and answers 502 with the target's reason. The answer is
+/// `{from, to}`: the record here, ended, and the record there, live under a new key.
+async fn handoff(captures: Captures, Body(body): Body<Value>) -> Result<Response, ApiError> {
+    if let Some(node_id) = captures.remote()? {
+        return captures.proxy(node_id, Method::POST, captures.path("/handoff"), Some(body)).await;
+    }
+    let HandoffBody { node: target } = parse(&body)?;
+    let node = &captures.node;
+    let peer = node.mesh.nodes().into_iter().find(|n| n.node_id == target || n.name == target).ok_or_else(|| ApiError::not_found(format!("no node {target}")))?;
+    if peer.node_id == node.identity.node_id {
+        return Err(ApiError::bad_request(format!("session {} is on {} already", captures.key, peer.name)));
+    }
+    let export = node.runner.export(&captures.key).await?;
+    let (status, to) = node.mesh.proxy(&peer.node_id, Method::POST, "/sessions/import", Some(serde_json::to_value(&export)?)).await?;
+    if !status.is_success() {
+        let reason = to["error"].as_str().unwrap_or("no reason given");
+        return Err(ApiError::new(StatusCode::BAD_GATEWAY, format!("{} refused the import ({status}): {reason}; the session stays suspended here", peer.name)));
+    }
+    let from = node.runner.handed_off(&captures.key)?;
+    ok(json!({ "from": from, "to": to }))
 }
 
 #[derive(serde::Deserialize, Default)]

@@ -68,6 +68,20 @@ pub async fn run(client: &Client, config: &Config, command: Command, json: bool)
             println!("resumed {key} as {}", record.session_key);
             Ok(())
         }
+        Command::Handoff { key, to } => {
+            let key = session_key(client, &key).await?;
+            let nodes: Vec<rosterd_proto::NodeHealth> = parse(&client.call(Method::GET, "/swarm/nodes", None).await?)?;
+            let node = nodes.into_iter().find(|n| n.node_id == to || n.name == to).ok_or_else(|| Exit::user(format!("no node {to}; see rosterd nodes")))?;
+            // A suspend here, then a holder start and a session load there.
+            let body = client.call_with(Method::POST, &format!("/sessions/{key}/handoff"), Some(json!({ "node": node.node_id })), Duration::from_secs(120)).await?;
+            if json {
+                return emit(&body);
+            }
+            let moved: Value = parse(&body)?;
+            let from: Record = serde_json::from_value(moved["from"].clone())?;
+            println!("{} → {} {}", display_name(&from), node.name, moved["to"]["session_key"].as_str().unwrap_or_default());
+            Ok(())
+        }
         Command::Name { key, label, clear } => {
             let done = if clear { "cleared the name of" } else { "named" };
             action(client, &key, Method::POST, "/name", Some(json!({ "name": label })), json, done).await
