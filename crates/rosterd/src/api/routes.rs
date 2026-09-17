@@ -1003,7 +1003,14 @@ async fn open_session(captures: Captures) -> Result<Response, ApiError> {
             let swarm = captures.node.mesh.swarm_snapshot();
             let record = swarm.records.into_iter().find(|r| r.record.session_key == captures.key).ok_or(missing)?.record;
             // ponytail: the address is the ssh host; an ssh alias or user needs the user's ssh config.
-            let host = swarm.nodes.iter().find(|n| n.node_id == record.node_id).and_then(|n| n.address.clone()).map(|a| a.rsplit_once(':').map(|(h, _)| h.to_string()).unwrap_or(a));
+            let host = swarm.nodes.iter().find(|n| n.node_id == record.node_id).and_then(|n| {
+                let address = n.address.clone()?;
+                let address = address.rsplit_once(':').map(|(h, _)| h.to_string()).unwrap_or(address);
+                Some(match &n.capabilities.user {
+                    Some(user) => format!("{user}@{address}"),
+                    None => address,
+                })
+            });
             (record, host)
         }
     };

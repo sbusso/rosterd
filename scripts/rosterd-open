@@ -42,10 +42,10 @@ if [ "${self_test-0}" = 1 ]; then
 tmux select-window -t agents:2
 tmux select-pane -t %7'
   check "tmux outside tmux, local" "ROSTERD_MACHINE=gibson TMUX=" "$tmux" 'terminal tmux attach -t agents \; select-window -t agents:2 \; select-pane -t %7'
-  # Through ssh the remote shell strips one level, so tmux's ; separators travel as \\;.
-  check "tmux remote" "ROSTERD_MACHINE=wintermute TMUX=" "$tmux" 'terminal ssh gibson -t tmux attach -t agents \\; select-window -t agents:2 \\; select-pane -t %7'
+  # Through ssh the tmux command is one quoted argument; the remote shell strips \; to ;.
+  check "tmux remote" "ROSTERD_MACHINE=wintermute TMUX=" "$tmux" "terminal ssh gibson -t 'tmux attach -t agents \\; select-window -t agents:2 \\; select-pane -t %7'"
   check "tmux remote by address" "ROSTERD_MACHINE=wintermute TMUX=" '{"kind":"tmux","machine":"gibson","host":"100.64.0.7","tmux":{"session":"agents","window_index":2,"pane_id":"%7"}}' \
-    'terminal ssh 100.64.0.7 -t tmux attach -t agents'
+    "terminal ssh 100.64.0.7 -t 'tmux attach -t agents"
   check "tmux camelCase" "ROSTERD_MACHINE=gibson TMUX=/tmp/x" '{"kind":"tmux","machine":"gibson","tmux":{"session":"a","windowIndex":1,"paneId":"%3"}}' 'tmux select-pane -t %3'
   check "headless" "ROSTERD_LOOPBACK_PORT=8790 ROSTERD_CONFIG_DIR=/nonexistent" '{"kind":"headless","machine":"gibson","session_key":"abc:42:7"}' \
     'browser http://127.0.0.1:8790/ui/sessions/abc:42:7'
@@ -109,7 +109,8 @@ case "$(field .kind)" in
     elif [ "$local" = 1 ]; then
       terminal "tmux attach -t $session \\; select-window -t $session:$window \\; select-pane -t $pane"
     else
-      terminal "ssh $host -t tmux attach -t $session \\\\; select-window -t $session:$window \\\\; select-pane -t $pane"
+      # One quoted argument to ssh: the remote shell turns \; into tmux's ; separator.
+      terminal "ssh $host -t 'tmux attach -t $session \\; select-window -t $session:$window \\; select-pane -t $pane'"
     fi
     ;;
   headless)

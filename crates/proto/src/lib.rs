@@ -329,6 +329,10 @@ pub struct Capabilities {
     /// off the wire so a node from before R7.7 verifies this node's signed hello (R7.2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub health: Vec<HarnessHealth>,
+    /// The login the daemon runs as: the ssh user for a pane on this node. Absent stays off
+    /// the wire for the same reason as `health`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
 }
 
 /// The complete roster of one node. Every emission is the whole table, never a diff.

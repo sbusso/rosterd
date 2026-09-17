@@ -97,6 +97,7 @@ async fn serve(config_path: PathBuf) -> Result<()> {
     tracing::info!(node = %config.node.name, node_id = %identity.node_id, version = VERSION, "rosterd starting");
 
     let capabilities = Capabilities {
+        user: std::env::var("USER").ok().filter(|u| !u.is_empty()),
         harnesses: config.harness.keys().cloned().collect(),
         files_enabled: config.sources.files,
         ..Capabilities::default()
