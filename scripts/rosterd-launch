@@ -3,22 +3,27 @@
 # server in its environment, registered with the local daemon as source launcher before the
 # harness runs.
 #
-#   rosterd-launch [--name <n>] [--harness claude|codex] [--socket <path>] [--dry-run] -- <harness command...>
+#   rosterd-launch [--name <n>] [--harness claude|codex] [--tmux] [--socket <path>] [--dry-run] -- <harness command...>
 #
 #   rosterd-launch --name writer -- claude --model opus
 #   rosterd-launch --harness codex -- codex
+#   rosterd-launch --tmux --name writer -- claude      in a new tmux session, attachable from any node
 #
 # Exports ROSTERD_SOCKET and ROSTERD_HARNESS, registers {source: launcher, pid: $$, ...} with
 # the daemon, then execs the harness: same pid, so the registration names the process the
 # scanner will find, and signals and the tty stay the harness's own. tmux handles are the
-# scanner's, not the launcher's. Without a daemon it still starts the harness (fail open, R4).
+# scanner's, not the launcher's: --tmux outside tmux re-runs this script in a new tmux session
+# named after --name (else the harness), so the pane the scanner finds is the session's from
+# birth. Without a daemon it still starts the harness (fail open, R4).
 set -u
 
-name='' harness='' socket="${ROSTERD_SOCKET-}" dry=0
+argv=("$@")
+name='' harness='' socket="${ROSTERD_SOCKET-}" dry=0 in_tmux=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --name) name=$2; shift 2 ;;
     --harness) harness=$2; shift 2 ;;
+    --tmux) in_tmux=1; shift ;;
     --socket) socket=$2; shift 2 ;;
     --dry-run) dry=1; shift ;;
     --self-test) self_test=1; shift ;;
@@ -37,6 +42,10 @@ if [ "${self_test-0}" = 1 ]; then
   done
   out=$("$0" --dry-run --harness codex --socket /tmp/rosterd-test.sock --)
   case "$out" in *'exec codex'*) ;; *) echo "FAIL: bare --harness codex should exec codex: $out"; fails=$((fails + 1)) ;; esac
+  out=$(TMUX= "$0" --dry-run --tmux --name writer --socket /tmp/rosterd-test.sock -- claude)
+  case "$out" in *"exec tmux new-session -s writer -c $PWD -- $0 --socket /tmp/rosterd-test.sock --dry-run --tmux --name writer --socket /tmp/rosterd-test.sock -- claude"*) ;; *) echo "FAIL: --tmux should re-run in tmux: $out"; fails=$((fails + 1)) ;; esac
+  out=$(TMUX=/tmp/x "$0" --dry-run --tmux --name writer -- claude)
+  case "$out" in *'exec claude'*) ;; *) echo "FAIL: --tmux inside tmux should exec the harness: $out"; fails=$((fails + 1)) ;; esac
   [ "$fails" = 0 ] && echo "rosterd-launch self-test: ok" || { echo "rosterd-launch self-test: $fails failed"; exit 1; }
   exit 0
 fi
@@ -44,15 +53,28 @@ cmd=("$@")
 [ ${#cmd[@]} -gt 0 ] || cmd=("${harness:-claude}")
 [ -n "$harness" ] || harness=$(basename "${cmd[0]}")
 
-# The daemon socket, R6: the override, the platform default, then /tmp for a daemon launchd or
-# started without the shell's TMPDIR, then /run/rosterd for the system unit. First one that exists wins.
+# The daemon socket, R6, as rosterd-hook resolves it: the override, the runtime dir, the shell's
+# TMPDIR, the Darwin per-user temp dir (a daemon launchd started has no TMPDIR), /tmp, then
+# /run/rosterd for the system unit. First one that exists wins.
 if [ -z "$socket" ]; then
   tmp=${TMPDIR:-/tmp}
-  for c in "${XDG_RUNTIME_DIR-}/rosterd.sock" "${tmp%/}/rosterd.sock" /tmp/rosterd.sock /run/rosterd/rosterd.sock; do
+  darwin=$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)
+  for c in "${XDG_RUNTIME_DIR-}/rosterd.sock" "/run/user/$(id -u)/rosterd.sock" "${tmp%/}/rosterd.sock" "${darwin:+${darwin%/}/rosterd.sock}" /tmp/rosterd.sock /run/rosterd/rosterd.sock; do
     case "$c" in /*) [ -S "$c" ] && { socket=$c; break; } ;; esac
   done
   [ -n "$socket" ] || socket=${tmp%/}/rosterd.sock
 fi
+
+# Outside tmux with --tmux: the same command again inside a new session, this pid becoming the
+# harness's there. The socket goes along by argument, the tmux server's environment is not this
+# shell's. The name is unique per server, tmux refuses a duplicate.
+if [ "$in_tmux" = 1 ] && [ -z "${TMUX-}" ]; then
+  sess=${name:-$harness}; sess=${sess//[^A-Za-z0-9_-]/_}
+  [ "$dry" = 1 ] || while tmux has-session -t "=$sess" 2>/dev/null; do sess="$sess-$RANDOM"; done
+  [ "$dry" = 1 ] && { echo "exec tmux new-session -s $sess -c $PWD -- $0 --socket $socket ${argv[*]}"; exit 0; }
+  exec tmux new-session -s "$sess" -c "$PWD" -- "$0" --socket "$socket" "${argv[@]}"
+fi
+
 # The config directory as crates/rosterd/src/config.rs resolves it (dirs::config_dir).
 config_dir=${ROSTERD_CONFIG_DIR-}
 if [ -z "$config_dir" ]; then

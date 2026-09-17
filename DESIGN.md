@@ -207,14 +207,15 @@ The gap after the herdr removal: from the phone, open does nothing for an intera
 because open means `ssh node -t tmux attach` and a phone has no ssh. The fix is to carry the
 terminal over the mesh rosterd already has, still without rendering anything.
 
-1. Interactive sessions start in tmux. `rosterd start --interactive` creates the tmux session,
-   registers the handle at birth, and execs the harness inside it. A human-started session keeps
-   being found by the scanner as before.
+1. Interactive sessions start in tmux. `rosterd-launch --tmux` re-runs itself in a new tmux
+   session and execs the harness inside it; the scanner attaches the handle on its next pass,
+   so the record has it from birth for every practical purpose. A human-started session keeps
+   being found by the scanner as before. Shipped in 0.1.19.
 2. Attach over the mesh. `GET /sessions/{key}/attach` upgrades to a websocket; the owning node
    runs `tmux attach -t <target>` in a PTY and relays bytes both ways, with resize; any node
    proxies it like every other session route. `rosterd attach KEY` is the raw-mode client; the
    page renders it with xterm.js; the phone renders it with GhosttyKit. rosterd relays bytes and
-   never interprets them (principle 3 holds: relaying is not reading).
+   never interprets them (principle 3 holds: relaying is not reading). Shipped in 0.1.18.
 3. Fronts stay optional. cmux or any terminal through `ROSTERD_TERMINAL_CMD` for the desktop;
    remux for the phone against the same tmux until the app renders itself.
 
@@ -224,8 +225,8 @@ Not built: a multiplexer, a screen model, a scrollback store, a VT parser in the
 
 In order, each shippable alone.
 
-1. `rosterd start --interactive` with the handle at birth (section 7.1).
-2. `/sessions/{key}/attach`, `rosterd attach`, xterm.js in the page (7.2).
+1. `rosterd-launch --tmux` (7.1), done.
+2. `/sessions/{key}/attach`, `rosterd attach`, xterm.js in the page (7.2), done.
 3. iOS rendering on GhosttyKit; the page's QR pairing already gives the phone its node.
 4. Then, from the spec's acceptance list and the deferred items: Windows service, the Linux
    install as a package, `MIN_COMPAT` bumps as part of the release checklist.

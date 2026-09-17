@@ -246,10 +246,16 @@ nothing else, and posts the claim to the daemon socket. It fails open in 800 ms 
 exits 0, R4. `rosterd-hook
 --self-test` runs the mapping offline.
 
-Launch. `rosterd-launch [--name <n>] [--harness claude|codex] -- claude --model opus` exports
-the variables below, registers the session with the daemon as source `launcher`, and execs the
-harness with the rosterd MCP server in its config (`--mcp-config` for Claude Code,
-`-c mcp_servers.rosterd.*` for Codex).
+Launch. `rosterd-launch [--name <n>] [--harness claude|codex] [--tmux] -- claude --model opus`
+exports the variables below, registers the session with the daemon as source `launcher`, and
+execs the harness with the rosterd MCP server in its config (`--mcp-config` for Claude Code,
+`-c mcp_servers.rosterd.*` for Codex). `--tmux` starts it in a new tmux session, so it is
+attachable from any node.
+
+Attach. `rosterd attach KEY` puts the session's terminal in this one: `GET /sessions/{key}/attach`
+is a websocket to a pty running `tmux attach` on the owning node, relayed over the mesh by any
+other node; binary frames are the terminal bytes, a text frame carries resize or the exit code.
+The page's attach button renders the same stream in place.
 
 Open. `rosterd-open --handle '<runtime handle json>'` jumps to a session from a shell: tmux (attached
 here, or over ssh on the owning node) or the conversation view; `rosterd open KEY` resolves the handle first.
