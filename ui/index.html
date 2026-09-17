@@ -37,15 +37,14 @@
   .acts { grid-column: 3; grid-row: 2; display: flex; gap: 6px; align-items: center; justify-content: flex-end; flex-wrap: wrap }
   .pend { grid-column: 2 / -1; border-left: 2px solid var(--needs_attention); padding: 4px 10px; margin: 4px 0 2px; display: flex; gap: 6px 10px; align-items: center; flex-wrap: wrap }
   .pend b { font-weight: 600 } .pend small { color: var(--dim) }
-  .pend label { display: flex; gap: 4px; align-items: center; font-size: 12px } .pend .msg { flex-basis: 100%; white-space: pre-wrap }
+  .pend .msg { flex-basis: 100%; white-space: pre-wrap }
   .ctx { display: inline-block; width: 28px; height: 7px; border: 1px solid currentColor; border-radius: 3px; vertical-align: 0; margin-right: 4px; overflow: hidden } .ctx i { display: block; height: 100%; background: currentColor }
   .plan { grid-column: 2 / -1; font-size: 12px; color: var(--dim) } .plan summary { cursor: pointer } .plan ol { margin: 4px 0 2px; padding-left: 18px }
   .plan .completed { text-decoration: line-through; opacity: 0.6 } .plan .in_progress { color: var(--fg) } .plan .high::marker { color: var(--needs_attention) }
   button { font: inherit; font-size: 12px; cursor: pointer; background: #232327; color: var(--fg); border: 1px solid #36363c; border-radius: 6px; padding: 4px 10px }
   button:hover { background: #2b2b31 } button.go { background: #2a3a20; border-color: #3f5a2f } button.no { color: var(--err) }
-  input, select { font: inherit; font-size: 12px; background: #0d0d0f; color: var(--fg); border: 1px solid #333; border-radius: 6px; padding: 4px 8px }
-  form.p { display: flex; gap: 6px } form.p input { width: 180px }
-  @media (max-width: 720px) { .s { grid-template-columns: 8px minmax(0, 1fr) } .acts { grid-column: 2; grid-row: auto; justify-content: flex-start } .meta { white-space: normal } form.p input { width: 120px } }
+  input { font: inherit; font-size: 12px; background: #0d0d0f; color: var(--fg); border: 1px solid #333; border-radius: 6px; padding: 4px 8px }
+  @media (max-width: 720px) { .s { grid-template-columns: 8px minmax(0, 1fr) } .acts { grid-column: 2; grid-row: auto; justify-content: flex-start } .meta { white-space: normal } }
   pre#log { white-space: pre-wrap; word-break: break-word; font: 12px/1.4 ui-monospace, monospace; padding: 10px 16px; margin: 0; min-height: 40vh }
   pre#log .tool { color: var(--link) } #recap { padding: 0 16px; color: var(--dim); white-space: pre-wrap }
   dialog { background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; max-width: 92vw }
@@ -106,7 +105,7 @@ async function sse(path, onEvent, onStatus) {
   }
 }
 
-const state = { swarm: null, local: '', pending: {}, questions: {}, login: {}, seen: {}, drafts: {}, status: 'connecting', attention: [], decisions: {}, wsErr: '' };
+const state = { swarm: null, local: '', pending: {}, questions: {}, login: {}, seen: {}, status: 'connecting', attention: [], decisions: {}, wsErr: '' };
 const nodeOf = (key) => key.split(':')[0];
 // Session actions reach the owning node through this node, R7.5: local keys directly, peers under /swarm/{node_id}/.
 const spath = (key, suffix = '') => (nodeOf(key) === state.local ? `/sessions/${key}${suffix}` : `/swarm/${nodeOf(key)}/sessions/${key}${suffix}`);
@@ -148,37 +147,23 @@ function openCommands(r) {
 }
 // ACP option kinds: allow_* are the go, reject_* the no; the gate of R16.2 uses allow, allow_always, deny.
 const optClass = (o) => (/allow/.test(o.kind || o.option_id) ? 'go' : /reject|deny/.test(o.kind || o.option_id) ? 'no' : '');
-// One form field per property of an elicitation's requestedSchema: enum → select, boolean → checkbox,
-// number/integer → number, array of enum → multi select, anything else → text.
-function fieldHtml(name, p, required) {
-  const label = esc(p.title || name), attrs = `name="${esc(name)}"${required ? ' required' : ''}`;
-  if (p.enum) return `<label>${label} <select ${attrs}>${p.enum.map((v) => `<option>${esc(String(v))}</option>`).join('')}</select></label>`;
-  if (p.type === 'boolean') return `<label><input type="checkbox" ${attrs}> ${label}</label>`;
-  if (p.type === 'number' || p.type === 'integer') return `<label>${label} <input type="number" ${attrs} step="${p.type === 'integer' ? 1 : 'any'}"${p.minimum != null ? ` min="${p.minimum}"` : ''}${p.maximum != null ? ` max="${p.maximum}"` : ''}></label>`;
-  if (p.type === 'array' && p.items?.enum) return `<label>${label} <select ${attrs} multiple>${p.items.enum.map((v) => `<option>${esc(String(v))}</option>`).join('')}</select></label>`;
-  return `<label>${label} <input type="${p.format === 'email' ? 'email' : p.format === 'uri' ? 'url' : 'text'}" ${attrs}></label>`;
-}
-// A form's values typed back by the schema, ACP's content shape.
-function formContent(f, schema) {
-  const out = {}, props = schema.properties || {};
-  for (const [name, p] of Object.entries(props)) {
-    const el = f.elements[name]; if (!el) continue;
-    if (p.type === 'boolean') out[name] = el.checked;
-    else if (p.type === 'array') out[name] = el.multiple ? [...el.selectedOptions].map((o) => o.value) : el.value.split(',').map((v) => v.trim()).filter(Boolean);
-    else if (p.type === 'number' || p.type === 'integer') { if (el.value !== '') out[name] = Number(el.value); }
-    else if (el.value !== '' || (schema.required || []).includes(name)) out[name] = el.value;
-  }
-  return out;
+// A question answers with buttons only: one per value when the schema is a single enum or boolean,
+// else decline or cancel; anything that needs typing is answered in the harness.
+function choices(schema) {
+  const props = Object.entries(schema.properties || {}); if (props.length !== 1) return [];
+  const [name, p] = props[0];
+  if (p.enum) return p.enum.map((v) => ({ label: String(v), content: { [name]: v } }));
+  if (p.type === 'boolean') return [{ label: p.title || name, content: { [name]: true }, go: true }, { label: 'no', content: { [name]: false } }];
+  return [];
 }
 function pendingHtml(key) {
   const req = (id) => `data-req='${esc(JSON.stringify(id))}'`;
   const perms = (state.pending[key] || []).map((p) => `<div class="pend"><span><b>${esc(p.tool)}</b> <small>${esc(p.summary)} · ${ago(p.at)}</small></span>
     ${p.options.map((o) => `<button class="${optClass(o)}" data-perm="${esc(key)}" ${req(p.request_id)} data-opt="${esc(o.option_id)}">${esc(o.name)}</button>`).join('')}
     <button data-perm="${esc(key)}" ${req(p.request_id)}>cancel</button></div>`);
-  const questions = (state.questions[key] || []).map((q) => { const props = q.schema.properties || {}, required = q.schema.required || [];
-    return `<form class="pend" data-answer="${esc(key)}" ${req(q.request_id)}><span class="msg"><b>${esc(q.schema.title || 'question')}</b> <small>${ago(q.at)}</small><br>${esc(q.message)}</span>
-    ${Object.entries(props).map(([n, p]) => fieldHtml(n, p, required.includes(n))).join('')}
-    <button class="go">send</button><button type="button" class="no" data-answer="${esc(key)}" ${req(q.request_id)} data-act="decline">decline</button><button type="button" data-answer="${esc(key)}" ${req(q.request_id)} data-act="cancel">cancel</button></form>`; });
+  const questions = (state.questions[key] || []).map((q) => `<div class="pend"><span class="msg"><b>${esc(q.schema.title || 'question')}</b> <small>${ago(q.at)}</small><br>${esc(q.message)}</span>
+    ${choices(q.schema).map((c) => `<button class="${c.go ? 'go' : ''}" data-answer="${esc(key)}" ${req(q.request_id)} data-content='${esc(JSON.stringify(c.content))}'>${esc(c.label)}</button>`).join('')}
+    <button class="no" data-answer="${esc(key)}" ${req(q.request_id)} data-act="decline">decline</button><button data-answer="${esc(key)}" ${req(q.request_id)} data-act="cancel">cancel</button></div>`);
   const node = (state.swarm?.nodes || []).find((n) => n.node_id === nodeOf(key))?.name || nodeOf(key);
   const login = state.login[key] ? [`<div class="pend"><span><b>login</b> <small>on ${esc(node)} · ${state.login[key].map((m) => esc(m.name)).join(' · ')}</small></span></div>`] : [];
   return [...perms, ...questions, ...login].join('');
@@ -189,7 +174,6 @@ function sessionHtml(r) {
   const acts = ended ? '' : [
     o.link ? `<a href="${esc(o.link)}">open ${esc(o.label)}</a>` : '',
     o.open ? `<button data-open="${esc(o.open)}">open ${esc(o.label)}</button>` : '',
-    driven(r) ? `<form class="p" data-prompt="${esc(k)}"><input placeholder="prompt" value="${esc(state.drafts[k] || '')}"><button>send</button></form>` : '',
     driven(r) && st === 'active' ? `<button data-cancel="${esc(k)}">cancel turn</button>` : '',
     st === 'suspended' ? `<button data-resume="${esc(k)}">resume</button>` : '',
   ].join('');
@@ -241,8 +225,7 @@ async function renderAttention() {
       return `<article class="s needs_attention"><span class="dot needs_attention"></span><div class="who"><span class="name">${esc(it.taskTitle || it.kind)}</span><span class="state needs_attention">${esc(it.reason)}</span>
         <span class="ev">${it.agent ? esc(it.agent.name) + ' · ' : ''}${ago(it.since)}${it.signalCount > 1 ? ` · ×${it.signalCount}` : ''}</span></div>
         <div class="acts"><a href="${esc(w.url.replace(/\/$/, ''))}/inbox">open in workspace</a>${it.decisionId && !d ? `<button data-decision="${esc(it.decisionId)}">rule</button>` : ''}</div>
-        ${d ? `<div class="pend"><span><b>${esc(d.title)}</b> <small>${esc(d.summary)}</small></span>${(d.choices || []).map((c) => `<button data-rule="${esc(d.id)}" data-choice="${esc(c.id)}" title="${esc(c.description || '')}">${esc(c.label)}${c.recommended ? ' ★' : ''}</button>`).join('')}
-          ${d.allowFreeText ? `<form class="p" data-rule-text="${esc(d.id)}"><input placeholder="or answer in words"><button>rule</button></form>` : ''}</div>` : ''}
+        ${d ? `<div class="pend"><span><b>${esc(d.title)}</b> <small>${esc(d.summary)}</small></span>${(d.choices || []).map((c) => `<button data-rule="${esc(d.id)}" data-choice="${esc(c.id)}" title="${esc(c.description || '')}">${esc(c.label)}${c.recommended ? ' ★' : ''}</button>`).join('')}</div>` : ''}
       </article>`; }).join('') || '<small>nothing needs you</small>') + '</div>';
 }
 async function pollAttention() {
@@ -269,28 +252,12 @@ document.addEventListener('click', async (e) => {
     else if (d.cancel) await api(spath(d.cancel, '/cancel'), {});
     else if (d.resume) await api(spath(d.resume, '/resume'), {});
     else if (d.perm) { await api(spath(d.perm, '/permission'), d.opt ? { request_id: JSON.parse(d.req), outcome: 'selected', option_id: d.opt } : { request_id: JSON.parse(d.req), outcome: 'cancelled' }); await refreshPending(d.perm); }
-    else if (d.answer && d.act) { await api(spath(d.answer, '/answer'), { request_id: JSON.parse(d.req), action: d.act }); await refreshPending(d.answer); }
+    else if (d.answer) { await api(spath(d.answer, '/answer'), d.act ? { request_id: JSON.parse(d.req), action: d.act } : { request_id: JSON.parse(d.req), action: 'accept', content: JSON.parse(d.content) }); await refreshPending(d.answer); }
     else if (d.open) await api(spath(d.open, '/open'), {});
     else if (d.decision) { state.decisions[d.decision] = await wsCall(`/decisions/${d.decision}`); renderAttention(); }
     else if (d.rule) { await wsCall(`/decisions/${d.rule}/rule`, { choiceId: d.choice, surface: 'phone' }); delete state.decisions[d.rule]; pollAttention(); }
   } catch (err) { state.status = String(err.message || err); rerender(); }
 });
-document.addEventListener('submit', async (e) => {
-  const f = e.target; if (f.closest('dialog')) return; e.preventDefault();
-  if (f.dataset.answer) {
-    const id = JSON.parse(f.dataset.req), q = (state.questions[f.dataset.answer] || []).find((x) => JSON.stringify(x.request_id) === f.dataset.req);
-    try { await api(spath(f.dataset.answer, '/answer'), { request_id: id, action: 'accept', content: formContent(f, q?.schema || {}) }); await refreshPending(f.dataset.answer); }
-    catch (err) { state.status = String(err.message || err); rerender(); }
-    return;
-  }
-  const input = f.querySelector('input'); const text = input.value.trim(); if (!text) return;
-  try {
-    if (f.dataset.prompt) { await api(spath(f.dataset.prompt, '/prompt'), { prompt: text }); state.drafts[f.dataset.prompt] = ''; renderRoster(); }
-    else if (f.dataset.ruleText) { await wsCall(`/decisions/${f.dataset.ruleText}/rule`, { text, surface: 'phone' }); delete state.decisions[f.dataset.ruleText]; pollAttention(); }
-    else if (f.id === 'sendPrompt') { await api(spath(sessionKey, '/prompt'), { prompt: text }); input.value = ''; }
-  } catch (err) { state.status = String(err.message || err); rerender(); }
-});
-document.addEventListener('input', (e) => { const f = e.target.closest('form[data-prompt]'); if (f) state.drafts[f.dataset.prompt] = e.target.value; });
 $('#ws').addEventListener('close', () => {
   if ($('#ws').returnValue === 'save') localStorage.setItem('rosterd.workspace', JSON.stringify({ url: $('#wsUrl').value.trim(), token: $('#wsTok').value.trim() }));
   else if ($('#ws').returnValue === 'clear') localStorage.removeItem('rosterd.workspace');
@@ -325,7 +292,6 @@ async function sessionPage() {
   sessionHead = head;
   const refresh = async () => { try { last = await api(spath(sessionKey)); takePending(sessionKey, last.state); } catch (e) { state.status = e.message; } head(); };
   await refresh(); setInterval(refresh, 10000);
-  $('#recap').insertAdjacentHTML('afterend', `<form class="p" id="sendPrompt" style="padding:10px 16px"><input placeholder="prompt" style="flex:1;width:auto"><button>send</button></form>`);
   sse(spath(sessionKey, '/stream'), logLine, (s) => { state.status = s || 'live'; head(); });
 }
 

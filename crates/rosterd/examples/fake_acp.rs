@@ -66,13 +66,10 @@ fn main() {
                 }
                 if text.starts_with("ask") {
                     send(json!({"jsonrpc": "2.0", "id": 101, "method": "elicitation/create", "params": {
-                        "sessionId": sid, "mode": "form", "message": "Which branch should the fix land on, and should I open a PR?",
+                        "sessionId": sid, "mode": "form", "message": "Which branch should the fix land on?",
                         "requestedSchema": {"type": "object", "title": "Where to land", "properties": {
-                            "branch": {"type": "string", "title": "Branch"},
-                            "pr": {"type": "boolean", "title": "Open a PR"},
-                            "reviewers": {"type": "integer", "title": "Reviewers", "minimum": 0, "maximum": 3},
-                            "target": {"type": "string", "title": "Target", "enum": ["main", "release"]}},
-                            "required": ["branch"]}}}));
+                            "target": {"type": "string", "title": "Target", "enum": ["main", "release", "hotfix"]}},
+                            "required": ["target"]}}}));
                 } else {
                     send(json!({"jsonrpc": "2.0", "id": 100, "method": "session/request_permission", "params": {
                         "sessionId": sid,
