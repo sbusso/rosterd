@@ -3,7 +3,7 @@
 # tarball does not exist and the package builds from a checkout with `makepkg -e` over a
 # pre-extracted src/rosterd-$pkgver (see packaging/arch/test.sh).
 pkgname=rosterd
-pkgver=0.1.13
+pkgver=0.1.14
 pkgrel=1
 pkgdesc="One daemon per machine that knows every coding agent session on it"
 arch=('x86_64' 'aarch64')
