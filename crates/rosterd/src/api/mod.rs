@@ -45,8 +45,9 @@ pub struct Peer {
     pub pid: Option<u32>,
 }
 
-/// Peer requests are read whole before `Mesh::authenticate` sees them, R7.6.
-const PEER_BODY_LIMIT: usize = 4 << 20;
+/// Peer requests are read whole before `Mesh::authenticate` sees them, R7.6; a session import
+/// is the largest, R15.5.
+const PEER_BODY_LIMIT: usize = routes::IMPORT_BODY_LIMIT;
 
 /// Binds every listener and serves until one of them fails.
 pub async fn serve(node: Arc<Node>) -> anyhow::Result<()> {
@@ -250,9 +251,12 @@ mod tests {
     /// A node with listen off, an ephemeral loopback port, and the socket under a temp dir;
     /// `serve` runs in the background. Nothing here reaches the runner or the mesh.
     async fn start(tag: &str) -> Harness {
+        start_with(tag, Config::default()).await
+    }
+
+    async fn start_with(tag: &str, mut config: Config) -> Harness {
         let dir = std::env::temp_dir().join(format!("rosterd-api-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut config = Config::default();
         config.node.name = "gibson".into();
         config.node.listen = "off".into();
         config.node.ui_listen = "loopback".into();
@@ -609,6 +613,62 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(listed["result"]["structuredContent"]["records"][0]["name"], "coordinator");
+    }
+
+    /// R15.5 on one node: export packs a suspended session and ends it handed_off; import
+    /// loads the same harness session under a new key; the refusals are 409, 404 and 400.
+    #[tokio::test]
+    async fn export_ends_handed_off_and_import_loads_the_same_session() {
+        let Some((bin, fake)) = crate::runner::e2e_test::binaries() else { return };
+        // A holder socket path must fit in sockaddr_un: a short holder directory.
+        let holders = std::env::temp_dir().join(format!("r155h{}", std::process::id()));
+        let h = start_with("handoff", crate::runner::e2e_test::fake_config(&holders, &bin, &fake)).await;
+        let cwd = h.dir.to_string_lossy().into_owned();
+        let post = |path: String, body: Value| h.socket.post(format!("http://rosterd{path}")).json(&body).send();
+
+        let started = post("/sessions".into(), json!({ "harness": "fake", "cwd": cwd, "name": "mover" })).await.unwrap();
+        assert_eq!(started.status(), StatusCode::CREATED);
+        let started: Value = started.json().await.unwrap();
+        let key = started["session_key"].as_str().unwrap().to_string();
+        assert_eq!(started["session_id"], "fake-1");
+        post(format!("/sessions/{key}/prompt"), json!({ "prompt": "hello" })).await.unwrap().error_for_status().unwrap();
+
+        // Not in the swarm, and never to itself.
+        let nowhere = post(format!("/sessions/{key}/handoff"), json!({ "node": "zed" })).await.unwrap();
+        assert_eq!(nowhere.status(), StatusCode::NOT_FOUND);
+        let here = post(format!("/sessions/{key}/handoff"), json!({ "node": "gibson" })).await.unwrap();
+        assert_eq!(here.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(h.node.roster.get(&key).unwrap().liveness, rosterd_proto::Liveness::Live, "a refused handoff changes nothing");
+
+        let export = post(format!("/sessions/{key}/export"), json!({})).await.unwrap();
+        assert_eq!(export.status(), StatusCode::OK, "{}", export.text().await.unwrap());
+        let export: Value = export.json().await.unwrap();
+        assert_eq!(export["schema"], "rosterd.session_export.v1");
+        assert_eq!((&export["harness"], &export["cwd"], &export["session_id"], &export["name"]), (&json!("fake"), &json!(cwd), &json!("fake-1"), &json!("mover")));
+        assert_eq!(export["meta"]["name"], "mover");
+        assert_eq!(export["meta"]["permission_policy"], "auto");
+        assert!(export["transcript"].is_null(), "the fake harness keeps no transcript");
+        let old = h.node.roster.get(&key).unwrap();
+        assert_eq!((old.liveness, old.ended_reason), (rosterd_proto::Liveness::Ended, Some(rosterd_proto::EndedReason::HandedOff)));
+        assert!(!h.node.runner.owns(&key));
+        assert!(std::fs::read_dir(&holders).unwrap().flatten().all(|e| e.path().extension().is_some_and(|x| x == "log")), "no state file survives the export");
+        assert_eq!(post(format!("/sessions/{key}/export"), json!({})).await.unwrap().status(), StatusCode::NOT_FOUND, "exported once");
+
+        let refused = post("/sessions/import".into(), json!({ "schema": "rosterd.session_export.v1", "harness": "fake", "cwd": "/nope/nowhere", "session_id": "fake-1", "meta": {} })).await.unwrap();
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        let mut escaping = export.clone();
+        escaping["transcript"] = json!({ "path_relative_to_home": "../etc/x", "content_base64": "" });
+        assert_eq!(post("/sessions/import".into(), escaping).await.unwrap().status(), StatusCode::CONFLICT);
+
+        let imported = post("/sessions/import".into(), export).await.unwrap();
+        assert_eq!(imported.status(), StatusCode::CREATED, "{}", imported.text().await.unwrap());
+        let imported: Value = imported.json().await.unwrap();
+        let new_key = imported["session_key"].as_str().unwrap().to_string();
+        assert_ne!(new_key, key);
+        assert_eq!((&imported["session_id"], &imported["node"], &imported["name"], &imported["liveness"], &imported["activity"]), (&json!("fake-1"), &json!("gibson"), &json!("mover"), &json!("live"), &json!("idle")));
+        assert!(h.node.runner.owns(&new_key));
+        h.socket.delete(format!("http://rosterd/sessions/{new_key}")).send().await.unwrap().error_for_status().unwrap();
+        let _ = std::fs::remove_dir_all(&holders);
     }
 
     #[tokio::test]

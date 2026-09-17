@@ -522,12 +522,12 @@ impl Roster {
     /// Marks a session ended. Ended records stay in the snapshot for a while so a client sees
     /// the ending, then are dropped by the scanner's sweep. Ending twice keeps the first reason.
     /// A suspended record has no process (R15.1), so only the R15 reasons end it: `Suspended`
-    /// (resumed under a new key) or `Expired`; a process ending is a no-op on it.
+    /// (resumed under a new key), `Expired` or `HandedOff`; a process ending is a no-op on it.
     pub fn end(&self, session_key: &str, reason: EndedReason, at: DateTime<Utc>) -> Result<Record, RosterError> {
         let mut table = self.table.write().unwrap();
         let key = table.resolve(session_key);
         let entry = table.entries.get_mut(&key).ok_or_else(|| RosterError::NotFound(session_key.into()))?;
-        let no_process = entry.record.liveness == Liveness::Suspended && !matches!(reason, EndedReason::Suspended | EndedReason::Expired);
+        let no_process = entry.record.liveness == Liveness::Suspended && !matches!(reason, EndedReason::Suspended | EndedReason::Expired | EndedReason::HandedOff);
         if entry.record.liveness == Liveness::Ended || no_process {
             return Ok(entry.record.clone());
         }

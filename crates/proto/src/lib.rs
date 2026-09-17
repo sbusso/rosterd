@@ -67,7 +67,7 @@ pub enum Liveness {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum EndedReason {
     Exit,
     Crash,
@@ -77,6 +77,34 @@ pub enum EndedReason {
     Suspended,
     /// R15.1: the session will not come back under this key.
     Expired,
+    /// R15.5: the session went to another node; follow its session_id there.
+    HandedOff,
+}
+
+/// A suspended session packed for another node, R15.5: what `POST /sessions/{key}/export`
+/// returns and `POST /sessions/import` takes. `meta` is the holder's launch facts verbatim.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionExport {
+    pub schema: String,
+    pub harness: String,
+    pub cwd: String,
+    pub session_id: String,
+    pub meta: serde_json::Value,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The harness's own transcript, which `session/load` reads; None when the harness keeps
+    /// none rosterd knows of.
+    #[serde(default)]
+    pub transcript: Option<Transcript>,
+}
+
+pub const SESSION_EXPORT_SCHEMA: &str = "rosterd.session_export.v1";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Transcript {
+    /// Under the home directory of the exporting user, written at the same place on the importer.
+    pub path_relative_to_home: String,
+    pub content_base64: String,
 }
 
 /// R14.3 `explain`: which source set each field of a record and when, and which claims lost.
