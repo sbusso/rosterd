@@ -10,6 +10,11 @@ class Rosterd < Formula
   license "MIT"
   # The bottle is what lets a Mac install without a compiler toolchain: `brew bottle` of the
   # tarball install, uploaded next to it on the release.
+  bottle do
+    root_url "https://github.com/sbusso/rosterd/releases/download/v0.1.11"
+    rebuild 1
+    sha256 arm64_tahoe: "27d5fe846d3400f83a9b590eda73f2f8925292fc5e349a5c66fc3ad1ae0f598d"
+  end
   head do
     url "https://github.com/sbusso/rosterd.git", branch: "main"
     depends_on "rust" => :build
