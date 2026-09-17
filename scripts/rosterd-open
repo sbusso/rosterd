@@ -15,7 +15,8 @@
 # /ui/sessions/{key} in the browser.
 #
 # ROSTERD_MACHINE names this machine (default: hostname -s). ROSTERD_TERMINAL_CMD runs a command
-# in a terminal window (the command is its last argument); default Terminal.app or x-terminal-emulator.
+# in a terminal window (the command is its last argument); default the system's terminal: the
+# .command handler on macOS, x-terminal-emulator elsewhere.
 set -u
 
 dry=0 handle=''
@@ -79,11 +80,12 @@ terminal() {
   if [ -n "${ROSTERD_TERMINAL_CMD-}" ]; then exec $ROSTERD_TERMINAL_CMD "$*"; fi
   case "$(uname)" in
     Darwin)
-      # A .command file opened in Terminal: no Apple Events, so a service needs no automation
+      # A .command file opened by whatever the system has for them (Terminal unless the user
+      # picked Ghostty or another in Finder): no Apple Events, so a service needs no automation
       # consent, which a background agent can never be granted; the script removes itself.
       f=$(mktemp -t rosterd-open) || exit 2
       mv "$f" "$f.command" && f=$f.command
-      printf '#!/bin/sh\nrm -f "$0"\n%s\n' "$*" >"$f" && chmod +x "$f" && open -a Terminal "$f"
+      printf '#!/bin/sh\nrm -f "$0"\n%s\n' "$*" >"$f" && chmod +x "$f" && open "$f"
       ;;
     *) exec "$(command -v x-terminal-emulator || command -v xterm)" -e sh -lc "$*" ;;
   esac
