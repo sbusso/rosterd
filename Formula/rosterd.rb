@@ -12,8 +12,7 @@ class Rosterd < Formula
   # tarball install, uploaded next to it on the release.
   bottle do
     root_url "https://github.com/sbusso/rosterd/releases/download/v0.1.15"
-    rebuild 1
-    sha256 arm64_tahoe: ""
+    sha256 arm64_tahoe: "b68d7274e85bff0615c6c93b48c7d54b608175ffe1bb1fab1e639202c2e21727"
   end
   # The bottle is what lets a Mac install without a compiler toolchain: `brew bottle` of the
   # tarball install, uploaded next to it on the release.
