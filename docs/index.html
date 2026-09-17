@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rosterd</title>
+<meta name="description" content="One daemon per machine that knows every coding agent session, drives headless ones over ACP, and joins a swarm over Tailscale.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%2317201c'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%23d99a1e'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<nav class="top"><div class="wrap">
+  <a class="brand" href="#/">rosterd <small>0.1</small></a>
+  <ul>
+    <li><a class="pg" href="#/">Overview</a></li>
+    <li><a class="pg" href="#/architecture">Architecture</a></li>
+    <li><a class="pg" href="#/flows">Flows</a></li>
+    <li><a class="pg" href="#/uses">Use cases</a></li>
+    <li><a class="pg" href="#/walkthrough">Walkthrough</a></li>
+    <li><a class="pg" href="#/api">API</a></li>
+  </ul>
+  <a class="gh" href="https://github.com/sbusso/rosterd">github.com/sbusso/rosterd</a>
+</div></nav>
+
+<main class="wrap">
+
+<!-- ============================================================ overview -->
+<section class="page" id="p-home">
+  <div class="hero">
+    <div>
+      <h1>Every agent session, on every machine, one roster.</h1>
+      <p class="lede">rosterd is one daemon per machine. It knows every coding agent session there, whoever started it, drives headless ones over ACP, and joins a swarm over Tailscale so any node, or the phone in your pocket, answers for all of them.</p>
+      <div class="actions">
+        <a class="btn" href="#/walkthrough">What it does</a>
+        <a class="btn ghost" href="#install">Install</a>
+      </div>
+    </div>
+    <div class="board" aria-label="A swarm roster: three machines, seven sessions, one waiting on a human">
+      <div class="bar"><b>rosterd</b> <span>3 nodes</span> <span>7 sessions</span> <span class="att">1 needs attention</span> <span class="live">live</span></div>
+      <div class="node"><b>gibson</b> this node</div>
+      <div class="row"><span class="dot att pulse"></span><span><span class="name">api: swarm changes</span><span class="meta">claude, headless, ~/Code/rosterd</span></span><span class="st att">needs attention, permission</span>
+        <div class="ask"><b>Bash</b> <code>git push origin main</code> <span class="b ok">Allow</span> <span class="b">Allow always</span> <span class="b no">Deny</span></div></div>
+      <div class="row"><span class="dot active"></span><span><span class="name">board: puller</span><span class="meta">claude, tmux 2:1, ~/Code/workspace</span></span><span class="st active">active, tool_call</span></div>
+      <div class="row"><span class="dot"></span><span><span class="name">[finance]</span><span class="meta">codex, interactive, ~/Code/finance</span></span><span class="st">idle, 4m</span></div>
+      <div class="node"><b>mbp</b> peer, 1s</div>
+      <div class="row"><span class="dot active"></span><span><span class="name">docs: pages site</span><span class="meta">claude, headless, ~/Code/rosterd</span></span><span class="st active">active, message</span></div>
+      <div class="row"><span class="dot suspended"></span><span><span class="name">migrate: holders</span><span class="meta">claude, headless, session kept</span></span><span class="st">suspended</span></div>
+      <div class="node dim"><b>arch</b> peer, unreachable 41s</div>
+      <div class="row dimrow"><span class="dot"></span><span><span class="name">[herdr]</span><span class="meta">pi, herdr pane, ~/src/herdr</span></span><span class="st">idle, stale</span></div>
+      <div class="row dimrow"><span class="dot unknown"></span><span><span class="name">[scratch]</span><span class="meta">claude, no claim yet</span></span><span class="st">unknown</span></div>
+    </div>
+  </div>
+
+  <h2>What it is</h2>
+  <div class="cols">
+    <div>
+      <h3>A roster, not a scheduler</h3>
+      <p>rosterd keeps one table per machine: every harness process (Claude Code, Codex, pi), what it is doing right now, and where a human can reach it. Activity comes from what the harness says through hooks or ACP. rosterd never guesses from time, CPU or output.</p>
+    </div>
+    <div>
+      <h3>A runner for headless work</h3>
+      <p>Start a session over the API and rosterd owns it through a holder: prompt it, watch its plan and context fill, answer its permissions and questions from any surface, suspend it when idle and resume it with the same harness session on the next prompt.</p>
+    </div>
+    <div>
+      <h3>A swarm, not a server</h3>
+      <p>Nodes find each other on the tailnet and exchange full snapshots. No leader, no database. Ask any node and you get every machine; act on a session and the request is proxied to its owner. A peer that drops keeps its last snapshot, dimmed, with its age.</p>
+    </div>
+  </div>
+
+  <h2>Three surfaces, one truth</h2>
+  <div class="shots">
+    <figure>
+      <img src="img/roster.png" alt="The roster page: two headless sessions waiting on a human, one with a Bash permission and Allow, Reject buttons, one with a form question and its three choices, then interactive Claude and Codex sessions with their CPU, memory and uptime" width="1200" height="720">
+      <figcaption>The roster page every node serves at <code>/ui</code>. Same rows on the tray and the phone: name, harness, state and its age, the folder, the load of the process tree, and the pending permission or question with its buttons.</figcaption>
+    </figure>
+    <figure class="phone">
+      <img src="img/phone.png" alt="The same roster on a phone width, with the permission and question buttons stacked" width="430" height="900">
+      <figcaption>The phone: paired with a QR from the page, over Tailscale.</figcaption>
+    </figure>
+  </div>
+  <div class="cols">
+    <div><h3>Menu bar</h3><p><code>rosterd-tray</code> on macOS and Linux. Sessions grouped by state, the attention count beside the icon, Allow, Allow always and Deny on the row, a click jumps to the tmux pane, the herdr pane or the conversation view.</p></div>
+    <div><h3>Page and phone</h3><p>A single HTML page served by every node, over loopback or the Tailscale IP. The SwiftUI app is the same page with a scanner for the pairing QR. Buttons only: no prompt box, no free text.</p></div>
+    <div><h3>Shell and agents</h3><p>One binary. <code>rosterd list --swarm</code>, <code>watch</code>, <code>changes</code>, <code>allow</code>, <code>prompt</code>, every command with <code>--json</code>. Agents get the same over an MCP server: list, spawn, prompt, read a recap.</p></div>
+  </div>
+
+  <h2>What it refuses to do</h2>
+  <p>The boundaries are the product. rosterd never:</p>
+  <ul>
+    <li>reads prompts, transcripts or terminal screens;</li>
+    <li>infers activity from time, CPU or output;</li>
+    <li>schedules or wakes an agent on its own, there is no timer;</li>
+    <li>stores task or decision history;</li>
+    <li>dials a client, holds a client's URL, token or ids;</li>
+    <li>binds to anything but loopback and the Tailscale interface.</li>
+  </ul>
+  <p>Anything that keeps a record over sessions, a project board, a task runner, a workspace, is a client of the API and only a client. It pulls the roster, subscribes to changes, answers through the action endpoints, and maps sessions to its own ids on its side.</p>
+
+  <h2 id="install">Install</h2>
+<pre><code><span class="c"># macOS: the release bottle, a LaunchAgent and the tray</span>
+brew tap sbusso/rosterd https://github.com/sbusso/rosterd && brew trust sbusso/rosterd
+brew install rosterd && brew services start rosterd
+
+<span class="c"># Linux: the release tarball, a systemd user unit</span>
+tar xzf rosterd-&lt;ver&gt;-x86_64-unknown-linux-gnu.tar.gz
+rosterd-&lt;ver&gt;/packaging/install.sh --from rosterd-&lt;ver&gt;/dist/x86_64-unknown-linux-gnu
+
+<span class="c"># Arch, from source</span>
+makepkg -si -p packaging/arch/PKGBUILD
+
+<span class="c"># then, on every machine: hooks, ACP adapters, the tray at login, a swarm to join</span>
+rosterd setup</code></pre>
+  <p><code>rosterd setup</code> is one row per thing the machine needs: binaries on PATH, config, the service, per harness its binary, adapter and hooks, the tray, and optionally a swarm. Space picks, enter runs, <code>--yes</code> runs it headless. It is the only step that edits <code>~/.claude</code> and <code>~/.codex</code>.</p>
+</section>
+
+<!-- ============================================================ architecture -->
+<section class="page" id="p-architecture">
+  <h1>Architecture</h1>
+  <p class="lede">One binary, six modules, and a small holder process per headless session. Everything a node knows is in memory and rebuilt in under a second from holders, hook claims and a process scan.</p>
+
+  <h2>Inside a node</h2>
+  <div class="dia"><svg viewBox="0 0 960 470" role="img" aria-label="Module diagram of one rosterd node">
+    <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="arrow"/></marker>
+    <marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="arrow green"/></marker>
+    <marker id="ara" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="arrow amber"/></marker></defs>
+    <!-- clients -->
+    <text x="20" y="28" class="b">Clients</text>
+    <g>
+      <rect x="20" y="44" width="150" height="34" rx="6" class="box"/><text x="32" y="66">tray, page, phone</text>
+      <rect x="20" y="86" width="150" height="34" rx="6" class="box"/><text x="32" y="108">CLI, scripts</text>
+      <rect x="20" y="128" width="150" height="34" rx="6" class="box"/><text x="32" y="150">agents over MCP</text>
+      <rect x="20" y="170" width="150" height="34" rx="6" class="box"/><text x="32" y="192">a board, a task runner</text>
+    </g>
+    <!-- node box -->
+    <rect x="230" y="20" width="500" height="430" rx="12" class="box soft"/>
+    <text x="246" y="44" class="b">rosterd, one node</text>
+    <rect x="246" y="60" width="110" height="150" rx="8" class="box"/>
+    <text x="258" y="82" class="b">api</text>
+    <text x="258" y="102" class="dim">unix socket</text><text x="258" y="118" class="dim">loopback + bearer</text><text x="258" y="134" class="dim">tailscale + https</text><text x="258" y="150" class="dim">MCP server</text><text x="258" y="166" class="dim">/ui page</text>
+    <rect x="380" y="60" width="150" height="150" rx="8" class="box amber"/>
+    <text x="392" y="82" class="b">roster</text>
+    <text x="392" y="102" class="dim">one record per session</text><text x="392" y="118" class="dim">claims with a sequence</text><text x="392" y="134" class="dim">source precedence</text><text x="392" y="150" class="dim">full snapshots, /events</text><text x="392" y="166" class="dim">never blocks on runner</text>
+    <rect x="556" y="60" width="158" height="66" rx="8" class="box"/>
+    <text x="568" y="82" class="b">mesh</text><text x="568" y="100" class="dim">discovery, membership</text><text x="568" y="116" class="dim">snapshots in, proxy out</text>
+    <rect x="556" y="144" width="158" height="66" rx="8" class="box"/>
+    <text x="568" y="166" class="b">scanner</text><text x="568" y="184" class="dim">/proc, libproc, 2 s</text><text x="568" y="200" class="dim">tmux and herdr handles</text>
+    <rect x="246" y="236" width="308" height="66" rx="8" class="box green"/>
+    <text x="258" y="258" class="b">runner</text><text x="258" y="276" class="dim">ACP client: start, prompt, cancel, permission,</text><text x="258" y="292" class="dim">question, login; suspend, resume, crash-resume</text>
+    <rect x="566" y="236" width="148" height="66" rx="8" class="box"/>
+    <text x="578" y="258" class="b">intake</text><text x="578" y="276" class="dim">/register, /claim, /name</text><text x="578" y="292" class="dim">hooks and launchers</text>
+    <!-- holders -->
+    <rect x="246" y="330" width="468" height="100" rx="8" class="box dark"/>
+    <text x="258" y="352" class="b onDark">holders, one process per headless session</text>
+    <text x="258" y="372" class="onDark dim">owns the adapter's stdio, listens on a unix socket, relays JSON-RPC unchanged,</text>
+    <text x="258" y="388" class="onDark dim">keeps the last 256 notifications for a reconnecting daemon, writes a state file,</text>
+    <text x="258" y="404" class="onDark dim">exits when the adapter exits. Restarting rosterd does not restart holders.</text>
+    <!-- right column -->
+    <text x="770" y="28" class="b">Outside the node</text>
+    <rect x="770" y="44" width="170" height="82" rx="6" class="box"/><text x="782" y="66" class="b">peers</text><text x="782" y="86" class="dim">other nodes on the tailnet,</text><text x="782" y="102" class="dim">each serving its own roster</text><text x="782" y="118" class="dim mono">https, signed, swarm key</text>
+    <rect x="770" y="236" width="170" height="66" rx="6" class="box"/><text x="782" y="258" class="b">interactive harnesses</text><text x="782" y="276" class="dim">claude, codex, pi in a</text><text x="782" y="292" class="dim">terminal, tmux or herdr</text>
+    <rect x="770" y="330" width="170" height="100" rx="6" class="box"/><text x="782" y="352" class="b">ACP adapters</text><text x="782" y="372" class="dim">claude-agent-acp,</text><text x="782" y="388" class="dim">codex-acp, pi-acp: one</text><text x="782" y="404" class="dim">headless harness each</text>
+    <!-- lines -->
+    <path d="M170 61H246" class="ln" marker-end="url(#ar)"/><path d="M170 103H246" class="ln" marker-end="url(#ar)"/><path d="M170 145H246" class="ln" marker-end="url(#ar)"/><path d="M170 187H246" class="ln" marker-end="url(#ar)"/>
+    <path d="M356 120H380" class="ln" marker-end="url(#ar)"/>
+    <path d="M530 100H556" class="ln" marker-end="url(#ar)"/>
+    <path d="M556 176H530" class="ln" marker-end="url(#ar)"/>
+    <path d="M566 250C548 250 548 214 534 208" class="ln" marker-end="url(#ar)"/>
+    <path d="M455 236V210" class="ln green" marker-end="url(#arg)"/>
+    <path d="M480 330V302" class="ln green" marker-end="url(#arg)"/>
+    <path d="M714 380H770" class="ln green dash" marker-end="url(#arg)"/><text x="726" y="372" class="dim">stdio</text>
+    <path d="M714 90H770" class="ln dash" marker-end="url(#ar)" marker-start="url(#ar)"/><text x="722" y="82" class="dim">/events</text>
+    <path d="M770 266H714" class="ln" marker-end="url(#ar)"/><text x="726" y="258" class="dim">hooks</text>
+    <path d="M770 290C740 290 740 196 714 196" class="ln dash" marker-end="url(#ar)"/><text x="726" y="222" class="dim">scan</text>
+  </svg></div>
+  <p>The roster answers even when the runner is wedged: <code>rosterd list</code> and <code>watch</code> read the roster module only. The mesh reads the roster to serve peers and writes peer snapshots beside it, never into it. Every node is the only writer of its own roster, which is why the swarm needs no merge.</p>
+
+  <h3>Process model</h3>
+  <p>rosterd owns no harness process directly. A headless session is <em>holder → ACP adapter → harness</em>. The holder is a separate small binary shipped with rosterd; it starts the adapter with stdio pipes, listens on a per-session socket under the runtime directory, relays JSON-RPC both ways unchanged, keeps a replay buffer of the last 256 notifications, and writes a state file with the session id, harness, cwd, adapter PID and start time. On start rosterd lists the holder directory, reconnects to every live holder, replays the buffer and rebuilds those sessions.</p>
+  <p>This is what makes the daemon disposable. Kill it during a turn, restart it: the session is still live, the turn completes, no claim is lost.</p>
+
+  <h2>The swarm</h2>
+  <div class="dia"><svg viewBox="0 0 960 330" role="img" aria-label="Three nodes on a tailnet, each streaming its roster to the others, a phone attached to one, an action proxied to the owner">
+    <defs><marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="arrow"/></marker>
+    <marker id="ara2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="arrow amber"/></marker></defs>
+    <rect x="20" y="20" width="920" height="290" rx="14" class="box soft"/>
+    <text x="36" y="44" class="b">tailnet</text><text x="90" y="44" class="dim">Tailscale ACLs are the network boundary, the swarm key the application boundary</text>
+    <g><rect x="60" y="80" width="220" height="120" rx="10" class="box dark"/>
+      <text x="76" y="104" class="b onDark">gibson</text><text x="140" y="104" class="onDark dim">desktop, Linux</text>
+      <text x="76" y="128" class="onDark dim">own roster: 3 sessions</text>
+      <text x="76" y="146" class="onDark dim">mbp snapshot, 1 s old</text>
+      <text x="76" y="164" class="onDark dim">arch snapshot, 41 s, unreachable</text>
+      <text x="76" y="186" class="onDark dim mono">:8791 https, node key</text></g>
+    <g><rect x="370" y="80" width="220" height="120" rx="10" class="box dark"/>
+      <text x="386" y="104" class="b onDark">mbp</text><text x="426" y="104" class="onDark dim">laptop, macOS</text>
+      <text x="386" y="128" class="onDark dim">own roster: 2 sessions</text>
+      <text x="386" y="146" class="onDark dim">gibson snapshot, 1 s old</text>
+      <text x="386" y="164" class="onDark dim">arch snapshot, 41 s, unreachable</text>
+      <text x="386" y="186" class="onDark dim mono">:8791 https, node key</text></g>
+    <g opacity=".55"><rect x="680" y="80" width="220" height="120" rx="10" class="box dark"/>
+      <text x="696" y="104" class="b onDark">arch</text><text x="736" y="104" class="onDark dim">server, off the tailnet</text>
+      <text x="696" y="128" class="onDark dim">own roster: 2 sessions</text>
+      <text x="696" y="146" class="onDark dim">last seen 41 s ago; its snapshot</text>
+      <text x="696" y="164" class="onDark dim">is kept and served dimmed, 24 h</text></g>
+    <path d="M280 120H370" class="ln" marker-end="url(#ar2)" marker-start="url(#ar2)"/><text x="288" y="112" class="dim">SSE, both ways</text>
+    <path d="M590 120H680" class="ln dash"/><text x="604" y="112" class="dim">no answer</text>
+    <path d="M280 180C400 240 560 240 680 180" class="ln dash"/>
+    <!-- phone -->
+    <rect x="410" y="250" width="140" height="44" rx="8" class="box"/><text x="424" y="277">phone, on mbp</text>
+    <path d="M480 250V200" class="ln amber" marker-end="url(#ara2)"/>
+    <path d="M370 150C330 150 300 140 280 140" class="ln amber" marker-end="url(#ara2)"/>
+    <text x="60" y="230" class="dim">POST /sessions/{key}/permission for a session gibson owns,</text>
+    <text x="60" y="246" class="dim">sent to mbp, proxied to gibson with mbp's signature,</text>
+    <text x="60" y="262" class="dim">answered on gibson's ACP</text>
+  </svg></div>
+  <div class="cols">
+    <div><h3>Identity</h3><p>An Ed25519 keypair per node, generated at first start; <code>node_id</code> is the public key fingerprint. The name is pinned in config. A renamed machine is a new name, the id stays.</p></div>
+    <div><h3>Discovery and membership</h3><p><code>tailscale status</code> lists the online peers; each is probed at <code>/node/hello</code>, a signed answer with capabilities. The first <code>rosterd invite</code> creates the swarm: a single-use, one-hour token. <code>join</code> presents it; membership gossips from there, newest signed record per node wins. <code>revoke</code> is signed and gossiped too.</p></div>
+    <div><h3>Snapshot exchange</h3><p>Each node keeps one SSE connection to every peer's <code>/events</code> and stores the latest full snapshot with the time it arrived. No diff format, no vector clock, no merge: every node is the only writer of its own roster. A lost peer is served with a growing <code>peer_age_ms</code> and <code>peer_state: unreachable</code>, dropped after 24 hours.</p></div>
+    <div><h3>Trust</h3><p>Node to node is HTTPS on the Tailscale interface, a self-signed certificate pinned to the node key, requests signed by the sender, the swarm key in a header. Loopback uses a bearer token. A node refuses to start with a listener anywhere else.</p></div>
+  </div>
+
+  <h2>The record</h2>
+  <p>One record per session, schema <code>rosterd.snapshot.v1</code>. Consumers ignore unknown fields. Nested processes of one session collapse into the root; a harness whose parent is a different session is its own record with <code>parent_session_key</code>.</p>
+  <table>
+    <tr><th>field</th><th>what it is</th></tr>
+    <tr><td><code>node</code>, <code>node_id</code></td><td>the owning machine, name and key fingerprint</td></tr>
+    <tr><td><code>session_key</code></td><td><code>node_id:pid:start_ticks</code>, stable for the life of the process</td></tr>
+    <tr><td><code>harness</code>, <code>session_id</code></td><td><code>claude</code>, <code>codex</code>, <code>pi</code> or free text; the harness's own session id when known</td></tr>
+    <tr><td><code>lane</code></td><td><code>headless</code> (rosterd started it over ACP) or <code>interactive</code> (a human or a terminal manager owns it)</td></tr>
+    <tr><td><code>sources</code></td><td>subset of <code>launcher</code>, <code>acp</code>, <code>hook</code>, <code>files</code>, <code>scan</code></td></tr>
+    <tr><td><code>activity</code>, <code>activity_event</code>, <code>activity_at</code>, <code>activity_seq</code></td><td>one of <code>active</code>, <code>idle</code>, <code>needs_attention</code>, <code>unknown</code>; the event that set it, when, and a sequence clients dedupe on</td></tr>
+    <tr><td><code>name</code>, <code>cwd</code>, <code>parent_session_key</code></td><td>display name from launcher, hook or the agent itself; the folder; the spawning session</td></tr>
+    <tr><td><code>tmux</code>, <code>herdr</code>, <code>holder</code>, <code>tty</code></td><td>runtime handles: where a human can reach the session</td></tr>
+    <tr><td><code>liveness</code>, <code>ended_at</code>, <code>ended_reason</code></td><td><code>live</code>, <code>suspended</code>, <code>ended</code>; <code>exit</code>, <code>crash</code>, <code>reboot</code>, <code>killed</code>, <code>expired</code></td></tr>
+    <tr><td><code>usage</code></td><td>tokens, cost, context fill as the harness reported them over ACP. Never estimated.</td></tr>
+    <tr><td><code>mode</code>, <code>plan</code>, <code>load</code></td><td>the harness mode (plan, code…), its plan for the turn, and the CPU share and RSS of the process tree from the last scan</td></tr>
+  </table>
+
+  <h2>Cross platform</h2>
+  <p>Linux reads <code>/proc</code> and runs as a systemd user unit; macOS reads libproc and runs as a LaunchAgent in the GUI session so <em>open</em> reaches the display, the tmux server and the herdr socket; Windows uses toolhelp, named pipes and a service, with an interactive lane of hooks only. The holder, the hook script and the opener are the only platform-conditional code.</p>
+</section>
+
+<!-- ============================================================ flows -->
+<section class="page" id="p-flows">
+  <h1>Data and event flows</h1>
+  <p class="lede">A session's state is a series of claims. Each claim names a source, an activity word, an event and a sequence; the roster accepts or rejects it by precedence and publishes the whole table. Everything downstream is derived from that.</p>
+
+  <h2>Sources and precedence</h2>
+  <div class="dia"><svg viewBox="0 0 960 150" role="img" aria-label="Five sources ordered by precedence: launcher, acp, hook, files, scan">
+    <defs><marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="arrow"/></marker></defs>
+    <path d="M20 40H940" class="ln thin"/><text x="20" y="28" class="dim">highest</text><text x="900" y="28" class="dim">lowest</text>
+    <g><rect x="20" y="52" width="164" height="84" rx="8" class="box amber"/><text x="32" y="74" class="b">launcher</text><text x="32" y="94" class="dim">a script started it and</text><text x="32" y="110" class="dim">registered pid, name, cwd,</text><text x="32" y="126" class="dim">the tmux or herdr handle</text></g>
+    <g><rect x="208" y="52" width="164" height="84" rx="8" class="box green"/><text x="220" y="74" class="b">acp</text><text x="220" y="94" class="dim">everything the runner sees</text><text x="220" y="110" class="dim">from a session it drives:</text><text x="220" y="126" class="dim">turns, tools, permissions</text></g>
+    <g><rect x="396" y="52" width="164" height="84" rx="8" class="box"/><text x="408" y="74" class="b">hook</text><text x="408" y="94" class="dim">SessionStart, UserPrompt,</text><text x="408" y="110" class="dim">PreToolUse, Permission,</text><text x="408" y="126" class="dim">Notification, Stop</text></g>
+    <g><rect x="584" y="52" width="164" height="84" rx="8" class="box"/><text x="596" y="74" class="b">files</text><text x="596" y="94" class="dim">opt-in, off by default:</text><text x="596" y="110" class="dim">session ids and timestamps</text><text x="596" y="126" class="dim">from the harness directories</text></g>
+    <g><rect x="772" y="52" width="168" height="84" rx="8" class="box"/><text x="784" y="74" class="b">scan</text><text x="784" y="94" class="dim">process enumeration every</text><text x="784" y="110" class="dim">2 s; strays become unknown,</text><text x="784" y="126" class="dim">liveness of every pid</text></g>
+  </svg></div>
+  <p>A lower source never overwrites a value a higher one set, but every source can fill a null. A headless session has both <code>acp</code> and <code>hook</code>; when they disagree, ACP wins. <code>rosterd explain KEY</code> shows which source set each field and which claims were rejected and why: the truthfulness view.</p>
+
+  <h2>ACP traffic to activity</h2>
+  <table>
+    <tr><th>ACP</th><th>activity</th><th>event</th></tr>
+    <tr><td>session/prompt sent by the runner</td><td>active</td><td>prompt</td></tr>
+    <tr><td>agent message chunk, tool call, tool call in progress</td><td>active</td><td>message, tool_call</td></tr>
+    <tr><td>session/request_permission</td><td>needs_attention</td><td>permission</td></tr>
+    <tr><td>elicitation/create (a form question)</td><td>needs_attention</td><td>question</td></tr>
+    <tr><td>authentication required on session/new</td><td>needs_attention</td><td>login</td></tr>
+    <tr><td>permission or question answered</td><td>active</td><td>permission_answered</td></tr>
+    <tr><td>prompt response returned</td><td>idle</td><td>turn_end</td></tr>
+    <tr><td>session/cancel sent</td><td>idle</td><td>cancelled</td></tr>
+    <tr><td>adapter exit</td><td>ended</td><td>exit or crash</td></tr>
+  </table>
+  <p>Plan, mode and context fill ride along: <code>plan</code> replaces the whole list on every notification, <code>current_mode_update</code> sets <code>mode</code>, <code>usage_update</code> fills <code>usage</code>. The final assistant message of a turn is kept as the recap when the session was started with <code>recap: true</code>; nothing else of the transcript is stored.</p>
+
+  <h2 id="attention">A permission, answered from the phone</h2>
+  <div class="dia"><svg viewBox="0 0 960 420" role="img" aria-label="Sequence: the harness asks for permission, the claim reaches every node, the phone answers through a peer, the answer is proxied to the owner and delivered to the harness">
+    <defs><marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="arrow"/></marker>
+    <marker id="ara4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="arrow amber"/></marker></defs>
+    <g class="b"><text x="60" y="30" text-anchor="middle">harness</text><text x="230" y="30" text-anchor="middle">holder</text><text x="420" y="30" text-anchor="middle">rosterd gibson</text><text x="640" y="30" text-anchor="middle">rosterd mbp</text><text x="860" y="30" text-anchor="middle">phone</text></g>
+    <text x="60" y="46" text-anchor="middle" class="dim">via its adapter</text><text x="420" y="46" text-anchor="middle" class="dim">owner</text><text x="640" y="46" text-anchor="middle" class="dim">any peer</text>
+    <g class="lane"><path d="M60 56V400"/><path d="M230 56V400"/><path d="M420 56V400"/><path d="M640 56V400"/><path d="M860 56V400"/></g>
+    <path d="M60 80H230" class="ln" marker-end="url(#ar4)"/><text x="70" y="74" class="mono">session/request_permission</text>
+    <path d="M230 104H420" class="ln" marker-end="url(#ar4)"/><text x="240" y="98" class="dim">relayed unchanged over the socket</text>
+    <rect x="300" y="118" width="250" height="40" rx="6" class="box amber"/><text x="310" y="135" class="dim">claim: needs_attention, permission, seq 41;</text><text x="310" y="150" class="dim">the request is kept pending</text>
+    <path d="M420 182H640" class="ln" marker-end="url(#ar4)"/><text x="430" y="176" class="dim">/events: the full gibson snapshot</text>
+    <rect x="540" y="196" width="210" height="40" rx="6" class="box"/><text x="550" y="213" class="dim">diff against the last frame:</text><text x="550" y="228" class="mono">/swarm/changes → attention</text>
+    <path d="M640 258H860" class="ln" marker-end="url(#ar4)"/><text x="650" y="252" class="dim">SSE, the record with the pending request</text>
+    <rect x="790" y="270" width="140" height="34" rx="6" class="box dark"/><text x="800" y="292" class="onDark">Bash · Allow · Deny</text>
+    <path d="M860 326H640" class="ln amber" marker-end="url(#ara4)"/><text x="646" y="320" class="mono">POST /sessions/{key}/permission</text>
+    <path d="M640 348H420" class="ln amber" marker-end="url(#ara4)"/><text x="428" y="342" class="dim">proxied to the owner, signed by mbp</text>
+    <path d="M420 370H230" class="ln amber" marker-end="url(#ara4)"/><path d="M230 370H60" class="ln amber" marker-end="url(#ara4)"/><text x="70" y="364" class="mono">response to the pending request</text>
+    <rect x="300" y="380" width="250" height="30" rx="6" class="box green"/><text x="310" y="399" class="dim">claim: active, permission_answered, seq 42</text>
+  </svg></div>
+  <p>Every client sees the same thing because every client reads the same record. A board that keeps its own decision log reads the pending request from <code>GET /sessions/{key}</code> and answers it the same way; the tray answers it with a click; the CLI with <code>rosterd allow KEY</code>. Sound, badges and urgency stay the client's job.</p>
+
+  <h2>The change stream</h2>
+  <p><code>GET /swarm/events</code> is one full swarm snapshot per change anywhere: simplest to consume, heavy to notify on. <code>GET /swarm/changes</code> is the diff, computed by the node between consecutive frames, so a client learns what happened instead of re-reading the roster:</p>
+  <table>
+    <tr><th>event</th><th>when</th></tr>
+    <tr><td><code>snapshot</code></td><td>first, and the resync point for a client that missed events</td></tr>
+    <tr><td><code>session_started</code>, <code>session_ended</code>, <code>session_suspended</code></td><td>a key seen for the first time; liveness became ended, <code>ended_reason</code> says why; a holder stopped on purpose</td></tr>
+    <tr><td><code>attention</code></td><td>an accepted claim left the session needing a human; sent again for every new claim while it waits; <code>record.activity_event</code> is <code>permission</code>, <code>question</code> or <code>login</code></td></tr>
+    <tr><td><code>attention_cleared</code></td><td>the session no longer needs a human and has not ended</td></tr>
+    <tr><td><code>activity</code>, <code>renamed</code></td><td>any other accepted claim; a name change</td></tr>
+    <tr><td><code>node</code>, <code>node_left</code></td><td>a node appeared, went unreachable or came back; a node was revoked or left</td></tr>
+  </table>
+  <p>Pure function of two frames, derived and never stored. <code>rosterd changes</code> prints it one line per change; <code>attention</code> is the one to notify on.</p>
+
+  <h2>Session lifecycle</h2>
+  <div class="dia"><svg viewBox="0 0 960 250" role="img" aria-label="State diagram: live with four activity words, suspended, ended; resume creates a new key with the same session id">
+    <defs><marker id="ar5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="arrow"/></marker></defs>
+    <rect x="40" y="40" width="320" height="130" rx="10" class="box green"/>
+    <text x="56" y="64" class="b">live</text><text x="90" y="64" class="dim">holder running, harness alive</text>
+    <g class="mono"><rect x="56" y="80" width="130" height="28" rx="6" class="box"/><text x="68" y="99">active</text>
+    <rect x="200" y="80" width="140" height="28" rx="6" class="box"/><text x="212" y="99">idle</text>
+    <rect x="56" y="118" width="130" height="28" rx="6" class="box amber"/><text x="68" y="137">needs_attention</text>
+    <rect x="200" y="118" width="140" height="28" rx="6" class="box"/><text x="212" y="137">unknown</text></g>
+    <rect x="470" y="40" width="220" height="130" rx="10" class="box"/>
+    <text x="486" y="64" class="b">suspended</text>
+    <text x="486" y="88" class="dim">holder stopped on purpose,</text><text x="486" y="104" class="dim">no process, session_id kept,</text><text x="486" y="120" class="dim">the record stays with everything</text><text x="486" y="136" class="dim">needed to come back</text>
+    <rect x="770" y="40" width="170" height="130" rx="10" class="box soft"/>
+    <text x="786" y="64" class="b">ended</text>
+    <text x="786" y="88" class="dim">exit, crash, killed,</text><text x="786" y="104" class="dim">reboot, expired, suspended</text><text x="786" y="128" class="dim">kept in the snapshot</text><text x="786" y="144" class="dim">for a while</text>
+    <path d="M360 90H470" class="ln" marker-end="url(#ar5)"/><text x="366" y="82" class="dim">idle_timeout_s, or rosterd suspend</text>
+    <path d="M470 130H360" class="ln" marker-end="url(#ar5)"/><text x="366" y="150" class="dim">a prompt or rosterd resume:</text><text x="366" y="164" class="dim">session/load, new key, same session_id</text>
+    <path d="M200 170C200 215 700 215 770 150" class="ln" marker-end="url(#ar5)"/><text x="330" y="222" class="dim">adapter exit, holder crash, rosterd stop KEY</text>
+    <path d="M690 100H770" class="ln dash" marker-end="url(#ar5)"/><text x="694" y="92" class="dim">expired</text>
+    <path d="M770 60C740 30 500 20 380 40" class="ln dash" marker-end="url(#ar5)"/><text x="470" y="26" class="dim">crash with a stored session_id: resumed once within 5 minutes</text>
+  </svg></div>
+  <p>The runner never resumes on a timer. There is no wake-up schedule; a suspended session comes back only when something addresses it: a prompt from the CLI, the MCP tool or a client, or <code>rosterd resume</code>. On reboot every headless session is restored as suspended, none is resumed until addressed. Resumes are counted per hour; past <code>max_resumes_per_hour</code> a session stays suspended with a warning.</p>
+
+  <h2>Restart, crash, reboot</h2>
+  <ul>
+    <li><b>rosterd restart.</b> Holders keep running. The roster rebuilds in under a second from holder state, replayed notifications, hook claims and a scan. Nothing is lost.</li>
+    <li><b>Holder or harness crash.</b> The scanner notices the PID is gone; the session ends with reason <code>crash</code>. With a stored session id the runner resumes it once through <code>session/load</code> in a new holder, as a new key with the same session id. A second crash within five minutes is not resumed.</li>
+    <li><b>Machine reboot.</b> Holders are gone. The state files left behind restore each session as suspended.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ use cases -->
+<section class="page" id="p-uses">
+  <h1>Use cases</h1>
+  <p class="lede">What people actually do with it, and the parts of rosterd each one leans on.</p>
+
+  <div class="feat">
+    <div><h3>Approve from anywhere</h3><p class="who">A developer with agents on a desktop, a laptop and a server, and a phone.</p></div>
+    <div><p>Agents run under policy <code>attention</code>. When one wants to push, delete or spend, the request lands on the roster, the tray badge counts it, the phone shows the tool and its argument summary with Allow, Allow always and Deny. The answer goes to whichever node the phone is paired with and is proxied to the owner. Questions from the agent (a form with choices) and a harness that needs a login show up the same way.</p><p>Leans on: attention policy, <code>/swarm/changes</code> <code>attention</code> events, the proxied permission and answer endpoints, the QR pairing over Tailscale.</p></div>
+  </div>
+  <div class="feat">
+    <div><h3>One board for every machine</h3><p class="who">A project board or task runner that tracks tasks and attempts.</p></div>
+    <div><p>The board is a client. It subscribes to <code>/swarm/changes</code> on any node, maps session keys to its own attempt ids, dedupes on <code>activity_seq</code>, and shows who is working on what across the fleet. When an attempt needs a human it reads the pending request from <code>GET /sessions/{key}</code> and answers it. rosterd carries none of the board's ids and never dials it.</p><p>Leans on: the client contract, <code>/swarm/snapshot</code>, <code>/swarm/changes</code>, the session action endpoints.</p></div>
+  </div>
+  <div class="feat">
+    <div><h3>Headless workers on the big machine</h3><p class="who">A runner that starts agents on a server and reads results.</p></div>
+    <div><p><code>POST /sessions</code> with a harness, a cwd, a name and a policy starts a session under a holder; <code>prompt</code> with <code>wait_until: idle</code> returns with the recap. Idle sessions are suspended after the timeout and resume on the next prompt with the harness's own session id, so a worker keeps its context across days without holding a process.</p><p>Leans on: the runner, holders, suspend and resume, the recap.</p></div>
+  </div>
+  <div class="feat">
+    <div><h3>A coordinator that delegates</h3><p class="who">An agent that breaks work into parts for other agents.</p></div>
+    <div><p>Every session started by rosterd or the launcher has the rosterd MCP server in its config. The coordinator calls <code>session.spawn</code> to create children under itself, <code>session.prompt</code> to hand them work, <code>session.read_state</code> for activity and the last recap, and <code>session.send</code> to address a named session anywhere in the swarm. No transcript ever crosses; a recap and a state word do.</p><p>Leans on: the MCP server, <code>parent_session_key</code>, cross-node prompts.</p></div>
+  </div>
+  <div class="feat">
+    <div><h3>Take a session with you</h3><p class="who">Started on the laptop, finished on the desktop.</p></div>
+    <div><p>A headless session is its harness session id plus a cwd. <code>rosterd handoff KEY --to gibson</code> suspends it here and resumes it there, same session id, new key, on a repo that exists on both sides. The record moves in the swarm roster; clients see <code>session_suspended</code> on one node and <code>session_started</code> on the other.</p><p>Leans on: suspend and resume, holder state, the mesh.</p></div>
+  </div>
+  <div class="feat">
+    <div><h3>Know what the fleet burns</h3><p class="who">Anyone paying for several harnesses across several machines.</p></div>
+    <div><p>Every ACP <code>usage_update</code> lands on the record: tokens, cost, context fill. Rolled up per node, harness and day it answers where the spend goes and which subscription window is near its limit, in the spirit of OpenUsage but for what actually ran, never estimated.</p><p>Leans on: <code>usage</code> on the record, the roll-up endpoint and the journal.</p></div>
+  </div>
+  <div class="feat">
+    <div><h3>Everything still in tmux</h3><p class="who">A developer who runs agents by hand.</p></div>
+    <div><p>Nothing changes in the terminal. The hook posts claims, the scanner fills the tmux or herdr handle, the roster shows the pane; a click on the tray, the page or the phone jumps to it. Sessions nobody registered still appear as <code>unknown</code> with their folder and load.</p><p>Leans on: hooks, the scanner, the opener.</p></div>
+  </div>
+</section>
+
+<!-- ============================================================ walkthrough -->
+<section class="page" id="p-walkthrough">
+  <h1>What it can do, how, and what comes next</h1>
+  <p class="lede">One page, top to bottom: the capabilities of a node, the way each one is built, and the directions the swarm opens. Sections marked <span class="tag new">new</span> are landing now.</p>
+
+  <h2>See</h2>
+  <div class="cols">
+    <div><h3>Every session, whoever started it</h3><p>Interactive sessions in a terminal, tmux or herdr; headless ones under a holder; strays nobody registered. The scanner walks the process table every two seconds, confirms liveness of every known pid and adds new harness processes as <code>unknown</code>.</p></div>
+    <div><h3>Four words, never a guess</h3><p><code>active</code>, <code>idle</code>, <code>needs_attention</code>, <code>unknown</code>, from the last accepted claim. The age shown is the age of that claim, never "time spent working". A session only the scanner knows is <code>unknown</code> until a hook or ACP speaks.</p></div>
+    <div><h3>Where to reach it</h3><p>The tmux pane, the herdr pane or the conversation view at <code>/ui/sessions/{key}</code>. Load from the process tree, the harness mode, the plan for the turn, the context fill, the pending request.</p></div>
+  </div>
+<pre><code>$ rosterd list --swarm
+gibson   3 active  1 idle  1 needs attention        reachable
+mbp      1 active  1 suspended                      reachable
+arch     2 idle                                     stale 41s
+
+api: swarm changes   claude  needs_attention  4s   headless     gibson  84560
+board: puller        claude  active           58s  interactive  gibson  71022
+[finance]            codex   idle             4m   interactive  gibson  61840
+docs: pages site     claude  active           1s   headless     mbp     3341
+migrate: holders     claude  suspended        2h   headless     mbp     -</code></pre>
+
+  <h2>Act</h2>
+  <div class="cols">
+    <div><h3>Answer</h3><p>A permission gets Allow, Allow always (when the harness offers it) and Deny. A form question gets its choices. A harness that needs a login gets the login. From the tray, the page, the phone, the CLI or a client's own UI, proxied to the owner.</p></div>
+    <div><h3>Drive</h3><p><code>prompt</code> sends a turn, optionally waiting for idle, attention or end. <code>cancel</code> stops the turn and keeps the session; <code>stop</code> ends the holder. <code>name</code> labels it; agents label their own session through MCP.</p></div>
+    <div><h3>Open</h3><p><code>open</code> resolves the runtime handle: the opener script for tmux and herdr, the conversation view for headless. The page renders the ACP stream live with the last recap; it stores none of it.</p></div>
+  </div>
+
+  <h2>Run</h2>
+  <ol class="steps">
+    <li><code>POST /sessions</code> (or <code>rosterd start</code>) with harness, cwd, name, model, effort, policy and env. The runner starts a holder, the holder starts the adapter, ACP <code>initialize</code> and <code>session/new</code> run, the session id is stored, the record registers with sources <code>acp</code> and <code>launcher</code>.</li>
+    <li>The launch environment carries <code>ROSTERD_SOCKET</code>, so hooks inside the harness post claims too; ACP wins when they disagree. The rosterd MCP server is in the harness's config under the name <code>rosterd</code>.</li>
+    <li>Turns flow: prompt, message chunks, tool calls, permission requests, plan and mode updates, usage, turn end. Each becomes a claim with a sequence.</li>
+    <li>Idle past <code>idle_timeout_s</code>: the holder is stopped, the record stays <code>suspended</code> with its session id. A pending permission keeps the session live because it cannot survive the harness.</li>
+    <li>The next prompt starts a new holder, <code>session/load</code> with the stored id, waits for it to settle, delivers the prompt. The caller sees one call that takes a little longer.</li>
+  </ol>
+  <p>Policy <code>auto</code> approves every permission and stays <code>active</code>; <code>attention</code> leaves it pending. A child spawned through <code>session.spawn</code> inherits the parent's policy unless the call overrides it. Codex and pi join through their own adapters; pi's extension supplies the claims and the gate the adapter lacks.</p>
+
+  <h2>Federate</h2>
+  <p>A swarm is nodes that answer for each other. Join with an invite, then <code>rosterd list --swarm</code> on any machine is the union roster and any action on a session owned elsewhere is proxied to its owner with the sender's signature. Membership and revocations gossip in every hello. A peer off the tailnet is served from its last snapshot, dimmed, with its age; back on, the stale snapshot is replaced. Nothing else changes when a peer is unreachable, and nothing waits on one.</p>
+
+  <h2>Learn <span class="tag new">new</span></h2>
+  <div class="feat">
+    <div><h3>Node-level events</h3></div>
+    <div><p><code>/swarm/changes</code> turns the snapshot stream into named events: sessions starting, ending, suspending; attention raised and cleared; nodes joining, dropping, coming back. <code>attention</code> is the one every client notifies on, and it carries the record with the pending request so the notification can act. A missed stretch resyncs from the next <code>snapshot</code>.</p></div>
+  </div>
+  <div class="feat">
+    <div><h3>Attention as the first-class thing</h3></div>
+    <div><p>Every surface leads with what needs a human: the tray badge, the page's first section, the phone's first card, <code>rosterd changes</code>. A permission, a question and a login are the three shapes; each names the tool, the question or the harness, and offers only the buttons the harness offered. No free text anywhere, so nothing a client shows can be turned into a prompt.</p></div>
+  </div>
+  <div class="feat">
+    <div><h3>Model and credential health</h3></div>
+    <div><p>Per node, per harness: logged in or not, rate limited until when, last successful <code>session/new</code>. It rides in the hello capabilities so <code>rosterd nodes</code> shows it and a client can pick a node whose harness can actually start. A harness that refuses a session for want of a login raises <code>attention</code> with <code>activity_event: login</code>.</p></div>
+  </div>
+  <div class="feat">
+    <div><h3>Usage across the fleet</h3></div>
+    <div><p>The <code>usage</code> a harness reports over ACP (input and output tokens, cost, context fill) is rolled up by node, harness, session and day: <code>rosterd usage --swarm --since 7d</code>, and the same frame over the API. What OpenUsage does for a subscription on one Mac, this does for what actually ran on every node, from the harness's own numbers. Never estimated; a harness that reports nothing shows nothing.</p></div>
+  </div>
+  <div class="feat">
+    <div><h3>Journal</h3></div>
+    <div><p>An append-only, per-node log of the change events: one line per start, end, suspension, attention raised and answered, node change. It is agent logging at the level a human reads, without a transcript. <code>rosterd journal --since</code> replays it, and a client that was down catches up from it instead of re-deriving from snapshots. Rotated by size; never a decision record.</p></div>
+  </div>
+
+  <h2>Hand off <span class="tag new">new</span></h2>
+  <p>A headless session is portable: its harness session id, cwd, name and policy. <code>rosterd handoff KEY --to NODE</code> suspends it on the owner, ships the holder state to the target over the mesh, and resumes it there under a new key with the same session id. The repo has to exist on both sides; that is the caller's business, rosterd checks the cwd and refuses otherwise. Laptop to desktop before a long run, desktop to server before closing the lid.</p>
+  <div class="dia"><svg viewBox="0 0 960 150" role="img" aria-label="Handoff: suspend on mbp, holder state travels over the mesh, resume on gibson with the same session id">
+    <defs><marker id="ar6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="arrow"/></marker></defs>
+    <rect x="20" y="30" width="270" height="90" rx="10" class="box dark"/><text x="36" y="54" class="b onDark">mbp</text>
+    <text x="36" y="76" class="onDark dim">migrate: holders, live, key mbp:3341</text><text x="36" y="94" class="onDark dim">session_id 9f2c…, cwd ~/Code/rosterd</text><text x="36" y="112" class="onDark dim">→ suspended, then ended: handoff</text>
+    <rect x="360" y="50" width="240" height="50" rx="8" class="box"/><text x="372" y="70">holder state over the mesh</text><text x="372" y="88" class="dim">session_id, harness, cwd, name, policy</text>
+    <rect x="670" y="30" width="270" height="90" rx="10" class="box dark"/><text x="686" y="54" class="b onDark">gibson</text>
+    <text x="686" y="76" class="onDark dim">migrate: holders, live, key gibson:9027</text><text x="686" y="94" class="onDark dim">same session_id, session/load</text><text x="686" y="112" class="onDark dim">the next prompt lands here</text>
+    <path d="M290 75H360" class="ln" marker-end="url(#ar6)"/><path d="M600 75H670" class="ln" marker-end="url(#ar6)"/>
+  </svg></div>
+
+  <h2>Agents talking to agents <span class="tag new">new</span></h2>
+  <p>The MCP server already lets a session spawn children and prompt them. <code>session.send</code> completes the loop: address any session in the swarm by name, wait until it is idle, read its recap. Two agents on two machines can hand each other work with the roster as the address book, and rosterd still schedules nothing: every prompt is sent by someone, a human or an agent, never by a timer.</p>
+<pre><code><span class="c"># from inside a session, through the rosterd MCP server</span>
+session.spawn      { harness: "claude", cwd: "~/Code/rosterd", name: "tests: holder" }
+session.send       { name: "tests: holder", prompt: "run the relay tests", wait_until: "idle" }
+session.read_state { name: "tests: holder" }      <span class="c">→ { activity: "idle", recap: "3 passed…" }</span></code></pre>
+
+  <h2>Opportunities</h2>
+  <div class="opps">
+    <div><h3>A control plane for agents, the way Kubernetes is for containers</h3><p>Today a node is a machine and a client picks it. The same primitives, capabilities in the hello, load on the record, handoff between nodes, are what placement needs: <code>POST /swarm/sessions</code> that picks the node with the harness, the repo and the headroom. Not built, deliberately; the roster has to be trustworthy first.</p></div>
+    <div><h3>A third operating system</h3><p>Windows is specified: toolhelp, named pipes, a service, hooks only in the interactive lane. A swarm that spans all three is where the mesh stops being a convenience.</p></div>
+    <div><h3>Clients that are not ours</h3><p>The client contract is small: two SSE streams, one GET, a handful of POSTs. An Omarchy bar module, a Raycast extension, a Slack bot answering permissions, a CI job that waits on <code>attention</code>. Each is an afternoon.</p></div>
+    <div><h3>More harnesses</h3><p>Anything with an ACP adapter is a headless lane; anything with hooks or an extension point is an interactive lane. pi showed the pattern: an adapter for the runner, an extension for claims and the gate.</p></div>
+    <div><h3>Usage that drives choices</h3><p>Once spend and window limits are on every node, a client can prefer the harness with headroom, or warn before a long run starts on a nearly spent subscription. The data is there; the policy stays in the client.</p></div>
+    <div><h3>What stays out</h3><p>Terminal rendering, decision history, rules over agent behaviour, credential management, cross-swarm federation, relays for machines that cannot reach each other, multi-user nodes. Saying no is what keeps a node small enough to trust.</p></div>
+  </div>
+</section>
+
+<!-- ============================================================ api -->
+<section class="page" id="p-api">
+  <h1>API, MCP, CLI</h1>
+  <p class="lede">All JSON, all on the local socket and the loopback listener with a bearer token; the swarm paths also on the Tailscale listener. Every CLI command with <code>--json</code> prints the API frame for its resource byte for byte.</p>
+
+  <h2>Endpoints</h2>
+  <table class="tight">
+    <tr><th>path</th><th>what</th></tr>
+    <tr><td><code>GET /snapshot</code></td><td>the complete node roster</td></tr>
+    <tr><td><code>GET /events</code></td><td>SSE, the complete node roster on every change</td></tr>
+    <tr><td><code>GET /status</code></td><td>node, listeners, swarm, counts, sources</td></tr>
+    <tr><td><code>POST /register</code>, <code>/claim</code>, <code>/name</code></td><td>intake from launchers and hooks: a session identity, an activity claim, a display name</td></tr>
+    <tr><td><code>POST /gate</code></td><td>the pi extension's gate: waits for allow or deny on a tool call</td></tr>
+    <tr><td><code>POST /sessions</code></td><td>start a headless session: harness, cwd, name, model, effort, permission_policy, env, recap</td></tr>
+    <tr><td><code>GET /sessions/{key}</code></td><td>one record in full: the pending permission, question or login, the last recap, the children</td></tr>
+    <tr><td><code>PATCH</code>, <code>DELETE /sessions/{key}</code></td><td>change the policy or the name mid-life; stop the holder</td></tr>
+    <tr><td><code>POST /sessions/{key}/prompt</code></td><td><code>{ prompt, wait_until?: idle|needs_attention|ended, timeout_s? }</code></td></tr>
+    <tr><td><code>POST /sessions/{key}/permission</code>, <code>/answer</code></td><td>answer the pending permission with an option id; answer the pending question with the form values</td></tr>
+    <tr><td><code>POST /sessions/{key}/cancel</code>, <code>/suspend</code>, <code>/resume</code>, <code>/open</code>, <code>/name</code></td><td>the session actions</td></tr>
+    <tr><td><code>POST /sessions/{key}/spawn</code></td><td>a child session under this one: harness, cwd, name, model, permission_policy; returns its key and record</td></tr>
+    <tr><td><code>GET /sessions/{key}/stream</code></td><td>the raw ACP notification stream for a client that renders a conversation; not stored</td></tr>
+    <tr><td><code>GET /sessions/{key}/explain</code></td><td>which source set each field and when, which claims were rejected and why</td></tr>
+    <tr><td><code>GET /swarm/snapshot</code></td><td>the union roster, each node tagged with <code>peer_age_ms</code> and <code>peer_state</code></td></tr>
+    <tr><td><code>GET /swarm/events</code></td><td>SSE, the full swarm snapshot on any change anywhere</td></tr>
+    <tr><td><code>GET /swarm/changes</code></td><td>SSE, <code>snapshot</code> once, then one event per change</td></tr>
+    <tr><td><code>GET /swarm/nodes</code></td><td>membership with health and capabilities</td></tr>
+    <tr><td><code>/swarm/{node_id}/sessions/…</code></td><td>any session path, proxied to that node</td></tr>
+    <tr><td><code>GET /pair</code>, <code>GET /ui</code>, <code>/ui/sessions/{key}</code></td><td>the phone pairing payload; the page and the conversation view</td></tr>
+    <tr><td><code>GET /node/hello</code>, <code>POST /node/join</code></td><td>node to node: the signed hello, the join with an invite</td></tr>
+  </table>
+  <p>The session paths are the same under the loopback listener and, prefixed with the owning node, over the swarm. Any node accepts an action for any session and proxies it; the response travels back.</p>
+
+  <h2>MCP tools</h2>
+  <p>Served on the same socket under the name <code>rosterd</code>, in the config of every harness started by the runner or the launcher. The caller is identified by its PID from the socket peer credentials.</p>
+  <table>
+    <tr><th>tool</th><th>what</th></tr>
+    <tr><td><code>roster.list</code>, <code>roster.watch</code></td><td>the roster, node or swarm scope</td></tr>
+    <tr><td><code>session.name</code></td><td>rename the caller's own session</td></tr>
+    <tr><td><code>session.spawn</code></td><td>a child under the caller; returns its key and record</td></tr>
+    <tr><td><code>session.prompt</code>, <code>session.send</code></td><td>a turn for a session by key, or by name anywhere in the swarm, with an optional wait</td></tr>
+    <tr><td><code>session.read_state</code></td><td>activity and the last recap, never the transcript</td></tr>
+    <tr><td><code>swarm.nodes</code></td><td>membership and health</td></tr>
+  </table>
+
+  <h2>CLI</h2>
+<pre><code>rosterd list|watch [--swarm|--node N]      one row per session; watch reprints on every change
+rosterd changes                            one line per change across the swarm
+rosterd status | nodes                     this node; swarm membership and health
+rosterd read KEY | explain KEY             one session in full; which source set each field
+rosterd start --harness H --cwd DIR [--name L] [--policy auto|attention] [--model M] [--effort E] [--env K=V]
+rosterd prompt KEY TEXT [--wait idle|needs_attention|ended] [--timeout SECONDS]
+rosterd cancel|stop|suspend|resume|open KEY
+rosterd name KEY LABEL | name KEY --clear
+rosterd allow KEY [--always] | deny KEY [--reason TEXT]
+rosterd spawn KEY --harness H --cwd DIR [--name L]
+rosterd handoff KEY --to NODE
+rosterd usage [--swarm] [--since 7d] | journal [--since T]
+rosterd invite [--ttl MINUTES] | join ADDRESS --token T | revoke NODE_ID | leave
+rosterd integrate install|uninstall claude|codex|pi | integrate status
+rosterd ui | daemon [--config PATH] | setup [--yes] | doctor | version</code></pre>
+  <p><code>KEY</code> is an exact session key, a PID on this node, or a unique display name; an ambiguous name lists the candidates and never guesses. Exit codes: 0 ok, 1 user error, 2 daemon unreachable, 3 a peer was needed and is unreachable. The agent-facing summary is <code>skill/SKILL.md</code>; its one rule: never parse the human tables.</p>
+
+  <h2>Config</h2>
+<pre><code><span class="c"># ~/.config/rosterd/rosterd.toml on Linux, ~/Library/Application Support/rosterd/ on macOS</span>
+[node]
+name = <span class="s">"gibson"</span>              <span class="c"># pinned; a renamed machine is a new name, the id stays</span>
+port = 8791                  <span class="c"># the swarm listener, on the Tailscale interface</span>
+listen = <span class="s">"tailscale"</span>
+loopback_port = 8790         <span class="c"># the page and local tools, bearer in loopback.token</span>
+
+[swarm]
+static_peers = [<span class="s">"100.64.0.12:8791"</span>]   <span class="c"># the fallback without Tailscale</span>
+
+[runner]
+default_permission_policy = <span class="s">"attention"</span>
+idle_timeout_s = 1800
+suspend_on_needs_attention = false
+resume_on_crash = true
+max_resumes_per_hour = 6
+recap = true
+
+[sources]
+files = false
+scan_interval_ms = 2000
+
+[harness.claude]
+adapter = <span class="s">"claude-agent-acp"</span>
+[harness.codex]
+adapter = <span class="s">"codex-acp"</span>
+[harness.pi]
+adapter = <span class="s">"pi-acp"</span>
+extension = true
+gate_timeout_s = 3600</code></pre>
+  <p>Keys and tokens live next to it with mode 0600: <code>node.key</code>, <code>loopback.token</code>, <code>swarm.json</code>. Adapters are pinned by version, pi's by commit, in a lock file the node writes on first install.</p>
+
+  <h2>Hooks</h2>
+  <p><code>rosterd setup</code> or <code>rosterd integrate install claude</code> writes these; only marked entries are ours, everything else in the file is kept. The hook reads <code>session_id</code>, <code>hook_event_name</code>, <code>cwd</code> and <code>notification_type</code>, nothing else, posts the claim to the socket, fails open in 800 ms and always exits 0.</p>
+<pre><code>{ <span class="k">"hooks"</span>: {
+  <span class="k">"SessionStart"</span>:      [{ <span class="k">"hooks"</span>: [{ <span class="k">"type"</span>: <span class="s">"command"</span>, <span class="k">"command"</span>: <span class="s">"rosterd-hook"</span> }] }],
+  <span class="k">"UserPromptSubmit"</span>:  [{ <span class="k">"hooks"</span>: [{ <span class="k">"type"</span>: <span class="s">"command"</span>, <span class="k">"command"</span>: <span class="s">"rosterd-hook"</span> }] }],
+  <span class="k">"PreToolUse"</span>:        [{ <span class="k">"matcher"</span>: <span class="s">""</span>, <span class="k">"hooks"</span>: [{ <span class="k">"type"</span>: <span class="s">"command"</span>, <span class="k">"command"</span>: <span class="s">"rosterd-hook"</span> }] }],
+  <span class="k">"PermissionRequest"</span>: [{ <span class="k">"hooks"</span>: [{ <span class="k">"type"</span>: <span class="s">"command"</span>, <span class="k">"command"</span>: <span class="s">"rosterd-hook"</span> }] }],
+  <span class="k">"Notification"</span>:      [{ <span class="k">"hooks"</span>: [{ <span class="k">"type"</span>: <span class="s">"command"</span>, <span class="k">"command"</span>: <span class="s">"rosterd-hook"</span> }] }],
+  <span class="k">"Stop"</span>:              [{ <span class="k">"hooks"</span>: [{ <span class="k">"type"</span>: <span class="s">"command"</span>, <span class="k">"command"</span>: <span class="s">"rosterd-hook"</span> }] }]
+} }</code></pre>
+
+  <h2>Environment</h2>
+  <table>
+    <tr><th>variable</th><th>read by</th><th>meaning</th></tr>
+    <tr><td><code>ROSTERD_SOCKET</code></td><td>daemon, CLI, hook, launcher</td><td>the daemon socket; <code>$XDG_RUNTIME_DIR/rosterd.sock</code> on Linux, <code>$TMPDIR/rosterd.sock</code> on macOS</td></tr>
+    <tr><td><code>ROSTERD_HARNESS</code></td><td>hook</td><td>the harness name when the process tree does not say</td></tr>
+    <tr><td><code>ROSTERD_CONFIG_DIR</code>, <code>ROSTERD_STATE_DIR</code>, <code>ROSTERD_CONFIG</code></td><td>daemon, CLI, scripts</td><td>override the directories and the config file</td></tr>
+    <tr><td><code>ROSTERD_GATE</code></td><td>pi extension</td><td><code>attention</code> pauses before each tool call until allowed or denied</td></tr>
+    <tr><td><code>ROSTERD_MACHINE</code>, <code>ROSTERD_TERMINAL_CMD</code>, <code>ROSTERD_HERDR_LINK</code></td><td>opener</td><td>this machine's name, how to open a terminal, whether a <code>herdr://</code> handler exists</td></tr>
+    <tr><td><code>RUST_LOG</code></td><td>daemon</td><td>log filter, <code>info</code> by default</td></tr>
+  </table>
+</section>
+
+</main>
+
+<footer><div class="wrap">
+  <span>rosterd, MIT.</span>
+  <a href="https://github.com/sbusso/rosterd">Source</a>
+  <a href="https://github.com/sbusso/rosterd/blob/main/SPEC.md">The spec</a>
+  <a href="https://github.com/sbusso/rosterd/releases">Releases</a>
+</div></footer>
+
+<script>
+(function () {
+  var pages = { "": "home", architecture: "architecture", flows: "flows", uses: "uses", walkthrough: "walkthrough", api: "api" };
+  var links = document.querySelectorAll("nav.top a.pg");
+  function route() {
+    var h = location.hash.replace(/^#\/?/, "");
+    var parts = h.split("/");
+    var page = pages[parts[0]] || (document.getElementById(parts[0]) ? "home" : "home");
+    var anchor = parts[1] || (pages[parts[0]] ? "" : parts[0]);
+    document.querySelectorAll("section.page").forEach(function (s) { s.classList.toggle("on", s.id === "p-" + page); });
+    links.forEach(function (a) {
+      var target = a.getAttribute("href").replace(/^#\/?/, "") || "";
+      if (pages[target] === page) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+    });
+    var el = anchor && document.getElementById(anchor);
+    if (el) el.scrollIntoView(); else window.scrollTo(0, 0);
+    document.title = page === "home" ? "rosterd" : "rosterd, " + document.querySelector("#p-" + page + " h1").textContent;
+  }
+  addEventListener("hashchange", route);
+  route();
+})();
+</script>
+</body>
+</html>
