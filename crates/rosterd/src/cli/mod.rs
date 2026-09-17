@@ -6,7 +6,7 @@
 
 mod client;
 mod list;
-mod resolve;
+pub(crate) mod resolve;
 mod session;
 
 use std::path::Path;

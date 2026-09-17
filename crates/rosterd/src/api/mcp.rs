@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use axum::extract::ConnectInfo;
-use axum::http::{Method, StatusCode, request::Parts};
+use axum::http::{StatusCode, request::Parts};
 use rmcp::ErrorData as McpError;
 use rmcp::ServerHandler;
 use rmcp::model::{
@@ -22,7 +22,8 @@ use rosterd_proto::Source;
 use serde_json::{Value, json};
 
 use super::Peer;
-use super::routes::{ApiError, SpawnBody, key_for_pid, remote_owner, session_state, spawn_child};
+use super::routes::{ApiError, SpawnBody, key_for_pid, spawn_child};
+use super::send::{SendBody, prompt_session, send, state_of};
 use crate::node::{Node, VERSION};
 use crate::runner::PromptRequest;
 
@@ -94,6 +95,25 @@ fn tools() -> Vec<Tool> {
             "Activity, pending permission requests and the last recap of a session; never the transcript.",
             json!({ "type": "object", "properties": { "session_key": { "type": "string" } }, "required": ["session_key"] }),
         ),
+        tool(
+            "session.send",
+            "Prompt another session by session_key, display name or local pid, anywhere in the swarm, and get its answer: reached, stop_reason, recap, activity and what it left pending. Waits until idle for up to 120 s unless told otherwise. A session cannot send to itself.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "to": { "type": "string" },
+                    "prompt": { "type": "string" },
+                    "wait_until": { "type": "string", "enum": ["idle", "needs_attention", "ended"], "default": "idle" },
+                    "timeout_ms": { "type": "integer", "default": 120000 }
+                },
+                "required": ["to", "prompt"]
+            }),
+        ),
+        tool(
+            "session.find",
+            "The session a session_key, display name or local pid names, with its node; 409 lists the candidates of an ambiguous name.",
+            json!({ "type": "object", "properties": { "name": { "type": "string" } }, "required": ["name"] }),
+        ),
         tool("swarm.nodes", "Swarm membership with health.", json!({ "type": "object", "properties": {} })),
     ]
 }
@@ -102,7 +122,7 @@ impl ServerHandler for RosterMcp {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("rosterd", VERSION))
-            .with_instructions("The roster of coding agent sessions on this machine and its swarm. Name yourself, spawn children, prompt and read peers.")
+            .with_instructions("The roster of coding agent sessions on this machine and its swarm. Name yourself with session.name, spawn children with session.spawn (their parent_session_key is you), send them work with session.send and read their recap; find any session by name with session.find. rosterd relays and never schedules.")
     }
 
     async fn list_tools(&self, _: Option<PaginatedRequestParams>, _: RequestContext<RoleServer>) -> Result<ListToolsResult, McpError> {
@@ -117,7 +137,12 @@ impl ServerHandler for RosterMcp {
             "session.name" => self.session_name(&context, &args),
             "session.spawn" => self.session_spawn(&context, &args).await,
             "session.prompt" => self.session_prompt(&args).await,
-            "session.read_state" => self.read_state(&args).await,
+            "session.read_state" => match arg(&args, "session_key") {
+                Ok(key) => state_of(&self.node, key).await,
+                Err(error) => Err(error),
+            },
+            "session.send" => self.session_send(&context, &args).await,
+            "session.find" => arg(&args, "name").and_then(|name| self.node.resolve_session(name)).and_then(|record| Ok(serde_json::to_value(record)?)),
             "swarm.nodes" => Ok(json!({ "nodes": self.node.mesh.nodes() })),
             other => return Err(McpError::invalid_params(format!("unknown tool {other}"), None)),
         };
@@ -153,16 +178,6 @@ impl RosterMcp {
         key_for_pid(&self.node, pid)
     }
 
-    /// A proxied action's answer, R7.5: the owner's body, or its `{error}` under its status.
-    async fn relay(&self, owner: &str, method: Method, path: &str, body: Option<Value>) -> Result<Value, ApiError> {
-        let (status, value) = self.node.mesh.proxy(owner, method, path, body).await?;
-        if status.is_success() {
-            return Ok(value);
-        }
-        let message = value.get("error").and_then(Value::as_str).unwrap_or("proxy failed").to_string();
-        Err(ApiError::new(status, message))
-    }
-
     fn roster_list(&self, args: &Value) -> Result<Value, ApiError> {
         match args.get("scope").and_then(Value::as_str).unwrap_or("node") {
             "node" => Ok(serde_json::to_value(self.node.roster.snapshot())?),
@@ -186,32 +201,14 @@ impl RosterMcp {
 
     async fn session_prompt(&self, args: &Value) -> Result<Value, ApiError> {
         let key = arg(args, "session_key")?;
-        if let Some(owner) = remote_owner(&self.node, None, key, false)? {
-            let body = json!({ "prompt": args["prompt"], "wait_until": args["wait_until"], "timeout_ms": args["timeout_ms"] });
-            return self.relay(&owner, Method::POST, &format!("/sessions/{key}/prompt"), Some(body)).await;
-        }
         let request: PromptRequest = serde_json::from_value(args.clone()).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e.to_string()))?;
-        Ok(serde_json::to_value(self.node.runner.prompt(key, request).await?)?)
+        prompt_session(&self.node, key, request).await
     }
 
-    /// Activity and the last recap, never the transcript, R6. A session this node does not
-    /// drive (no holder) answers from its record alone.
-    async fn read_state(&self, args: &Value) -> Result<Value, ApiError> {
-        let key = arg(args, "session_key")?;
-        if let Some(owner) = remote_owner(&self.node, None, key, false)? {
-            let answer = self.relay(&owner, Method::GET, &format!("/sessions/{key}"), None).await?;
-            return Ok(answer.get("state").cloned().unwrap_or(answer));
-        }
-        let record = self.node.roster.get(key).ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, format!("no session {key}")))?;
-        if let Some(state) = session_state(&self.node, &record) {
-            return Ok(serde_json::to_value(state)?);
-        }
-        Ok(json!({
-            "session_key": record.session_key,
-            "activity": record.activity,
-            "last_recap": null,
-            "pending": [],
-            "permission_policy": record.permission_policy.unwrap_or(self.node.config.runner.default_permission_policy),
-        }))
+    /// R5.5 agent to agent: the caller, when known, may not send to itself.
+    async fn session_send(&self, context: &RequestContext<RoleServer>, args: &Value) -> Result<Value, ApiError> {
+        let from = self.caller(context).ok();
+        let body: SendBody = serde_json::from_value(args.clone()).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e.to_string()))?;
+        send(&self.node, from.as_deref(), body).await
     }
 }

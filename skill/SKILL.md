@@ -7,8 +7,21 @@ description: Read and drive coding agent sessions on this machine and its swarm 
 
 One daemon per machine keeps the roster: every coding agent session and its activity, on this
 machine and across the swarm. The MCP server is the preferred path (`roster.list`,
-`roster.watch`, `session.prompt`, `session.read_state`, `session.spawn`, `session.name`,
-`swarm.nodes`). From a shell, use the CLI below, always with `--json`.
+`roster.watch`, `session.prompt`, `session.read_state`, `session.send`, `session.find`,
+`session.spawn`, `session.name`, `swarm.nodes`). From a shell, use the CLI below, always with
+`--json`.
+
+## Talking to other agents
+
+Name yourself with `session.name`. Spawn children with `session.spawn` (their
+`parent_session_key` is you). Send any session work with `session.send { to, prompt,
+wait_until?, timeout_ms? }`: `to` is a `session_key`, a display name (the name, else the cwd
+basename, with or without brackets) or a pid on this node, anywhere in the swarm; it waits
+until the target is idle (120 s by default) and answers with `session_key`, `node`, `reached`,
+`stop_reason`, `recap`, `activity` and what the target left `pending`. An ambiguous name is 409
+with the candidates, no match is 404, and you cannot send to yourself (400). `session.find
+{ name }` resolves without sending. rosterd relays; it never schedules. From a shell,
+`rosterd prompt NAME TEXT --wait idle --json` is the same call, `POST /send` on the socket too.
 
 ## One rule
 

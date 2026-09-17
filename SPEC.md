@@ -172,6 +172,8 @@ A child inherits the parent's permission policy unless the spawn call overrides 
 
 POST /local/sessions/{key}/prompt sends a turn. Optional wait_until with idle, needs_attention, or ended and a timeout, mirroring herdr agent wait. GET /local/sessions/{key}/stream is the raw ACP notification stream for clients that render a conversation. rosterd does not store it. The final assistant message of each turn is kept as the recap if the session was started with recap true, readable through GET /sessions/{key}, and nothing else from the transcript.
 
+Agent to agent. A session prompts another with the MCP tool session.send (or POST /send) naming it as the CLI does, R14.1: an exact session_key, a unique display name (the name, else the cwd basename, with or without its brackets) among sessions that have not ended anywhere in the swarm, or a pid on the local node. An ambiguous name is 409 listing the candidates' session_key and node; no match is 404; a session naming itself is 400. The prompt runs on the owning node through R7.5 and the answer is the target's key and node, reached, stop_reason, recap, activity and what it left pending, waiting until idle for 120 s unless told otherwise. session.find resolves a name the same way without sending. This is the coordination pattern: a parent spawns children (R5.4, parent_session_key), sends them work, reads their recap. rosterd relays; it never schedules.
+
 ### R5.6 Ending
 
 POST /local/sessions/{key}/cancel sends ACP cancel. DELETE /local/sessions/{key} stops the holder.
@@ -187,6 +189,7 @@ GET /events. SSE, each event is the complete node roster.
 POST /register. Launcher or hook registration.
 POST /claim. Activity claim for a session_key or pid plus start_ticks.
 POST /name. Set or clear a display name.
+POST /send. `{to, prompt, wait_until?, timeout_ms?}`: prompt a session by key, name or pid anywhere in the swarm and get its answer, R5.5. Local router only.
 POST /sessions, GET /sessions/{key}, PATCH, DELETE, /prompt, /cancel, /stream as in R5.
 GET /swarm/snapshot. Union of this node's roster and every peer's last snapshot, each tagged with node and peer_age_ms.
 GET /swarm/events. SSE, complete swarm snapshot on any change anywhere.
@@ -200,6 +203,7 @@ roster.list, roster.watch. Node or swarm scope.
 session.name. Rename the caller's own session. The caller is identified by its PID from the socket peer credentials.
 session.spawn. Create a child session under the caller, returns its key and record. R5.4.
 session.prompt, session.read_state. For coordinator agents. read_state returns activity and the last recap only, never the transcript.
+session.send, session.find. Prompt a session by key, name or pid and get its answer; resolve a name without sending. R5.5 agent to agent.
 swarm.nodes.
 
 The MCP server is what replaces the shell based agentd skill. Every harness started by the launcher or runner gets it in its MCP config under the name rosterd.

@@ -26,6 +26,7 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 
 use super::Peer;
+use super::send::{SendBody, send};
 use crate::gate;
 use crate::mesh::{MeshError, PeerAuth};
 use crate::node::{Node, VERSION};
@@ -152,6 +153,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/register", post(register))
         .route("/claim", post(claim))
         .route("/name", post(name))
+        .route("/send", post(send_to))
         .route("/gate", post(gate))
         .route("/status", get(status))
         .route("/pair", get(pair))
@@ -299,6 +301,17 @@ async fn name(
         }
     };
     Ok(Json(node.roster.set_name(&key, body.name, Source::Hook)?))
+}
+
+/// R5.5 agent to agent from a shell or the page: the same object as the MCP tool session.send.
+/// Over the socket the peer's own session is the sender, so it cannot send to itself.
+async fn send_to(
+    State(node): State<Arc<Node>>,
+    peer: Option<Extension<ConnectInfo<Peer>>>,
+    Body(body): Body<SendBody>,
+) -> Result<Json<Value>, ApiError> {
+    let from = peer.and_then(|Extension(ConnectInfo(peer))| peer.pid).and_then(|pid| key_for_pid(&node, pid).ok());
+    Ok(Json(send(&node, from.as_deref(), body).await?))
 }
 
 /// The session a live process reports under: its own record or the root it was collapsed

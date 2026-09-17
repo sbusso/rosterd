@@ -165,6 +165,16 @@ cwd basename shown in brackets); an ambiguous name lists the candidates. `list` 
 the roster only and answer with the runner or mesh broken. The agent-facing summary is
 `skill/SKILL.md`.
 
+Agents talking to agents. A session names another the same way and prompts it with the MCP
+tool `session.send` (`to`, `prompt`, `wait_until`, `timeout_ms`), or `POST /send` from a shell
+or the page; the answer is the target's `session_key` and `node`, `reached`, `stop_reason`,
+`recap`, `activity` and what it left `pending`. Names resolve across the swarm among sessions
+that have not ended; an ambiguous name is 409 with the candidates, a session cannot send to
+itself. `session.find` resolves without sending. So a coordinator spawns children with
+`session.spawn` (their `parent_session_key` is the coordinator), sends them work and reads
+their recap; rosterd relays and never schedules. `rosterd prompt NAME TEXT --wait idle` is the
+same from a shell.
+
 Hook. Put `rosterd-hook` on PATH and add this to `~/.claude/settings.json`; the same object without
 `Notification` goes in `~/.codex/hooks.json` (Codex raises `PermissionRequest`):
 
