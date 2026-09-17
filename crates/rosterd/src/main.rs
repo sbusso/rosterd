@@ -7,6 +7,7 @@ mod cli;
 mod config;
 mod doctor;
 mod gate;
+mod hooks;
 mod identity;
 mod integrate;
 mod journal;
@@ -106,6 +107,7 @@ async fn serve(config_path: PathBuf) -> Result<()> {
     let mesh = mesh::Mesh::new(config.clone(), identity.clone(), roster.clone(), VERSION)?;
     let runner = runner::Runner::new(config.clone(), roster.clone());
     let journal = journal::Journal::open(state_dir().join("journal"), &config.node.name, &identity.node_id, config.journal.keep_days);
+    let hooks = hooks::Hooks::open(state_dir().join("hooks.json"));
     let node = Arc::new(Node {
         config: config.clone(),
         identity,
@@ -113,6 +115,7 @@ async fn serve(config_path: PathBuf) -> Result<()> {
         mesh: mesh.clone(),
         runner: runner.clone(),
         journal: journal.clone(),
+        hooks: hooks.clone(),
         loopback_token: loopback_token()?,
         usage_roots: usage::Roots::home(),
     });
@@ -123,6 +126,7 @@ async fn serve(config_path: PathBuf) -> Result<()> {
     }
     tokio::spawn(mesh.clone().run());
     tokio::spawn(journal.run(roster.clone()));
+    tokio::spawn(hooks.run(node.clone()));
     if let Err(error) = runner.recover().await {
         tracing::error!(%error, "holder recovery failed; the roster still answers, R2");
     }

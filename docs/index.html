@@ -367,6 +367,7 @@ for event in sse(<span class="s">"/swarm/changes"</span>):
     <tr><td><code>node</code>, <code>node_left</code></td><td>a node appeared, went unreachable or came back; a node was revoked or left</td></tr>
   </table>
   <p>Pure function of two frames, derived and never stored. <code>rosterd changes</code> prints it one line per change; <code>attention</code> is the one to notify on.</p>
+  <p>A client that would rather be called than hold the stream open registers a webhook: <code>POST /hooks {url, events, token}</code>. Every matching event then arrives as one POST, <code>{event, data}</code>, with the name in <code>X-Rosterd-Event</code> and the token as a bearer. rosterd keeps the URL and nothing else about the caller. A failed delivery is dropped, and the client catches up from the last <code>seq</code> it saw with <code>/swarm/changes?since=</code>.</p>
 
   <h2>Session lifecycle</h2>
   <div class="dia"><svg viewBox="0 0 960 250" role="img" aria-label="State diagram: live with four activity words, suspended, ended; resume creates a new key with the same session id">
@@ -410,7 +411,7 @@ for event in sse(<span class="s">"/swarm/changes"</span>):
   </div>
   <div class="feat">
     <div><h3>One board for every machine</h3><p class="who">A project board or task runner that tracks tasks and attempts.</p></div>
-    <div><p>The board is a client. It subscribes to <code>/swarm/changes</code> on any node, maps session keys to its own attempt ids, dedupes on <code>activity_seq</code>, and shows who is working on what across the fleet. When an attempt needs a human it reads the pending request from <code>GET /sessions/{key}</code> and answers it. rosterd carries none of the board's ids and never dials it.</p><p>Leans on: the client contract, <code>/swarm/snapshot</code>, <code>/swarm/changes</code>, the session action endpoints.</p></div>
+    <div><p>The board is a client. It subscribes to <code>/swarm/changes</code> on any node, or registers a webhook and is called, maps session keys to its own attempt ids, dedupes on <code>activity_seq</code>, and shows who is working on what across the fleet. When an attempt needs a human it reads the pending request from <code>GET /sessions/{key}</code> and answers it. rosterd carries none of the board's ids and never dials it.</p><p>Leans on: the client contract, <code>/swarm/snapshot</code>, <code>/swarm/changes</code> or <code>/hooks</code>, the session action endpoints.</p></div>
   </div>
   <div class="feat">
     <div><h3>Headless workers on the big machine</h3><p class="who">A runner that starts agents on a server and reads results.</p></div>

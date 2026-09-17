@@ -196,6 +196,7 @@ GET /swarm/snapshot. Union of this node's roster and every peer's last snapshot,
 GET /swarm/events. SSE, complete swarm snapshot on any change anywhere.
 GET /swarm/changes. SSE, the swarm snapshot once as event `snapshot`, then one event per change between consecutive frames, in the order records appear: `session_started`, `session_ended`, `session_suspended`, `attention` (an accepted claim landed on needs_attention, sent again for every new claim while it waits, `record.activity_event` names permission, question or login), `attention_cleared`, `activity`, `renamed`, each carrying `at` and the swarm record; `node` (a node joined or changed state) and `node_left` carrying the node. Pure function of two frames, so a client that missed events resyncs from the next `snapshot`. This node's own events are its journal entries (R18) and carry `seq`; `?since=SEQ` replays the entries after SEQ before the `snapshot`.
 GET /swarm/nodes. Membership with health.
+POST /hooks, GET /hooks, DELETE /hooks/{id}. Webhooks, R19: the events of /swarm/changes delivered by POST to a registered URL.
 GET /usage?since=. Tokens and cost on this node per day (UTC), harness and model: input, output, cache read and cache write tokens, cost_usd from a built-in price table (null for a model it does not know), and the number of transcript files that contributed. `since` is `Nd`, `Nh`, a date or an RFC 3339 datetime; 7d by default.
 GET /swarm/usage?since=. The same for every reachable node, asked over the mesh at once; nodes that did not answer within 5 s are listed by name in `unreachable`.
 GET /journal, GET /sessions/{key}/journal, GET /swarm/journal. The journal, R18.
@@ -270,7 +271,7 @@ POST /sessions for a harness in `login_required` or `broken` answers 409 with `{
 
 ## R8. Systems above rosterd
 
-Anything that keeps a record over sessions, a project board with tasks and attempts, a task runner, a workspace, is a client and only a client. It pulls: GET /swarm/snapshot and /swarm/events for the roster, /swarm/changes for what happened (an `attention` event is the one to notify on), GET /sessions/{key} for pending requests and the recap, the session action endpoints to answer, prompt and spawn, proxied to the owning node by any node. It maps sessions to its own ids on its side, dedupes claims on session key plus activity_seq, and derives its own attention from the roster. rosterd never dials it, holds no credential for it and carries none of its ids.
+Anything that keeps a record over sessions, a project board with tasks and attempts, a task runner, a workspace, is a client and only a client. It pulls: GET /swarm/snapshot and /swarm/events for the roster, /swarm/changes for what happened (an `attention` event is the one to notify on) or a hook of R19 registered for the events it wants, GET /sessions/{key} for pending requests and the recap, the session action endpoints to answer, prompt and spawn, proxied to the owning node by any node. It maps sessions to its own ids on its side, dedupes claims on session key plus activity_seq, and derives its own attention from the roster. rosterd never dials it, holds no credential for it and carries none of its ids.
 
 ## R9. HITL client contract
 
@@ -614,3 +615,15 @@ GET /swarm/journal?after=TIME&limit=N. `{entries, unreachable}`: every reachable
 
 Replay. `GET /swarm/changes?since=SEQ` sends this node's entries after SEQ as SSE events (event name = the change name, or `action`; data = the entry, so it carries `seq`), then the `snapshot`, then live. A client stores the last `seq` it saw and reconnects with it; it never misses a local event and resyncs peers from the snapshot as before. Peer events on the stream are diffed from swarm frames and carry no `seq`.
 10. `rosterd doctor` on a fresh machine lists every missing harness and adapter with the command to install it, and changes nothing.
+
+## R19. Webhooks
+
+A client that would rather be called than hold `/swarm/changes` open registers a URL. rosterd keeps the URL and the event names; it never learns what the client is, holds no other credential for it and carries none of its ids, so R8 stands.
+
+POST /hooks `{url, events?, token?}`. `url` is http or https. `events` is a list of names from /swarm/changes (`attention`, `session_started`, `action`, ...); empty or absent means every event. `token`, when given, is sent back as `Authorization: Bearer` on every delivery so the receiver knows the caller. Answers 201 with the hook: `id`, `url`, `events`, `token`, `created_at`.
+GET /hooks. The list.
+DELETE /hooks/{id}. 204, or 404.
+
+Delivery. One POST per event to every hook that wants it, body `{event, data}` where `event` is the SSE event name and `data` the SSE data (a journal entry with `seq` for this node's events, a bare change for a peer's), header `X-Rosterd-Event` the same name, 10 s timeout. Deliveries for one event go out together and the next event waits for them, so a hook sees events in order. A refusal or a timeout is logged and dropped, never retried: a client that needs every event stores the last `seq` and resyncs with `/swarm/changes?since=` or `/journal?since=`, R18.
+
+Storage. `<state dir>/hooks.json`, rewritten on every change; hooks survive a restart.

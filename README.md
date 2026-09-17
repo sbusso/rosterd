@@ -163,6 +163,17 @@ the last `seq` it saw with `GET /journal?since=` or `GET /swarm/changes?since=`.
 per entry under the state directory, one file per day, kept `[journal] keep_days` (30). It is a
 lifecycle log, never a transcript.
 
+## Webhooks
+
+A client that would rather be called than hold `/swarm/changes` open registers a URL:
+`POST /hooks {url, events?, token?}`. rosterd then POSTs every matching event to it as
+`{event, data}`, the same name and data the stream carries, with `X-Rosterd-Event` and, when a
+token was given, `Authorization: Bearer <token>` so the receiver knows who is calling. Empty
+`events` means every event. `GET /hooks` lists them, `DELETE /hooks/{id}` removes one, and they
+survive a restart. rosterd keeps the URL and nothing else about the client: no ids, no other
+credential. A delivery that fails is dropped, not retried; the client catches up from the last
+`seq` it saw, as above. R19.
+
 ## CLI
 
 One binary, R14. `rosterd` alone prints help; everything but `daemon` talks to the local socket.
