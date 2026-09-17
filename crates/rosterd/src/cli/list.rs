@@ -280,6 +280,7 @@ fn header(nodes: &[NodeHealth], rows: &[SwarmRecord]) -> String {
                 PeerState::Local => "local".to_string(),
                 PeerState::Reachable => format!("reachable {}", age(node.peer_age_ms / 1000)),
                 PeerState::Unreachable => format!("unreachable stale {}s", node.peer_age_ms / 1000),
+                PeerState::Incompatible => format!("incompatible {}", node.version.as_deref().unwrap_or("-")),
             };
             let cells = vec![node.name.clone(), state, count("active"), count("idle"), count("needs_attention"), count("unknown")];
             (cells, node.state == PeerState::Unreachable)

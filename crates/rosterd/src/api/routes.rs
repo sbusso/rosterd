@@ -124,6 +124,7 @@ impl From<MeshError> for ApiError {
             MeshError::UnknownNode(_) => StatusCode::NOT_FOUND,
             MeshError::Revoked(_) => StatusCode::FORBIDDEN,
             MeshError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            MeshError::Incompatible(_) => StatusCode::UPGRADE_REQUIRED,
             MeshError::NoSwarm => StatusCode::SERVICE_UNAVAILABLE,
             MeshError::Unreachable(_) | MeshError::Other(_) => StatusCode::BAD_GATEWAY,
         };
@@ -1120,7 +1121,7 @@ mod tests {
         assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(error.details["retry_after_s"], json!(42));
         assert_eq!(ApiError::from(RunnerError::Suspended("k".into())).status, StatusCode::CONFLICT);
-        let mark = rosterd_proto::HarnessHealth { harness: "claude".into(), state: HarnessState::LoginRequired, since: Utc::now(), until: None, detail: Some("hook: login".into()), extra: Default::default() };
+        let mark = rosterd_proto::HarnessHealth { harness: "claude".into(), state: HarnessState::LoginRequired, since: Utc::now(), until: None, detail: Some("hook: login".into()) };
         let error = ApiError::from(RunnerError::Unhealthy(mark));
         assert_eq!(error.status, StatusCode::CONFLICT);
         assert!(error.message.starts_with("harness claude is login_required on this node since "), "{}", error.message);

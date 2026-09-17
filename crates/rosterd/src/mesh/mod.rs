@@ -32,7 +32,7 @@ use crate::config::{Config, config_dir};
 use crate::identity::Identity;
 use crate::roster::Roster;
 use membership::{MemberRecord, Membership, Sealed, public_key, seal, spki_der, unseal};
-use wire::{Hello, Invite, INVITE_TTL_SECS, header as header_str, mint_invite, now_ms, parse_invite, signed_headers, verify_invite, verify_signed};
+use wire::{Hello, Invite, INVITE_TTL_SECS, MIN_COMPAT, header as header_str, mint_invite, now_ms, parse_invite, signed_headers, too_old, verify_invite, verify_signed};
 
 /// Header carrying the swarm key, R7.6.
 pub const SWARM_KEY_HEADER: &str = "x-rosterd-swarm";
@@ -60,6 +60,9 @@ pub enum MeshError {
     Unreachable(String),
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    /// The other side's version is below `MIN_COMPAT`, or it said so about ours, R7.2.
+    #[error("node runs rosterd {0}, below {MIN_COMPAT}; upgrade it")]
+    Incompatible(String),
     #[error("not in a swarm yet; run rosterd join or rosterd invite")]
     NoSwarm,
     #[error("{0}")]
@@ -73,6 +76,7 @@ impl IntoResponse for MeshError {
             MeshError::Revoked(_) => StatusCode::FORBIDDEN,
             MeshError::Unreachable(_) => StatusCode::BAD_GATEWAY,
             MeshError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            MeshError::Incompatible(_) => StatusCode::UPGRADE_REQUIRED,
             MeshError::NoSwarm => StatusCode::CONFLICT,
             MeshError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -96,6 +100,8 @@ struct Peer {
     seen_at: Option<DateTime<Utc>>,
     reachable: bool,
     unreachable_since: Option<DateTime<Utc>>,
+    /// Its last hello was below `MIN_COMPAT`, or it answered ours with 426.
+    incompatible: bool,
 }
 
 #[derive(Default)]
@@ -120,6 +126,12 @@ impl SwarmState {
             .get(node_id)
             .cloned()
             .or_else(|| self.membership.as_ref()?.member(node_id)?.address.clone())
+    }
+
+    /// The active member at `address`, for what a greeting learned from a status alone.
+    fn node_at(&self, address: &str) -> Option<String> {
+        let ids: Vec<String> = self.membership.as_ref()?.active().map(|m| m.node_id.clone()).collect();
+        ids.into_iter().find(|id| self.address_of(id).as_deref() == Some(address))
     }
 
     /// Drops snapshots of peers unreachable for over 24 h, R7.4. Returns whether any went.
@@ -148,7 +160,8 @@ pub struct Mesh {
 #[derive(Debug, Serialize, Deserialize)]
 struct JoinRequest {
     invite: String,
-    hello: Hello,
+    /// The joiner's signed hello as sent, opened by `Hello::open`.
+    hello: Value,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -386,7 +399,11 @@ impl Mesh {
                 node_id: member.node_id.clone(),
                 name: heard.map_or(member.name.clone(), |h| h.0.clone()),
                 address: state.address_of(&member.node_id),
-                state: if peer.is_some_and(|p| p.reachable) { PeerState::Reachable } else { PeerState::Unreachable },
+                state: match peer {
+                    Some(p) if p.incompatible => PeerState::Incompatible,
+                    Some(p) if p.reachable => PeerState::Reachable,
+                    _ => PeerState::Unreachable,
+                },
                 peer_age_ms: peer.map(|p| age_ms(now, p.received_at)).unwrap_or(0),
                 seen_ms: peer.and_then(|p| p.seen_at).map(|at| age_ms(now, Some(at))),
                 uptime_ms: peer.and_then(|p| p.snapshot.as_ref()?.up_since).map(|since| age_ms(now, Some(since))),
@@ -575,7 +592,7 @@ impl Mesh {
     }
 
     async fn join_pinned(&self, invite: &Invite, address: &str, token: &str) -> Result<(), MeshError> {
-        let request = JoinRequest { invite: token.to_string(), hello: self.hello()? };
+        let request = JoinRequest { invite: token.to_string(), hello: serde_json::to_value(self.hello()?).map_err(anyhow::Error::from)? };
         let response = self
             .client
             .post(format!("https://{address}/node/join"))
@@ -624,8 +641,7 @@ impl Mesh {
         if invite.admitter != self.identity.node_id || nonces.remove(&invite.nonce).is_none() {
             return Err(MeshError::Unauthorized("invite was not minted here or was already used".into()));
         }
-        let hello = request.hello;
-        hello.verify().map_err(unauthorized)?;
+        let hello = Hello::open(request.hello).map_err(unauthorized)?;
         if hello.node_id == self.identity.node_id {
             return Err(MeshError::Unauthorized("a node cannot join itself".into()));
         }
@@ -733,15 +749,13 @@ impl Mesh {
             members: state.membership.as_ref().map(|m| m.members.values().cloned().collect()).unwrap_or_default(),
             signed_at: now_ms(),
             signature: String::new(),
-            extra: Default::default(),
         }
         .sign(&self.identity)?)
     }
 
-    /// A hello arrived: verify it, merge its membership, learn the sender's address. `reached`
-    /// is the address we reached the sender at, when we did the reaching.
+    /// A hello arrived and was opened: merge its membership, learn the sender's address and
+    /// version. `reached` is the address we reached the sender at, when we did the reaching.
     fn absorb_hello(&self, hello: &Hello, reached: Option<&str>) -> Result<(), MeshError> {
-        hello.verify().map_err(|e| MeshError::Unauthorized(e.to_string()))?;
         let mut state = self.lock();
         let mut bumped = false;
         let SwarmState { membership, learned, heard, peers, .. } = &mut *state;
@@ -776,7 +790,11 @@ impl Mesh {
                     heard.insert(hello.node_id.clone(), fresh);
                     bumped = true;
                 }
-                peers.entry(hello.node_id.clone()).or_insert_with(Peer::default).seen_at = Some(Utc::now());
+                let peer = peers.entry(hello.node_id.clone()).or_insert_with(Peer::default);
+                peer.seen_at = Some(Utc::now());
+                let incompatible = too_old(&hello.version);
+                bumped |= peer.incompatible != incompatible;
+                peer.incompatible = incompatible;
             }
         }
         drop(state);
@@ -800,10 +818,19 @@ impl Mesh {
             .send()
             .await
             .map_err(|error| MeshError::Unreachable(format!("{address}: {error}")))?;
+        if response.status() == StatusCode::UPGRADE_REQUIRED {
+            let mut state = self.lock();
+            if let Some(node_id) = state.node_at(address) {
+                state.peers.entry(node_id).or_default().incompatible = true;
+                drop(state);
+                self.bump();
+            }
+            return Err(MeshError::Incompatible(format!("{address}: newer than {}", self.version)));
+        }
         if !response.status().is_success() {
             return Err(MeshError::Unauthorized(format!("{address} answered {}", response.status())));
         }
-        let theirs: Hello = response.json().await.map_err(anyhow::Error::from)?;
+        let theirs = Hello::open(response.json().await.map_err(anyhow::Error::from)?).map_err(|e| MeshError::Unauthorized(e.to_string()))?;
         self.absorb_hello(&theirs, Some(address))
     }
 
@@ -848,7 +875,7 @@ impl Mesh {
     fn peer_for_test(&self, node_id: &str, snapshot: Snapshot, received_at: DateTime<Utc>, unreachable_since: Option<DateTime<Utc>>) {
         self.lock().peers.insert(
             node_id.into(),
-            Peer { snapshot: Some(snapshot), received_at: Some(received_at), seen_at: Some(received_at), reachable: unreachable_since.is_none(), unreachable_since },
+            Peer { snapshot: Some(snapshot), received_at: Some(received_at), seen_at: Some(received_at), reachable: unreachable_since.is_none(), unreachable_since, incompatible: false },
         );
     }
 }
@@ -874,9 +901,13 @@ async fn hello_get(State(mesh): State<Arc<Mesh>>, headers: HeaderMap) -> Result<
     Ok(Json(mesh.hello()?))
 }
 
-async fn hello_post(State(mesh): State<Arc<Mesh>>, headers: HeaderMap, Json(hello): Json<Hello>) -> Result<Json<Hello>, MeshError> {
+async fn hello_post(State(mesh): State<Arc<Mesh>>, headers: HeaderMap, Json(hello): Json<Value>) -> Result<Json<Hello>, MeshError> {
     refuse_revoked(&mesh, &headers)?;
+    let hello = Hello::open(hello).map_err(|e| MeshError::Unauthorized(e.to_string()))?;
     mesh.absorb_hello(&hello, None)?;
+    if too_old(&hello.version) {
+        return Err(MeshError::Incompatible(hello.version));
+    }
     let ours = mesh.hello()?;
     if ours.swarm_id.is_some() && ours.swarm_id != hello.swarm_id {
         return Err(MeshError::Unauthorized("not a member of this swarm".into()));
@@ -958,7 +989,7 @@ mod tests {
         let mut config = Config::default();
         config.node.name = name.into();
         let roster = Roster::new(name, &identity.node_id, Capabilities { harnesses: vec!["claude".into()], ..Default::default() });
-        let mesh = Mesh::new_at(Arc::new(config), identity, roster, "0.1.0-test", &dir, address).unwrap();
+        let mesh = Mesh::new_at(Arc::new(config), identity, roster, concat!(env!("CARGO_PKG_VERSION"), "-test"), &dir, address).unwrap();
         (mesh, dir)
     }
 
@@ -1029,10 +1060,17 @@ mod tests {
         assert_eq!(b.nodes().len(), 2);
         assert_eq!(Membership::load(&dir_b.join("swarm.json")).unwrap().unwrap().members.len(), 2);
         // A later hello carries the peer's current name and version, not the signed record's.
-        let renamed = Hello { name: "wintermute-2".into(), version: "0.2.0-test".into(), ..b.hello().unwrap() }.sign(&b.identity).unwrap();
+        let opened = |hello: Hello| Hello::open(serde_json::to_value(hello).unwrap()).unwrap();
+        let renamed = opened(Hello { name: "wintermute-2".into(), version: "0.2.0-test".into(), ..b.hello().unwrap() }.sign(&b.identity).unwrap());
         a.absorb_hello(&renamed, None).unwrap();
         let seen = a.nodes().into_iter().find(|n| n.node_id == b.identity.node_id).unwrap();
         assert_eq!((seen.name.as_str(), seen.version.as_deref()), ("wintermute-2", Some("0.2.0-test")));
+        // A hello from below the floor marks the node incompatible until a newer one arrives.
+        let ancient = opened(Hello { version: "0.0.1".into(), ..b.hello().unwrap() }.sign(&b.identity).unwrap());
+        a.absorb_hello(&ancient, None).unwrap();
+        assert_eq!(a.nodes().into_iter().find(|n| n.node_id == b.identity.node_id).unwrap().state, PeerState::Incompatible);
+        a.absorb_hello(&renamed, None).unwrap();
+        assert_ne!(a.nodes().into_iter().find(|n| n.node_id == b.identity.node_id).unwrap().state, PeerState::Incompatible);
         // Single use: the same invite is refused the second time.
         assert!(matches!(b.join(&a_addr.to_string(), &token).await, Err(MeshError::Unauthorized(_))));
 
@@ -1137,7 +1175,7 @@ mod tests {
         assert!(invite.expires_at > Mesh::now_secs() + INVITE_TTL_SECS - 5);
         let joiner = Identity::from_key(SigningKey::generate(&mut rand::rngs::OsRng));
         let hello = |id: &Identity| {
-            Hello {
+            let signed = Hello {
                 node_id: id.node_id.clone(),
                 name: "wintermute".into(),
                 public_key: id.public_hex(),
@@ -1148,10 +1186,10 @@ mod tests {
                 members: vec![],
                 signed_at: now_ms(),
                 signature: String::new(),
-                extra: Default::default(),
             }
             .sign(id)
-            .unwrap()
+            .unwrap();
+            serde_json::to_value(signed).unwrap()
         };
         let answer = a.admit(JoinRequest { invite: token.clone(), hello: hello(&joiner) }).unwrap();
         assert_eq!(answer.members.len(), 2);
@@ -1167,7 +1205,7 @@ mod tests {
         // A hello whose signature is not the joiner's is refused.
         let token = a.invite_for(INVITE_TTL_SECS).unwrap();
         let mut forged = hello(&joiner);
-        forged.name = "root".into();
+        forged["name"] = "root".into();
         assert!(matches!(a.admit(JoinRequest { invite: token, hello: forged }), Err(MeshError::Unauthorized(_))));
         std::fs::remove_dir_all(&dir).unwrap();
     }

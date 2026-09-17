@@ -332,7 +332,8 @@ fn node_order(state: PeerState) -> u8 {
     match state {
         PeerState::Local => 0,
         PeerState::Reachable => 1,
-        PeerState::Unreachable => 2,
+        PeerState::Incompatible => 2,
+        PeerState::Unreachable => 3,
     }
 }
 
@@ -343,6 +344,7 @@ fn health(node: &NodeHealth) -> String {
         PeerState::Local => return "this node".into(),
         PeerState::Reachable => "reachable",
         PeerState::Unreachable => "unreachable",
+        PeerState::Incompatible => return format!("incompatible {}", node.version.as_deref().unwrap_or("-")),
     };
     let seen = node.seen_ms.map(|ms| format!(" {} ago", age(ms / 1000))).unwrap_or_default();
     let up = node.uptime_ms.map(|ms| format!(" · up {}", age(ms / 1000))).unwrap_or_default();

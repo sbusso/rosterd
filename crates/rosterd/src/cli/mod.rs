@@ -345,6 +345,7 @@ fn nodes_table(nodes: &[NodeHealth]) -> String {
                 rosterd_proto::PeerState::Local => "local",
                 rosterd_proto::PeerState::Reachable => "reachable",
                 rosterd_proto::PeerState::Unreachable => "unreachable",
+                rosterd_proto::PeerState::Incompatible => "incompatible",
             };
             let cells = vec![
                 node.name.clone(),

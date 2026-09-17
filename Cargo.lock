@@ -3250,6 +3250,7 @@ dependencies = [
  "rmcp",
  "rosterd-proto",
  "rustls",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

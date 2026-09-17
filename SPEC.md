@@ -229,6 +229,8 @@ Tailscale first. The node runs tailscale status in JSON mode, takes every online
 
 Hello response: node_id, name, public key, version, swarm_id, capabilities (installed harnesses, files_enabled, herdr present, tmux present), and a signature over the response with the node key.
 
+The signature is over the canonical JSON the sender wrote, and the receiver checks it over the bytes it received before parsing them, so a field it does not know is still covered and simply dropped. A release may add a field to the hello at any time; one that changes what the hello means bumps the compatibility floor, a version constant, and a node whose hello is below the floor is answered 426 and listed with peer_state incompatible and its version, on both sides, instead of unreachable.
+
 ### R7.3 Membership and joining
 
 A swarm has a swarm_id and a swarm key. The first node creates both. A new node joins with

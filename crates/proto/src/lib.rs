@@ -325,9 +325,6 @@ pub struct HarnessHealth {
     pub until: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// Unknown fields kept for the signature, as in `Capabilities`.
-    #[serde(flatten, default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// What a node knows about the harnesses on it, R7.2.
@@ -342,13 +339,9 @@ pub struct Capabilities {
     #[serde(default)]
     pub tmux: bool,
     /// Harnesses that cannot work right now, R7.7; empty means all ok, and an empty list stays
-    /// off the wire so a node from before R7.7 verifies this node's signed hello.
+    /// off the wire so a node from before R7.7 verifies this node's signed hello (R7.2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub health: Vec<HarnessHealth>,
-    /// Fields a newer node sent that this one does not know, kept so a signed hello re-serializes
-    /// byte for byte and its signature still verifies, R7.6.
-    #[serde(flatten, default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// The complete roster of one node. Every emission is the whole table, never a diff.
@@ -400,6 +393,8 @@ pub enum PeerState {
     Unreachable,
     /// This node itself.
     Local,
+    /// Runs a rosterd too old to talk to this one, or too new; its version says which, R7.2.
+    Incompatible,
 }
 
 /// Membership plus health, GET /swarm/nodes.
@@ -825,7 +820,7 @@ mod tests {
         };
         let unhealthy = |id: &str, state: PeerState| {
             let mut n = node(id, state);
-            n.capabilities.health.push(HarnessHealth { harness: "claude".into(), state: HarnessState::LoginRequired, since: Utc::now(), until: None, detail: None, extra: Default::default() });
+            n.capabilities.health.push(HarnessHealth { harness: "claude".into(), state: HarnessState::LoginRequired, since: Utc::now(), until: None, detail: None });
             n
         };
         let frame = |records: Vec<SwarmRecord>, nodes: Vec<NodeHealth>| SwarmSnapshot { schema: SWARM_SCHEMA.into(), generated_at: Utc::now(), nodes, records };

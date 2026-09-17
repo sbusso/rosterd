@@ -1,8 +1,6 @@
 //! What crosses the wire between nodes, R7: canonical JSON for signatures, the hello of R7.2,
 //! the invite of R7.3, and the signed request headers of R7.6.
 
-use std::collections::BTreeMap;
-
 use anyhow::{Context, Result, bail, ensure};
 use axum::http::{HeaderMap, HeaderValue, Method};
 use base64::Engine;
@@ -69,8 +67,18 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// The oldest rosterd this one still exchanges hellos with, R7.2. Bumped only by a release
+/// that changes what the hello means; a new optional field is not that.
+pub const MIN_COMPAT: &str = "0.1.9";
+
+/// A version below `MIN_COMPAT`. One that does not parse is nobody's business here.
+pub fn too_old(version: &str) -> bool {
+    let floor = semver::Version::parse(MIN_COMPAT).expect("MIN_COMPAT is semver");
+    semver::Version::parse(version).is_ok_and(|v| v < floor)
+}
+
 /// The hello of R7.2 plus the membership it gossips, R7.3. Signed by the node key over the
-/// canonical JSON without `signature`.
+/// canonical JSON without `signature`; verified by `open` over the JSON as the sender wrote it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hello {
     pub node_id: String,
@@ -89,10 +97,6 @@ pub struct Hello {
     pub signed_at: i64,
     #[serde(default)]
     pub signature: String,
-    /// Fields a newer node signed that this one does not know: kept, so the canonical form is
-    /// the sender's and the signature verifies. Every signed struct on the wire does this.
-    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub extra: BTreeMap<String, Value>,
 }
 
 impl Hello {
@@ -101,11 +105,18 @@ impl Hello {
         Ok(self)
     }
 
-    /// The signature verifies with the embedded key and the key is the node id's.
-    pub fn verify(&self) -> Result<()> {
-        let public = verify(&self.public_key, &signing_bytes(self)?, &self.signature).context("hello signature")?;
-        ensure!(node_id_of(&public) == self.node_id, "hello node_id does not match its public key");
-        Ok(())
+    /// A hello as it arrived: the signature is checked over the sender's own JSON, then the
+    /// struct is parsed, so a field this node does not know is still covered and only dropped
+    /// after. The embedded key must be the node id's.
+    pub fn open(mut value: Value) -> Result<Hello> {
+        let map = value.as_object_mut().context("hello is not an object")?;
+        let signature = map.remove("signature").and_then(|s| s.as_str().map(str::to_string)).unwrap_or_default();
+        let public_key = map.get("public_key").and_then(Value::as_str).context("hello has no public_key")?.to_string();
+        let public = verify(&public_key, &canonical(&value), &signature).context("hello signature")?;
+        let mut hello: Hello = serde_json::from_value(value).context("hello json")?;
+        ensure!(node_id_of(&public) == hello.node_id, "hello node_id does not match its public key");
+        hello.signature = signature;
+        Ok(hello)
     }
 }
 
@@ -231,26 +242,25 @@ mod tests {
             members: vec![],
             signed_at: now_ms(),
             signature: String::new(),
-            extra: Default::default(),
         }
         .sign(&id)
         .unwrap();
         let mut value = serde_json::to_value(&hello).unwrap();
-        let back: Hello = serde_json::from_str(&serde_json::to_string(&hello).unwrap()).unwrap();
-        back.verify().unwrap();
+        let back = Hello::open(serde_json::from_str(&serde_json::to_string(&hello).unwrap()).unwrap()).unwrap();
+        assert_eq!(back.signature, hello.signature);
 
         value["name"] = Value::String("wintermute".into());
-        let tampered: Hello = serde_json::from_value(value).unwrap();
-        assert!(tampered.verify().is_err());
+        assert!(Hello::open(value).is_err());
 
         let mut wrong_id = hello.clone();
         wrong_id.node_id = "00".repeat(16);
         let wrong_id = wrong_id.sign(&id).unwrap();
-        assert!(wrong_id.verify().is_err());
+        assert!(Hello::open(serde_json::to_value(&wrong_id).unwrap()).is_err());
     }
 
-    /// A newer node signs fields this one does not know; they must survive the round trip so
-    /// the signature still covers them, and an empty `health` stays off the wire.
+    /// A newer node signs fields this one does not know: the signature is checked over what it
+    /// sent, so they verify and are dropped by the parse. An empty `health` stays off the wire
+    /// for the nodes before that.
     #[test]
     fn hello_with_unknown_fields_still_verifies() {
         let id = identity();
@@ -265,18 +275,25 @@ mod tests {
             members: vec![],
             signed_at: now_ms(),
             signature: String::new(),
-            extra: Default::default(),
         })
         .unwrap();
         assert!(value["capabilities"].get("health").is_none());
         value["future"] = Value::Bool(true);
         value["capabilities"]["future"] = Value::String("yes".into());
-        let unsigned: Hello = serde_json::from_value(value).unwrap();
-        let signed = unsigned.sign(&id).unwrap();
-        let back: Hello = serde_json::from_str(&serde_json::to_string(&signed).unwrap()).unwrap();
-        back.verify().unwrap();
-        assert_eq!(back.extra["future"], Value::Bool(true));
-        assert_eq!(back.capabilities.extra["future"], Value::String("yes".into()));
+        value["signature"] = Value::String(hex::encode(id.sign(&signing_bytes(&value).unwrap()).to_bytes()));
+        let back = Hello::open(serde_json::from_str(&serde_json::to_string(&value).unwrap()).unwrap()).unwrap();
+        assert_eq!(back.name, "gibson");
+        value["future"] = Value::Bool(false);
+        assert!(Hello::open(value).is_err());
+    }
+
+    #[test]
+    fn the_floor_is_a_version_compare() {
+        assert!(too_old("0.1.8"));
+        assert!(too_old("0.1.9-rc1"));
+        assert!(!too_old(MIN_COMPAT));
+        assert!(!too_old("0.2.0-test"));
+        assert!(!too_old("test"));
     }
 
     #[test]
