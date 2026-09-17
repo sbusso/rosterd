@@ -2,7 +2,8 @@
 
 One daemon per machine that knows every coding agent session on it, drives headless sessions over
 ACP, and joins a swarm of peers over Tailscale. Anything above it (a project board, a task
-runner) is a client of its API. The spec is SPEC.md.
+runner) is a client of its API. The spec is SPEC.md; the reasoning behind it, the landscape and
+the roadmap are DESIGN.md.
 
 ```
 crates/proto     types shared by daemon and holder: Record, Snapshot, HolderState, Source
