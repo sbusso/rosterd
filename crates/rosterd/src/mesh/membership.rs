@@ -37,6 +37,9 @@ pub struct MemberRecord {
     pub signed_by: String,
     #[serde(default)]
     pub signature: String,
+    /// Unknown fields kept for the signature, as in `Hello`.
+    #[serde(flatten, default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 impl MemberRecord {
@@ -113,6 +116,7 @@ impl Membership {
             revoked: false,
             signed_by: String::new(),
             signature: String::new(),
+            extra: Default::default(),
         }
         .sign(identity)?;
         membership.members.insert(me.node_id.clone(), me);
@@ -252,6 +256,7 @@ mod tests {
             revoked,
             signed_by: String::new(),
             signature: String::new(),
+            extra: Default::default(),
         }
         .sign(signer)
         .unwrap()

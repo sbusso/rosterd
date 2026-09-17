@@ -15,11 +15,11 @@ use axum::http::request::Parts;
 use axum::http::{Method, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
-use rosterd_proto::{Activity, HarnessState, HerdrHandle, JournalEntry, Lane, Liveness, NodeUsage, PeerState, PermissionPolicy, Record, SessionExport, Source, SwarmSnapshot, SwarmUsage, TmuxHandle};
+use rosterd_proto::{Activity, Change, HarnessState, HerdrHandle, JournalEntry, Lane, Liveness, NodeUsage, PeerState, PermissionPolicy, Record, SessionExport, Source, SwarmSnapshot, SwarmUsage, TmuxHandle};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -196,6 +196,8 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/swarm/changes", get(swarm_changes))
         .route("/swarm/nodes", get(swarm_nodes))
         .route("/swarm/leave", post(swarm_leave))
+        .route("/hooks", get(list_hooks).post(add_hook))
+        .route("/hooks/{id}", delete(remove_hook))
         .route("/swarm/usage", get(swarm_usage))
         .route("/swarm/journal", get(swarm_journal))
         // Any /sessions path or /journal under /swarm/{node_id}/ runs on that node, R6.
@@ -523,24 +525,44 @@ async fn swarm_changes(State(node): State<Arc<Node>>, query: JournalQuery) -> Re
             Err(BroadcastStreamRecvError::Lagged(n)) => Some(Ok(Event::default().comment(format!("lagged {n}")))),
         }
     });
+    let peers = peer_changes(node).map(|c| Ok::<_, Infallible>(sse_json(&c).event(c.name())));
+    Sse::new(head.chain(futures::stream::select(local, peers))).keep_alive(KeepAlive::new().interval(KEEP_ALIVE)).into_response()
+}
+
+/// The changes between consecutive swarm frames, peers only: local ones come from the journal.
+/// Shared by `/swarm/changes` and the hooks of R19.
+pub fn peer_changes(node: Arc<Node>) -> impl futures::Stream<Item = Change> {
     let peers_only = |mut frame: SwarmSnapshot| {
         frame.records.retain(|r| r.peer_state != PeerState::Local);
         frame
     };
     let prev = peers_only(node.mesh.swarm_snapshot());
-    let peers = futures::stream::unfold((node.mesh.changed(), prev), move |(mut changed, prev)| {
+    futures::stream::unfold((node.mesh.changed(), prev), move |(mut changed, prev)| {
         let node = node.clone();
         async move {
             changed.changed().await.ok()?;
             tokio::time::sleep(SWARM_DEBOUNCE).await;
             changed.borrow_and_update();
             let next = peers_only(node.mesh.swarm_snapshot());
-            let events: Vec<_> = rosterd_proto::changes(&prev, &next).iter().map(|c| Ok::<_, Infallible>(sse_json(c).event(c.name()))).collect();
+            let events = rosterd_proto::changes(&prev, &next);
             Some((futures::stream::iter(events), (changed, next)))
         }
     })
-    .flatten();
-    Sse::new(head.chain(futures::stream::select(local, peers))).keep_alive(KeepAlive::new().interval(KEEP_ALIVE)).into_response()
+    .flatten()
+}
+
+/// R19. A hook is a URL plus the event names it wants; rosterd never learns what it is.
+async fn list_hooks(State(node): State<Arc<Node>>) -> Result<Response, ApiError> {
+    ok(node.hooks.list())
+}
+
+async fn add_hook(State(node): State<Arc<Node>>, Body(body): Body<crate::hooks::NewHook>) -> Result<Response, ApiError> {
+    let hook = node.hooks.add(body).map_err(ApiError::bad_request)?;
+    Ok((StatusCode::CREATED, Json(hook)).into_response())
+}
+
+async fn remove_hook(State(node): State<Arc<Node>>, Path(id): Path<String>) -> Result<Response, ApiError> {
+    if node.hooks.remove(&id) { Ok(StatusCode::NO_CONTENT.into_response()) } else { Err(ApiError::not_found("no such hook")) }
 }
 
 /// SSE, the whole swarm first and on any change anywhere, R6, debounced.
@@ -1098,7 +1120,7 @@ mod tests {
         assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(error.details["retry_after_s"], json!(42));
         assert_eq!(ApiError::from(RunnerError::Suspended("k".into())).status, StatusCode::CONFLICT);
-        let mark = rosterd_proto::HarnessHealth { harness: "claude".into(), state: HarnessState::LoginRequired, since: Utc::now(), until: None, detail: Some("hook: login".into()) };
+        let mark = rosterd_proto::HarnessHealth { harness: "claude".into(), state: HarnessState::LoginRequired, since: Utc::now(), until: None, detail: Some("hook: login".into()), extra: Default::default() };
         let error = ApiError::from(RunnerError::Unhealthy(mark));
         assert_eq!(error.status, StatusCode::CONFLICT);
         assert!(error.message.starts_with("harness claude is login_required on this node since "), "{}", error.message);

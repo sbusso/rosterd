@@ -36,6 +36,7 @@ use tokio::task::JoinSet;
 
 use crate::mesh::MeshError;
 use crate::node::Node;
+pub use routes::peer_changes;
 use routes::ApiError;
 
 /// Who is on the other end of the Unix socket, from the socket's peer credentials. Trusted: the
@@ -278,6 +279,7 @@ mod tests {
         let runner = crate::runner::Runner::new(config.clone(), roster.clone());
         let journal = crate::journal::Journal::open(dir.join("journal"), "gibson", &identity.node_id, 30);
         tokio::spawn(journal.clone().run(roster.clone()));
+        let hooks = crate::hooks::Hooks::open(dir.join("hooks.json"));
         let node = Arc::new(Node {
             config: config.clone(),
             identity,
@@ -285,9 +287,11 @@ mod tests {
             mesh,
             runner,
             journal,
+            hooks: hooks.clone(),
             loopback_token: "secret-token".into(),
             usage_roots: crate::usage::Roots { claude: dir.join("claude"), codex: dir.join("codex") },
         });
+        tokio::spawn(hooks.run(node.clone()));
         tokio::spawn(serve(node.clone()));
         let socket_path = config.socket_path();
         for _ in 0..100 {
@@ -381,6 +385,58 @@ mod tests {
         // Local changes come from the journal and carry its seq, R18.
         assert_eq!((data["seq"].as_u64(), data["kind"].as_str()), (Some(2), Some("change")));
         assert_eq!(event_data(&cleared)["seq"], 3);
+    }
+
+    /// R19: a hook gets `{event, data}` for the events it named, with its bearer, nothing it
+    /// did not name, and nothing after it is removed.
+    #[tokio::test]
+    async fn hooks_deliver_named_events_with_the_bearer() {
+        let h = start("hooks").await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(Option<String>, String, Value)>();
+        let receiver = Router::new().route(
+            "/in",
+            axum::routing::post(move |headers: axum::http::HeaderMap, axum::Json(body): axum::Json<Value>| {
+                let tx = tx.clone();
+                async move {
+                    let auth = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok()).map(String::from);
+                    let event = headers.get("x-rosterd-event").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+                    let _ = tx.send((auth, event, body));
+                    StatusCode::OK
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/in", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, receiver).await.unwrap() });
+
+        let bad = h.socket.post("http://rosterd/hooks").json(&json!({ "url": "ftp://x" })).send().await.unwrap();
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+        let created = h.socket.post("http://rosterd/hooks").json(&json!({ "url": url, "events": ["attention"], "token": "hook-secret" })).send().await.unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let id = created.json::<Value>().await.unwrap()["id"].as_str().unwrap().to_string();
+        let listed: Vec<Value> = h.socket.get("http://rosterd/hooks").send().await.unwrap().json().await.unwrap();
+        assert_eq!((listed.len(), listed[0]["events"][0].as_str()), (1, Some("attention")));
+
+        let pid = std::process::id();
+        let ticks = crate::scanner::start_ticks(pid).unwrap();
+        let key = h.node.roster.apply(Source::Hook, Patch { pid: Some(pid), start_ticks: Some(ticks), harness: Some("claude".into()), ..Default::default() }).unwrap().session_key;
+        for _ in 0..200 {
+            if !h.node.journal.read(0, None, 1, None).is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        h.node.roster.claim(Source::Hook, &key, Activity::NeedsAttention, "permission", chrono::Utc::now()).unwrap();
+        let (auth, event, body) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.expect("delivered").unwrap();
+        assert_eq!((auth.as_deref(), event.as_str(), body["event"].as_str()), (Some("Bearer hook-secret"), "attention", Some("attention")));
+        assert_eq!((body["data"]["kind"].as_str(), body["data"]["seq"].as_u64(), body["data"]["record"]["session_key"].as_str()), (Some("change"), Some(2), Some(key.as_str())));
+
+        assert_eq!(h.socket.delete(format!("http://rosterd/hooks/{id}")).send().await.unwrap().status(), StatusCode::NO_CONTENT);
+        assert_eq!(h.socket.delete(format!("http://rosterd/hooks/{id}")).send().await.unwrap().status(), StatusCode::NOT_FOUND);
+        h.node.roster.claim(Source::Hook, &key, Activity::Active, "permission_answered", chrono::Utc::now()).unwrap();
+        h.node.roster.claim(Source::Hook, &key, Activity::NeedsAttention, "question", chrono::Utc::now()).unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(rx.try_recv().is_err(), "nothing after removal");
     }
 
     /// R18: the journal answers since, after and limit; a session's route narrows to it; and
@@ -665,7 +721,7 @@ mod tests {
         // The harness works again: the mark goes, and the start fails for the usual reason.
         h.socket.post("http://rosterd/claim").json(&claim("active", "prompt")).send().await.unwrap().error_for_status().unwrap();
         let nodes: Value = h.socket.get("http://rosterd/swarm/nodes").send().await.unwrap().json().await.unwrap();
-        assert_eq!(nodes[0]["capabilities"]["health"], json!([]));
+        assert!(nodes[0]["capabilities"].get("health").is_none());
         let unknown = h.socket.post("http://rosterd/sessions").json(&json!({ "harness": "claude" })).send().await.unwrap();
         assert_eq!(unknown.status(), StatusCode::BAD_REQUEST);
     }

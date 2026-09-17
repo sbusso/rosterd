@@ -27,7 +27,7 @@ impl Health {
         let mut entries = self.entries.lock().unwrap();
         let since = entries.get(harness).filter(|h| h.state == state && h.until.is_none_or(|u| u > now)).map_or(now, |h| h.since);
         let until = Some(until.unwrap_or(now + DEFAULT_TTL));
-        entries.insert(harness.to_string(), HarnessHealth { harness: harness.to_string(), state, since, until, detail });
+        entries.insert(harness.to_string(), HarnessHealth { harness: harness.to_string(), state, since, until, detail, extra: Default::default() });
     }
 
     pub fn clear(&self, harness: &str) {

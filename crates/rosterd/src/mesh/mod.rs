@@ -640,6 +640,7 @@ impl Mesh {
             revoked: false,
             signed_by: String::new(),
             signature: String::new(),
+            extra: Default::default(),
         }
         .sign(&self.identity)?;
         membership.insert_trusted(record);
@@ -732,6 +733,7 @@ impl Mesh {
             members: state.membership.as_ref().map(|m| m.members.values().cloned().collect()).unwrap_or_default(),
             signed_at: now_ms(),
             signature: String::new(),
+            extra: Default::default(),
         }
         .sign(&self.identity)?)
     }
@@ -1146,6 +1148,7 @@ mod tests {
                 members: vec![],
                 signed_at: now_ms(),
                 signature: String::new(),
+                extra: Default::default(),
             }
             .sign(id)
             .unwrap()

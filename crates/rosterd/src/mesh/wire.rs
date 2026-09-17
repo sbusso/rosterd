@@ -1,6 +1,8 @@
 //! What crosses the wire between nodes, R7: canonical JSON for signatures, the hello of R7.2,
 //! the invite of R7.3, and the signed request headers of R7.6.
 
+use std::collections::BTreeMap;
+
 use anyhow::{Context, Result, bail, ensure};
 use axum::http::{HeaderMap, HeaderValue, Method};
 use base64::Engine;
@@ -87,6 +89,10 @@ pub struct Hello {
     pub signed_at: i64,
     #[serde(default)]
     pub signature: String,
+    /// Fields a newer node signed that this one does not know: kept, so the canonical form is
+    /// the sender's and the signature verifies. Every signed struct on the wire does this.
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, Value>,
 }
 
 impl Hello {
@@ -225,6 +231,7 @@ mod tests {
             members: vec![],
             signed_at: now_ms(),
             signature: String::new(),
+            extra: Default::default(),
         }
         .sign(&id)
         .unwrap();
@@ -240,6 +247,36 @@ mod tests {
         wrong_id.node_id = "00".repeat(16);
         let wrong_id = wrong_id.sign(&id).unwrap();
         assert!(wrong_id.verify().is_err());
+    }
+
+    /// A newer node signs fields this one does not know; they must survive the round trip so
+    /// the signature still covers them, and an empty `health` stays off the wire.
+    #[test]
+    fn hello_with_unknown_fields_still_verifies() {
+        let id = identity();
+        let mut value = serde_json::to_value(Hello {
+            node_id: id.node_id.clone(),
+            name: "gibson".into(),
+            public_key: id.public_hex(),
+            version: "0.2.0".into(),
+            swarm_id: None,
+            address: None,
+            capabilities: Capabilities::default(),
+            members: vec![],
+            signed_at: now_ms(),
+            signature: String::new(),
+            extra: Default::default(),
+        })
+        .unwrap();
+        assert!(value["capabilities"].get("health").is_none());
+        value["future"] = Value::Bool(true);
+        value["capabilities"]["future"] = Value::String("yes".into());
+        let unsigned: Hello = serde_json::from_value(value).unwrap();
+        let signed = unsigned.sign(&id).unwrap();
+        let back: Hello = serde_json::from_str(&serde_json::to_string(&signed).unwrap()).unwrap();
+        back.verify().unwrap();
+        assert_eq!(back.extra["future"], Value::Bool(true));
+        assert_eq!(back.capabilities.extra["future"], Value::String("yes".into()));
     }
 
     #[test]
