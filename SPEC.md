@@ -190,6 +190,7 @@ POST /name. Set or clear a display name.
 POST /sessions, GET /sessions/{key}, PATCH, DELETE, /prompt, /cancel, /stream as in R5.
 GET /swarm/snapshot. Union of this node's roster and every peer's last snapshot, each tagged with node and peer_age_ms.
 GET /swarm/events. SSE, complete swarm snapshot on any change anywhere.
+GET /swarm/changes. SSE, the swarm snapshot once as event `snapshot`, then one event per change between consecutive frames, in the order records appear: `session_started`, `session_ended`, `session_suspended`, `attention` (an accepted claim landed on needs_attention, sent again for every new claim while it waits, `record.activity_event` names permission, question or login), `attention_cleared`, `activity`, `renamed`, each carrying `at` and the swarm record; `node` (a node joined or changed state) and `node_left` carrying the node. Pure function of two frames, so a client that missed events resyncs from the next `snapshot`.
 GET /swarm/nodes. Membership with health.
 Any /sessions path under /swarm/{node_id}/ is proxied to that node.
 
@@ -243,7 +244,7 @@ All node to node traffic is HTTPS on the Tailscale interface with a self signed 
 
 ## R8. Systems above rosterd
 
-Anything that keeps a record over sessions, a project board with tasks and attempts, a task runner, a workspace, is a client and only a client. It pulls: GET /swarm/snapshot and /swarm/events for the roster, GET /sessions/{key} for pending requests and the recap, the session action endpoints to answer, prompt and spawn, proxied to the owning node by any node. It maps sessions to its own ids on its side, dedupes claims on session key plus activity_seq, and derives its own attention from the roster. rosterd never dials it, holds no credential for it and carries none of its ids.
+Anything that keeps a record over sessions, a project board with tasks and attempts, a task runner, a workspace, is a client and only a client. It pulls: GET /swarm/snapshot and /swarm/events for the roster, /swarm/changes for what happened (an `attention` event is the one to notify on), GET /sessions/{key} for pending requests and the recap, the session action endpoints to answer, prompt and spawn, proxied to the owning node by any node. It maps sessions to its own ids on its side, dedupes claims on session key plus activity_seq, and derives its own attention from the roster. rosterd never dials it, holds no credential for it and carries none of its ids.
 
 ## R9. HITL client contract
 

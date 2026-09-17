@@ -264,7 +264,9 @@ mod tests {
         let config = Arc::new(config);
         let identity = Identity::from_key(ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng));
         let roster = Roster::new("gibson", &identity.node_id, Capabilities::default());
-        let mesh = crate::mesh::Mesh::new(config.clone(), identity.clone(), roster.clone(), "test").unwrap();
+        // The swarm file under the temp dir: the real membership must not leak into a test.
+        let mesh = crate::mesh::Mesh::new_at(config.clone(), identity.clone(), roster.clone(), "test", &dir, "127.0.0.1:1").unwrap();
+        tokio::spawn(mesh.clone().watch_local());
         let runner = crate::runner::Runner::new(config.clone(), roster.clone());
         let node = Arc::new(Node {
             config: config.clone(),
@@ -319,6 +321,44 @@ mod tests {
         assert!(text.starts_with("data: "), "{text}");
         let snap: Value = serde_json::from_str(text.trim_start_matches("data: ").trim()).unwrap();
         assert_eq!(snap["schema"], "rosterd.snapshot.v1");
+    }
+
+    #[tokio::test]
+    async fn changes_stream_the_snapshot_then_one_event_per_change() {
+        let h = start("changes").await;
+        let response = h.socket.get("http://rosterd/swarm/changes").send().await.unwrap();
+        let mut body = response.bytes_stream();
+        let mut buf = String::new();
+        // SSE events end with a blank line; chunks may split them anywhere.
+        async fn next_event(body: &mut (impl futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin), buf: &mut String) -> String {
+            loop {
+                if let Some(end) = buf.find("\n\n") {
+                    let ev = buf[..end].to_string();
+                    buf.drain(..end + 2);
+                    if ev.starts_with(':') {
+                        continue;
+                    }
+                    return ev;
+                }
+                let chunk = tokio::time::timeout(Duration::from_secs(5), body.next()).await.expect("timely").unwrap().unwrap();
+                buf.push_str(std::str::from_utf8(&chunk).unwrap());
+            }
+        }
+        let first = next_event(&mut body, &mut buf).await;
+        assert!(first.contains("\nevent: snapshot") && first.starts_with("data: {\"schema\":\"rosterd.swarm.v1\""), "{first}");
+
+        let pid = std::process::id();
+        let ticks = crate::scanner::start_ticks(pid).unwrap();
+        let key = h.node.roster.apply(Source::Hook, Patch { pid: Some(pid), start_ticks: Some(ticks), harness: Some("claude".into()), ..Default::default() }).unwrap().session_key;
+        let started = next_event(&mut body, &mut buf).await;
+        assert!(started.ends_with("\nevent: session_started"), "{started}");
+        h.node.roster.claim(Source::Hook, &key, Activity::NeedsAttention, "permission", chrono::Utc::now()).unwrap();
+        let attention = next_event(&mut body, &mut buf).await;
+        let data: Value = serde_json::from_str(attention.trim_start_matches("data: ").lines().next().unwrap()).unwrap();
+        assert!(attention.ends_with("\nevent: attention"), "{attention}");
+        assert_eq!((data["event"].as_str(), data["record"]["session_key"].as_str(), data["record"]["peer_state"].as_str()), (Some("attention"), Some(key.as_str()), Some("local")));
+        h.node.roster.claim(Source::Hook, &key, Activity::Active, "permission_answered", chrono::Utc::now()).unwrap();
+        assert!(next_event(&mut body, &mut buf).await.ends_with("\nevent: attention_cleared"));
     }
 
     #[tokio::test]

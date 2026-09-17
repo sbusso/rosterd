@@ -6,7 +6,7 @@ use std::io::Write;
 
 use chrono::Utc;
 use reqwest::Method;
-use rosterd_proto::{Activity, Liveness, NodeHealth, PeerState, Record, Snapshot, SwarmRecord, SwarmSnapshot, age};
+use rosterd_proto::{Activity, Change, Liveness, NodeHealth, PeerState, Record, Snapshot, SwarmRecord, SwarmSnapshot, age};
 use serde_json::Value;
 
 use super::client::{emit, parse, stdout_is_tty, table};
@@ -44,6 +44,43 @@ pub async fn watch(client: &Client, scope: &Scope, json: bool) -> Out<()> {
             Ok(true)
         })
         .await
+}
+
+/// One line per change across the swarm, R6: the first frame is the snapshot, skipped here
+/// (`watch` is the table); `--json` prints every frame as the API sent it.
+pub async fn changes(client: &Client, json: bool) -> Out<()> {
+    client
+        .events("/swarm/changes", |frame| {
+            let mut out = std::io::stdout().lock();
+            if json {
+                writeln!(out, "{frame}")?;
+            } else if let Ok(change) = serde_json::from_str::<Change>(frame) {
+                writeln!(out, "{}", change_line(&change))?;
+            }
+            out.flush()?;
+            Ok(true)
+        })
+        .await
+}
+
+fn change_line(change: &Change) -> String {
+    let stamp = |at: &chrono::DateTime<Utc>| at.format("%H:%M:%S");
+    match change {
+        Change::Node { at, node } | Change::NodeLeft { at, node } => {
+            format!("{} {:<17} {} {}", stamp(at), change.name(), node.name, format!("{:?}", node.state).to_lowercase())
+        }
+        Change::SessionStarted { at, record }
+        | Change::SessionEnded { at, record }
+        | Change::SessionSuspended { at, record }
+        | Change::Attention { at, record }
+        | Change::AttentionCleared { at, record }
+        | Change::Activity { at, record }
+        | Change::Renamed { at, record } => {
+            let r = &record.record;
+            let what = r.activity_event.clone().filter(|e| !e.is_empty()).unwrap_or_else(|| activity_word(r).into());
+            format!("{} {:<17} {} {} {}", stamp(at), change.name(), r.node, display_name(r), what)
+        }
+    }
 }
 
 fn snapshot_path(scope: &Scope) -> &'static str {

@@ -392,6 +392,102 @@ pub enum HolderFrame {
     Exited { code: Option<i32>, signal: Option<i32> },
 }
 
+/// One thing that changed between two swarm snapshots, R6: what `/swarm/changes` streams so a
+/// client never diffs frames itself. Derived, never stored; `record` and `node` are the state
+/// after the change.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
+pub enum Change {
+    /// A session key seen for the first time.
+    SessionStarted { at: DateTime<Utc>, record: SwarmRecord },
+    /// Liveness became ended; `record.ended_reason` says why.
+    SessionEnded { at: DateTime<Utc>, record: SwarmRecord },
+    SessionSuspended { at: DateTime<Utc>, record: SwarmRecord },
+    /// An accepted claim that left the session needing a human: a permission, a question, a
+    /// login. `record.activity_event` names which. Sent again for every new claim while it waits.
+    Attention { at: DateTime<Utc>, record: SwarmRecord },
+    /// The session no longer needs a human and has not ended.
+    AttentionCleared { at: DateTime<Utc>, record: SwarmRecord },
+    /// Any other accepted claim.
+    Activity { at: DateTime<Utc>, record: SwarmRecord },
+    Renamed { at: DateTime<Utc>, record: SwarmRecord },
+    /// A node appeared, went unreachable, or came back; `node.state` is the state now.
+    Node { at: DateTime<Utc>, node: NodeHealth },
+    NodeLeft { at: DateTime<Utc>, node: NodeHealth },
+}
+
+impl Change {
+    /// The SSE event name: the serde tag.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Change::SessionStarted { .. } => "session_started",
+            Change::SessionEnded { .. } => "session_ended",
+            Change::SessionSuspended { .. } => "session_suspended",
+            Change::Attention { .. } => "attention",
+            Change::AttentionCleared { .. } => "attention_cleared",
+            Change::Activity { .. } => "activity",
+            Change::Renamed { .. } => "renamed",
+            Change::Node { .. } => "node",
+            Change::NodeLeft { .. } => "node_left",
+        }
+    }
+}
+
+/// The changes from `prev` to `next`, records then nodes, in `next`'s order. A record that
+/// ended and was then dropped is not reported twice: a key missing from `next` is silent.
+pub fn changes(prev: &SwarmSnapshot, next: &SwarmSnapshot) -> Vec<Change> {
+    let at = next.generated_at;
+    let mut out = Vec::new();
+    let before: HashMap<&str, &SwarmRecord> = prev.records.iter().map(|r| (r.record.session_key.as_str(), r)).collect();
+    for r in &next.records {
+        let now = &r.record;
+        let Some(old) = before.get(now.session_key.as_str()).map(|o| &o.record) else {
+            if now.liveness != Liveness::Ended {
+                out.push(Change::SessionStarted { at, record: r.clone() });
+                if now.activity == Activity::NeedsAttention {
+                    out.push(Change::Attention { at, record: r.clone() });
+                }
+            }
+            continue;
+        };
+        if now.liveness != old.liveness {
+            match now.liveness {
+                Liveness::Ended => {
+                    out.push(Change::SessionEnded { at, record: r.clone() });
+                    continue;
+                }
+                Liveness::Suspended => out.push(Change::SessionSuspended { at, record: r.clone() }),
+                Liveness::Live | Liveness::Stale => {}
+            }
+        }
+        if now.name != old.name {
+            out.push(Change::Renamed { at, record: r.clone() });
+        }
+        let claimed = now.activity_seq != old.activity_seq || now.activity != old.activity;
+        let needs = now.activity == Activity::NeedsAttention;
+        if claimed && needs {
+            out.push(Change::Attention { at, record: r.clone() });
+        } else if !needs && old.activity == Activity::NeedsAttention {
+            out.push(Change::AttentionCleared { at, record: r.clone() });
+        } else if claimed {
+            out.push(Change::Activity { at, record: r.clone() });
+        }
+    }
+    let nodes_before: HashMap<&str, &NodeHealth> = prev.nodes.iter().map(|n| (n.node_id.as_str(), n)).collect();
+    for n in &next.nodes {
+        if nodes_before.get(n.node_id.as_str()).is_none_or(|old| old.state != n.state) {
+            out.push(Change::Node { at, node: n.clone() });
+        }
+    }
+    for n in &prev.nodes {
+        if !next.nodes.iter().any(|m| m.node_id == n.node_id) {
+            out.push(Change::NodeLeft { at, node: n.clone() });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,5 +552,46 @@ mod tests {
         let back: Snapshot = serde_json::from_value(json).unwrap();
         assert_eq!(back, snap);
         assert_eq!(back.records[0].session_key, "abc:42:7");
+    }
+
+    #[test]
+    fn changes_between_two_swarm_frames() {
+        let rec = |key: &str, activity: Activity, seq: u64, liveness: Liveness| -> SwarmRecord {
+            let mut r: Record = serde_json::from_value(serde_json::json!({
+                "node": "a", "node_id": "a", "session_key": key, "pid": 1, "start_ticks": 1, "started_at": Utc::now(),
+                "harness": "claude", "lane": "headless", "activity": activity, "activity_seq": seq, "liveness": liveness,
+            }))
+            .unwrap();
+            r.activity_event = Some("permission".into());
+            SwarmRecord { record: r, peer_state: PeerState::Local, peer_age_ms: 0 }
+        };
+        let node = |id: &str, state: PeerState| NodeHealth {
+            node_id: id.into(), name: id.into(), address: None, state, peer_age_ms: 0, seen_ms: None, uptime_ms: None,
+            version: None, capabilities: Capabilities::default(), revoked: false,
+        };
+        let frame = |records: Vec<SwarmRecord>, nodes: Vec<NodeHealth>| SwarmSnapshot { schema: SWARM_SCHEMA.into(), generated_at: Utc::now(), nodes, records };
+        let prev = frame(
+            vec![rec("k1", Activity::Active, 1, Liveness::Live), rec("k2", Activity::NeedsAttention, 4, Liveness::Live), rec("k3", Activity::Idle, 2, Liveness::Live), rec("k5", Activity::Idle, 1, Liveness::Live)],
+            vec![node("a", PeerState::Local), node("b", PeerState::Reachable), node("c", PeerState::Reachable)],
+        );
+        let next = frame(
+            vec![
+                rec("k1", Activity::NeedsAttention, 2, Liveness::Live),
+                rec("k2", Activity::Active, 5, Liveness::Live),
+                rec("k3", Activity::Idle, 2, Liveness::Suspended),
+                rec("k4", Activity::Unknown, 0, Liveness::Live),
+                rec("k5", Activity::Idle, 1, Liveness::Ended),
+                rec("k6", Activity::Idle, 1, Liveness::Ended),
+            ],
+            vec![node("a", PeerState::Local), node("b", PeerState::Unreachable), node("d", PeerState::Reachable)],
+        );
+        let names: Vec<&str> = changes(&prev, &next).iter().map(Change::name).collect();
+        assert_eq!(names, ["attention", "attention_cleared", "session_suspended", "session_started", "session_ended", "node", "node", "node_left"]);
+        // The same claim twice is no change; a new claim while still waiting is attention again.
+        assert!(changes(&next, &next).is_empty());
+        let again = frame(vec![rec("k1", Activity::NeedsAttention, 3, Liveness::Live)], vec![]);
+        assert_eq!(changes(&next, &again).iter().map(Change::name).collect::<Vec<_>>(), ["attention", "node_left", "node_left", "node_left"]);
+        let json = serde_json::to_value(&changes(&prev, &next)[0]).unwrap();
+        assert_eq!((json["event"].as_str(), json["record"]["session_key"].as_str()), (Some("attention"), Some("k1")));
     }
 }

@@ -243,7 +243,8 @@ impl Mesh {
         tokio::join!(self.clone().watch_local(), self.clone().discover_forever(), self.clone().exchange_forever());
     }
 
-    async fn watch_local(self: Arc<Self>) {
+    /// Local roster changes bump `changed`; `run` drives it, a test harness spawns it alone.
+    pub(crate) async fn watch_local(self: Arc<Self>) {
         let mut local = self.roster.watch();
         while local.changed().await.is_ok() {
             self.bump();

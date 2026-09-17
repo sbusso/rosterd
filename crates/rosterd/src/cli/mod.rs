@@ -59,6 +59,8 @@ pub enum Command {
         #[command(flatten)]
         scope: Scope,
     },
+    /// One line per change across the swarm; Ctrl+C stops.
+    Changes,
     /// Node, version, listeners, swarm, holders, sources.
     Status,
     /// Swarm membership and health.
@@ -207,6 +209,7 @@ pub async fn run(command: Command, config_path: &Path, json: bool) -> Out<()> {
     match command {
         Command::List { scope } => list::list(&client, &scope, json).await,
         Command::Watch { scope } => list::watch(&client, &scope, json).await,
+        Command::Changes => list::changes(&client, json).await,
         Command::Status => status(&client, json).await,
         Command::Nodes => nodes(&client, json).await,
         Command::Invite { ttl } => {

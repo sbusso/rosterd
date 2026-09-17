@@ -41,6 +41,9 @@ basename). Ambiguous names exit 1 listing the candidates. Exit codes: 0 ok, 1 us
 ```
 rosterd list [--swarm|--node N] --json          GET /snapshot or /swarm/snapshot
 rosterd watch [--swarm|--node N] --json         one frame per line on every change
+rosterd changes --json                          GET /swarm/changes: the snapshot, then one
+                                                change per line (`event`: session_started,
+                                                attention, attention_cleared, activity, ...)
 rosterd status --json                           node, listeners, swarm, counts
 rosterd nodes --json                            membership and reachability
 rosterd read KEY --json                         the record, runtime state, pending request, children

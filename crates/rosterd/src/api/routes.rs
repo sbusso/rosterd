@@ -157,6 +157,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/pair", get(pair))
         .route("/swarm/snapshot", get(swarm_snapshot))
         .route("/swarm/events", get(swarm_events))
+        .route("/swarm/changes", get(swarm_changes))
         .route("/swarm/nodes", get(swarm_nodes))
         .route("/swarm/leave", post(swarm_leave))
         // Any /sessions path under /swarm/{node_id}/ runs on that node, R6.
@@ -338,6 +339,28 @@ async fn status(State(node): State<Arc<Node>>) -> Json<Value> {
 
 async fn swarm_snapshot(State(node): State<Arc<Node>>) -> Json<rosterd_proto::SwarmSnapshot> {
     Json(node.mesh.swarm_snapshot())
+}
+
+/// SSE, R6: one `snapshot` event with the whole swarm, then one event per change, named by
+/// the change (`attention`, `session_started`, `node`, ...). Derived from consecutive swarm
+/// frames, so a client keeps one connection and never diffs.
+async fn swarm_changes(State(node): State<Arc<Node>>) -> Response {
+    let first = node.mesh.swarm_snapshot();
+    let head = futures::stream::once(async move { Ok::<_, Infallible>(sse_json(&first).event("snapshot")) });
+    let prev = node.mesh.swarm_snapshot();
+    let rest = futures::stream::unfold((node.mesh.changed(), prev), move |(mut changed, prev)| {
+        let node = node.clone();
+        async move {
+            changed.changed().await.ok()?;
+            tokio::time::sleep(SWARM_DEBOUNCE).await;
+            changed.borrow_and_update();
+            let next = node.mesh.swarm_snapshot();
+            let events: Vec<_> = rosterd_proto::changes(&prev, &next).iter().map(|c| Ok::<_, Infallible>(sse_json(c).event(c.name()))).collect();
+            Some((futures::stream::iter(events), (changed, next)))
+        }
+    })
+    .flatten();
+    Sse::new(head.chain(rest)).keep_alive(KeepAlive::new().interval(KEEP_ALIVE)).into_response()
 }
 
 /// SSE, the whole swarm first and on any change anywhere, R6, debounced.

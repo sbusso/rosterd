@@ -127,6 +127,7 @@ the fallback without Tailscale.
 rosterd nodes             # membership and health
 rosterd list --swarm      # every session on every node
 rosterd list --node NAME  # one node
+rosterd changes           # one line per change anywhere: started, attention, ended, node
 rosterd revoke NODE_ID    # remove a node everywhere
 rosterd leave             # take this node out
 ```
@@ -143,6 +144,7 @@ Every command takes `--json`, which prints the API frame for the resource byte f
 
 ```
 rosterd list|watch [--swarm|--node N]      one row per session; watch reprints on every change
+rosterd changes                            one line per change across the swarm
 rosterd status | nodes                     this node; swarm membership and health
 rosterd read KEY | explain KEY             one session in full; which source set each field
 rosterd start --harness H --cwd DIR [--name L] [--policy auto|attention] [--model M]
