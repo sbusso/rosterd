@@ -28,8 +28,12 @@ const HANDLE_TIMEOUT: Duration = Duration::from_millis(500);
 /// copy of Claude Code, laid out as `~/.claude/remote/ccd-cli/<version>`.
 const BUILTIN: [(&str, &str); 5] =
     [("claude", "claude"), ("codex", "codex"), ("claude-agent-acp", "claude"), ("codex-acp", "codex"), ("ccd-cli", "claude")];
+/// Pipe-separated: a client without a UTF-8 locale (a launchd or systemd service has none) gets
+/// every control character of its output replaced by `_`, so tabs never reach the parser. tmux
+/// itself turns a pipe inside a name into `_` first, so the split is exact.
+/// ponytail: a session named with a pipe attaches under the wrong name; use #{session_id} when one shows up.
 const TMUX_FORMAT: &str =
-    "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_tty}";
+    "#{s/[|]/_/:session_name}|#{window_index}|#{s/[|]/_/:window_name}|#{pane_id}|#{pane_pid}|#{pane_tty}";
 #[derive(Debug, Clone)]
 struct ProcInfo {
     ppid: Option<u32>,
@@ -329,7 +333,7 @@ struct TmuxPane {
 
 /// One line of `tmux list-panes -a -F TMUX_FORMAT`.
 fn parse_tmux_line(line: &str) -> Option<TmuxPane> {
-    let f: Vec<&str> = line.split('\t').collect();
+    let f: Vec<&str> = line.split('|').collect();
     if f.len() < 6 {
         return None;
     }
@@ -439,14 +443,14 @@ mod tests {
 
     #[test]
     fn tmux_lines_parse_and_the_nearest_pane_owns_the_process() {
-        let line = "main\t2\teditor\t%5\t4242\t/dev/ttys003";
+        let line = "main|2|editor|%5|4242|/dev/ttys003";
         let pane = parse_tmux_line(line).unwrap();
         assert_eq!(pane.handle, TmuxHandle { session: "main".into(), window_index: 2, window_name: Some("editor".into()), pane_id: "%5".into() });
         assert_eq!((pane.pane_pid, pane.tty.as_deref()), (4242, Some("/dev/ttys003")));
-        assert_eq!(parse_tmux_line("main\t2\t\t%6\t4343\t").unwrap().handle.window_name, None);
-        assert_eq!(parse_tmux_line("main\tx\t\t%6\t4343\t"), None);
-        assert_eq!(parse_tmux_line("short\tline"), None);
-        let other = parse_tmux_line("main\t3\t\t%7\t5000\t/dev/ttys004").unwrap();
+        assert_eq!(parse_tmux_line("main|2||%6|4343|").unwrap().handle.window_name, None);
+        assert_eq!(parse_tmux_line("main|x||%6|4343|"), None);
+        assert_eq!(parse_tmux_line("short|line"), None);
+        let other = parse_tmux_line("main|3||%7|5000|/dev/ttys004").unwrap();
         let panes = vec![pane.clone(), other.clone()];
         // A harness two levels under the pane shell: pane_pid is an ancestor, not the pid.
         assert_eq!(owning_pane(&[9000, 8000, 4242, 1], &panes), Some(&pane));

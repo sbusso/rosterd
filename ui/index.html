@@ -136,6 +136,8 @@ const driven = (r) => r.lane === 'headless' || !!r.holder;
 function openCommands(r) {
   if (driven(r)) return { link: `/ui/sessions/${r.session_key}`, label: 'conversation' };
   if (r.tmux) return { open: r.session_key, label: 'tmux' };
+  // A Codex thread with no pane lives in the ChatGPT app: its own scheme jumps to the thread.
+  if (r.harness === 'codex' && r.session_id) return { link: `codex://threads/${r.session_id}`, label: 'thread' };
   return {};
 }
 // ACP option kinds: allow_* are the go, reject_* the no; the gate of R16.2 uses allow, allow_always, deny.
