@@ -67,9 +67,8 @@ One row per thing the machine needs. Space picks, enter runs, `a` picks everythi
 
 ## Using it
 
-States come from hooks and ACP. A session only the process scan knows is active while its process
-tree uses the CPU and idle after a minute without; a hook or ACP claim takes over as soon as one
-arrives, R4.
+States come from hooks and ACP, never from the process scan: a session only the scan knows stays
+`unknown` until a hook or ACP claim arrives, R0 R4.
 
 **Menu bar** (`rosterd-tray`)
 

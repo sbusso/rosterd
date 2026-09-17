@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{TimeZone, Utc};
 use rosterd_proto::{Activity, EndedReason, Lane, Liveness, Load, Record, Source, TmuxHandle};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
@@ -30,14 +30,6 @@ const BUILTIN: [(&str, &str); 5] =
     [("claude", "claude"), ("codex", "codex"), ("claude-agent-acp", "claude"), ("codex-acp", "codex"), ("ccd-cli", "claude")];
 const TMUX_FORMAT: &str =
     "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_tty}";
-/// CPU activity, the claim a scan-only session gets when no hook or adapter speaks for it: the
-/// process tree used at least this share of one pass, or has been under it for `QUIET`.
-/// ponytail: sampled on a 2s pass an idle Claude Code sits at 0.5–2.5%, a working one spikes to
-/// 4–12% every few seconds and drops below 1% while it waits on the API; raise QUIET before
-/// lowering the share if a long think shows as idle.
-const BUSY_PCT: f32 = 4.0;
-const QUIET: chrono::Duration = chrono::Duration::seconds(60);
-
 #[derive(Debug, Clone)]
 struct ProcInfo {
     ppid: Option<u32>,
@@ -60,8 +52,6 @@ struct ProcInfo {
 static TABLE: LazyLock<RwLock<HashMap<u32, ProcInfo>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
 /// When the last pass sampled, for the CPU share.
 static SAMPLED_AT: Mutex<Option<Instant>> = Mutex::new(None);
-/// When each live session's tree was last busy, or first seen; pruned with the live set.
-static LAST_BUSY: LazyLock<Mutex<HashMap<String, DateTime<Utc>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Runs forever. Identity is pid plus start time on every platform, R4.
 pub async fn run(config: Arc<Config>, roster: Arc<Roster>) {
@@ -136,17 +126,6 @@ fn tree_load(table: &[(u32, ProcInfo)]) -> HashMap<u32, (f32, u64)> {
         }
     }
     tree
-}
-
-/// The activity a scan-only session's CPU share earns, R5.2 fallback: busy is active now, quiet
-/// for `QUIET` is idle since the tree was last busy. None when the record already says so.
-fn cpu_activity(current: Activity, busy: bool, last_busy: DateTime<Utc>, now: DateTime<Utc>) -> Option<(Activity, DateTime<Utc>)> {
-    match (busy, current) {
-        (true, Activity::Active) | (false, Activity::Idle) => None,
-        (true, _) => Some((Activity::Active, now)),
-        (false, _) if now - last_busy >= QUIET => Some((Activity::Idle, last_busy)),
-        _ => None,
-    }
 }
 
 /// The platform start time of a live process, the `start_ticks` half of a session key. None when
@@ -258,35 +237,13 @@ async fn pass(roster: &Roster, names: &BTreeMap<String, String>) {
         false
     });
 
-    // Activity from CPU for the sessions nothing better speaks for, R5.2. A claim by any other
-    // source hands the record over to it: hook and adapter claims outrank a scan.
+    // CPU share and memory of each tree, a measurement on the record; never an activity, R0.
     let tree = tree_load(&table);
     let loads: HashMap<String, Load> = live
         .iter()
         .filter_map(|r| tree.get(&r.pid).map(|(cpu, rss)| (r.session_key.clone(), Load { cpu_pct: cpu.round() as u16, rss_mb: rss >> 20 })))
         .collect();
     roster.set_load(&loads);
-    let claims: Vec<(String, Activity, DateTime<Utc>)> = {
-        let mut last_busy = LAST_BUSY.lock().unwrap();
-        last_busy.retain(|key, _| live.iter().any(|r| &r.session_key == key));
-        live.iter()
-            .filter(|r| r.sources.iter().all(|s| *s == Source::Scan))
-            .filter_map(|rec| {
-                let busy = tree.get(&rec.pid).is_some_and(|(pct, _)| *pct >= BUSY_PCT);
-                let since = *last_busy.entry(rec.session_key.clone()).or_insert(now);
-                if busy {
-                    last_busy.insert(rec.session_key.clone(), now);
-                }
-                cpu_activity(rec.activity, busy, since, now).map(|(activity, at)| (rec.session_key.clone(), activity, at))
-            })
-            .collect()
-    };
-    // No event name: what the tree did is not known, only that it did something; `explain`
-    // carries the source.
-    for (key, activity, at) in claims {
-        let _ = roster.claim(Source::Scan, &key, activity, "", at);
-    }
-
     // parent_session_key from the process tree when the parent is also a harness, R3.
     for rec in live.iter().filter(|r| r.parent_session_key.is_none()) {
         let parent = ancestors(rec.pid)
@@ -411,18 +368,6 @@ async fn tmux_panes() -> Vec<TmuxPane> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cpu_share_claims_active_now_and_idle_since_the_last_busy_pass() {
-        let t0 = Utc.timestamp_opt(1_000, 0).unwrap();
-        let later = t0 + QUIET;
-        assert_eq!(cpu_activity(Activity::Unknown, true, t0, t0), Some((Activity::Active, t0)));
-        assert_eq!(cpu_activity(Activity::Active, true, t0, later), None);
-        assert_eq!(cpu_activity(Activity::Active, false, t0, t0 + chrono::Duration::seconds(5)), None);
-        assert_eq!(cpu_activity(Activity::Active, false, t0, later), Some((Activity::Idle, t0)));
-        assert_eq!(cpu_activity(Activity::Unknown, false, t0, later), Some((Activity::Idle, t0)));
-        assert_eq!(cpu_activity(Activity::Idle, false, t0, later), None);
-    }
 
     fn info(name: &str, exe: Option<&str>, cmd: &[&str]) -> ProcInfo {
         ProcInfo {
