@@ -72,12 +72,13 @@ arrives, R4.
 
 **Menu bar** (`rosterd-tray`)
 
-- sessions grouped by state: needs attention, active, idle, unknown, suspended
-- each row: name, harness, CPU share, age of the last activity
+- the page's view: every node of the swarm, this node first, then the reachable peers, then the unreachable ones; the sessions of each ranked needs attention, active, idle, unknown, suspended
+- each row: name and project, harness, state, age of the last activity
 - needs attention → Allow, Allow always, Deny
 - any other row → jumps to it: the tmux pane, the herdr pane, or the conversation view
 - Open in browser → the roster page
 - macOS: the attention count beside the icon. Linux: the icon colour (KDE and most desktops; GNOME needs the AppIndicator extension)
+- a notification on every `attention` event of /swarm/changes; the page and the phone post theirs too, and the page's tab title carries the count
 
 **Roster page** (`rosterd ui`)
 
@@ -97,6 +98,7 @@ arrives, R4.
 
 - `rosterd status`: the node, listeners, swarm, counts
 - `rosterd list` / `rosterd watch`: the rows
+- `rosterd attention`: the sessions waiting on a human and what each waits on
 - `rosterd daemon`: run the daemon by hand
 - config: `~/.config/rosterd/rosterd.toml` (Linux), `~/Library/Application Support/rosterd/rosterd.toml` (macOS), next to `node.key`, `loopback.token`, `swarm.json`
 
@@ -154,6 +156,7 @@ Every command takes `--json`, which prints the API frame for the resource byte f
 ```
 rosterd list|watch [--swarm|--node N]      one row per session; watch reprints on every change
 rosterd changes                            one line per change across the swarm
+rosterd attention                          the sessions waiting on a human, with the request
 rosterd status | nodes                     this node; swarm membership and health
 rosterd usage [--swarm] [--since 7d]       tokens and cost per day, harness and model
 rosterd read KEY | explain KEY             one session in full; which source set each field

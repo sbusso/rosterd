@@ -1,10 +1,14 @@
 // The roster page, R9: every node of the swarm, its sessions ranked by state, live over
-// /swarm/events; pending permissions answered from the row.
+// /swarm/events; pending permissions answered from the row; a notification per `attention`
+// event of /swarm/changes, which opens the session when tapped.
 import SwiftUI
+import UserNotifications
 
 struct RosterView: View {
     @Environment(Client.self) private var client
+    @Environment(Notifier.self) private var notifier
     @Binding var scanning: Bool
+    @State private var path: [String] = []
     @State private var swarm: SwarmSnapshot?
     @State private var status = "connecting"
     @State private var pending: [String: [Pending]] = [:]
@@ -14,7 +18,7 @@ struct RosterView: View {
     private var need: Int { live.filter { $0.activity == "needs_attention" }.count }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             TimelineView(.periodic(from: .now, by: 30)) { _ in
                 List {
                     ForEach(swarm?.nodes ?? []) { node in
@@ -40,6 +44,7 @@ struct RosterView: View {
             .scrollContentBackground(.hidden)
             .background(Color.bg)
             .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(for: String.self) { SessionView(key: $0, local: swarm?.local) }
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 0) {
@@ -63,6 +68,8 @@ struct RosterView: View {
             }
         }
         .task { await stream() }
+        .task { await changes() }
+        .onChange(of: notifier.open) { if let key = notifier.open { path = [key]; notifier.open = nil } }
     }
 
     private func rows(_ node: NodeHealth) -> [Record] {
@@ -85,6 +92,30 @@ struct RosterView: View {
                     }
                 }
             } catch { fail(error) }
+            try? await Task.sleep(for: .seconds(2))
+        }
+    }
+
+    /// One local notification per claim of /swarm/changes, deduped on session_key and activity_seq;
+    /// the tap lands on the session through `Notifier`.
+    private func changes() async {
+        _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+        var seen = Set<String>()
+        while !Task.isCancelled {
+            do {
+                for try await data in client.sse("/swarm/changes") {
+                    guard let change = try? decoder.decode(Change.self, from: data), change.event == "attention", let r = change.record else { continue }
+                    let id = "\(r.sessionKey):\(r.activitySeq)"
+                    guard seen.insert(id).inserted else { continue }
+                    let content = UNMutableNotificationContent()
+                    content.title = r.displayName
+                    content.subtitle = r.node
+                    content.body = r.activityEvent ?? "attention"
+                    content.sound = .default
+                    content.userInfo = ["session_key": r.sessionKey]
+                    try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
+                }
+            } catch {}
             try? await Task.sleep(for: .seconds(2))
         }
     }
@@ -126,7 +157,7 @@ struct SessionRow: View {
             if word != "ended" {
                 HStack(spacing: 6) {
                     if r.driven {
-                        NavigationLink("open conversation") { SessionView(key: r.sessionKey, local: local) }.buttonStyle(.plain).foregroundStyle(Color.link).font(.footnote)
+                        NavigationLink("open conversation", value: r.sessionKey).buttonStyle(.plain).foregroundStyle(Color.link).font(.footnote)
                         TextField("prompt", text: $draft).textFieldStyle(.roundedBorder).font(.footnote).onSubmit { send() }
                     }
                     if r.driven && word == "active" { Act("cancel turn") { try await client.post(client.spath(r.sessionKey, local: local, "/cancel"), [String: String]()) } }

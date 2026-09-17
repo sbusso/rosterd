@@ -274,6 +274,8 @@ The open action resolves the runtime handle. For tmux and herdr it hands the tar
 
 Sound, urgency, badges, and toasts remain the client's job. rosterd supplies lists and events only.
 
+Needs attention is the client's first duty. Every client reads /swarm/changes and notifies the human on each `attention` event, through the platform's notification: the browser Notification on the page, a user notification from the menu bar item, a local notification on the phone. One notification per claim, deduplicated on `session_key` plus `activity_seq`; the text names the session (its name, else the cwd basename), the node and `record.activity_event` (permission, question or login); acting on it opens that session. `rosterd attention` is the same list for a shell: every session with activity needs_attention and not ended, with the request it waits on.
+
 ## R10. Configuration
 
 One TOML file per node.
@@ -376,6 +378,7 @@ Reading.
 ```
 rosterd list [--swarm|--node N] [--json]
 rosterd watch [--swarm|--node N] [--json]
+rosterd attention [--json]
 rosterd status [--json]
 rosterd nodes [--json]
 rosterd usage [--swarm] [--since 7d] [--json]
@@ -386,6 +389,8 @@ rosterd explain KEY [--json]
 `list` prints one row per session. Columns, in order: name or the cwd basename fallback in brackets, harness, activity, updated (age of the last accepted claim, never time spent working), lane, node, pid. With `--swarm` a header block first shows per node counts of active, idle, needs attention, unknown, and the node's reachability. Unreachable nodes are printed dimmed with `stale Ns` in the node column. Sessions in state suspended (R15) show activity `suspended` in place of the four words and their session_id instead of a pid.
 
 `watch` prints the complete table again on every change, or the complete JSON frame per line with `--json`. Ctrl+C stops it.
+
+`attention` prints one line per session waiting on a human, swarm wide: name, node, the event (permission, question, login), the request (tool and summary, question text, or login methods) and the age of the claim. `--json` prints `[{record, session}]`, the swarm record and the GET /sessions/{key} body as the API frames them. Nothing waiting prints nothing, exit 0.
 
 `status` shows the node name and id, version, listeners, swarm id, peer count and reachability, holder count, which sources are enabled, and this node's harnesses that are not ok (R7.7).
 

@@ -1,14 +1,16 @@
-//! rosterd-tray: the roster in the menu bar, macOS and Linux. A native menu over the CLI:
-//! `rosterd watch --json` feeds it one snapshot per change, `rosterd allow|deny|open|ui` act.
+//! rosterd-tray: the roster in the menu bar, macOS and Linux, the page's view as a native menu
+//! over the CLI: `rosterd watch --swarm --json` feeds it one swarm snapshot per change,
+//! `rosterd changes --json` its attention events for the notifications, `rosterd allow|deny|open|ui` act.
 //! Nothing here touches the socket, the config or the token; the CLI already does.
 
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rosterd_proto::{Activity, Liveness, Record, Snapshot, age};
+use rosterd_proto::{Activity, Change, Liveness, NodeHealth, PeerState, Record, SwarmRecord, SwarmSnapshot, age};
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tray_icon::menu::{IconMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
@@ -16,8 +18,6 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 /// The one name the menu bar uses; the daemon, the CLI and the page are the same word.
 const APP: &str = "rosterd";
-/// Menu sections, indexed by `rank`.
-const SECTIONS: [&str; 5] = ["Needs attention", "Active", "Idle", "Unknown", "Suspended"];
 
 enum UserEvent {
     View(View),
@@ -28,7 +28,7 @@ enum UserEvent {
 
 enum View {
     Waiting,
-    Roster(Snapshot),
+    Roster(SwarmSnapshot),
     /// The watch ended: the daemon is down or unreachable; the text is its last word.
     Down(String),
 }
@@ -50,6 +50,8 @@ fn main() {
     let feed = event_loop.create_proxy();
     let bin = rosterd.clone();
     thread::spawn(move || follow(&bin, &feed));
+    let bin = rosterd.clone();
+    thread::spawn(move || notify_attention(&bin));
     #[cfg(target_os = "macos")]
     watch_tracking(event_loop.create_proxy());
 
@@ -122,10 +124,11 @@ fn rosterd_bin() -> PathBuf {
     std::env::current_exe().ok().map(|exe| exe.with_file_name("rosterd")).filter(|p| p.is_file()).unwrap_or_else(|| PathBuf::from("rosterd"))
 }
 
-/// `rosterd watch --json` forever: every line is a whole snapshot; when it ends, say why and retry.
+/// `rosterd watch --swarm --json` forever: every line is a whole swarm snapshot; when it ends,
+/// say why and retry.
 fn follow(rosterd: &PathBuf, feed: &EventLoopProxy<UserEvent>) {
     loop {
-        let child = Command::new(rosterd).args(["watch", "--json"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
+        let child = Command::new(rosterd).args(["watch", "--swarm", "--json"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
         let mut child = match child {
             Ok(c) => c,
             Err(e) => {
@@ -135,7 +138,7 @@ fn follow(rosterd: &PathBuf, feed: &EventLoopProxy<UserEvent>) {
             }
         };
         for line in BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
-            if let Ok(snapshot) = serde_json::from_str::<Snapshot>(&line) {
+            if let Ok(snapshot) = serde_json::from_str::<SwarmSnapshot>(&line) {
                 let _ = feed.send_event(UserEvent::View(View::Roster(snapshot)));
             }
         }
@@ -146,6 +149,61 @@ fn follow(rosterd: &PathBuf, feed: &EventLoopProxy<UserEvent>) {
         let _ = feed.send_event(UserEvent::View(View::Down(why)));
         thread::sleep(Duration::from_secs(2));
     }
+}
+
+/// `rosterd changes --json` forever: every `attention` event is a notification, R9, one per
+/// claim (session_key and activity_seq). The snapshot frame and every other event are skipped.
+fn notify_attention(rosterd: &PathBuf) {
+    let mut seen: HashSet<(String, u64)> = HashSet::new();
+    loop {
+        let child = Command::new(rosterd).args(["changes", "--json"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
+        let Ok(mut child) = child else {
+            thread::sleep(Duration::from_secs(5));
+            continue;
+        };
+        for line in BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
+            let Ok(Change::Attention { record, .. }) = serde_json::from_str::<Change>(&line) else { continue };
+            let r = &record.record;
+            if seen.len() > 4096 {
+                seen.clear();
+            }
+            if seen.insert((r.session_key.clone(), r.activity_seq)) {
+                notify(&format!("{} · {} · {}", label(r), r.node, r.activity_event.as_deref().unwrap_or("attention")));
+            }
+        }
+        let _ = child.wait();
+        thread::sleep(Duration::from_secs(2));
+    }
+}
+
+/// A user notification titled `rosterd`: the tray is an unbundled binary, so the platform's
+/// script runner posts it.
+fn notify(text: &str) {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut c = Command::new("osascript");
+        c.args(["-e", &applescript(text)]);
+        c
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut command = {
+        let mut c = Command::new("notify-send");
+        c.args([APP, text]);
+        c
+    };
+    match command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        Ok(mut child) => {
+            thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(e) => eprintln!("rosterd-tray: notify: {e}"),
+    }
+}
+
+/// `display notification` with the text as one AppleScript string literal.
+fn applescript(text: &str) -> String {
+    format!("display notification \"{}\" with title \"{APP}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// A menu id is the CLI line it stands for; the arguments are not shell parsed.
@@ -187,27 +245,31 @@ fn render(tray: &TrayIcon, view: &View) {
         View::Down(why) => (why.clone(), Shade::Down, 0),
         View::Roster(s) => {
             let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-            let mut rows: Vec<&Record> = s.records.iter().filter(|r| r.liveness != Liveness::Ended).collect();
-            rows.sort_by_key(|r| (rank(r), r.name.clone().unwrap_or_default(), r.pid));
-            let attention = rows.iter().filter(|r| rank(r) == 0).count();
-            let summary = match (rows.len(), attention) {
+            let live: Vec<&SwarmRecord> = s.records.iter().filter(|r| r.record.liveness != Liveness::Ended).collect();
+            let attention = live.iter().filter(|r| r.record.activity == Activity::NeedsAttention).count();
+            let summary = match (live.len(), attention) {
                 (0, _) => "no sessions".to_string(),
                 (n, 0) => format!("{n} session{}", plural(n)),
                 (n, a) => format!("{n} session{} · {a} need{} attention", plural(n), if a == 1 { "s" } else { "" }),
             };
-            if rows.is_empty() {
-                let _ = menu.append(&MenuItem::with_id("summary", &summary, false, None));
-            }
-            for (k, title) in SECTIONS.iter().enumerate() {
-                let group: Vec<&&Record> = rows.iter().filter(|r| usize::from(rank(r)) == k).collect();
-                if group.is_empty() {
+            let _ = menu.append(&MenuItem::with_id("summary", &summary, false, None));
+            let mut nodes: Vec<&NodeHealth> = s.nodes.iter().collect();
+            nodes.sort_by_key(|n| node_order(n.state));
+            for node in nodes {
+                let _ = menu.append(&PredefinedMenuItem::section_header(&format!("{} · {}", node.name.to_uppercase(), health(node))));
+                if node.state == PeerState::Unreachable {
                     continue;
                 }
-                let _ = menu.append(&PredefinedMenuItem::section_header(&format!("{title} · {}", group.len())));
-                for r in group {
+                let mut rows: Vec<&&SwarmRecord> = live.iter().filter(|r| r.record.node_id == node.node_id).collect();
+                rows.sort_by(|a, b| rank(&a.record).cmp(&rank(&b.record)).then_with(|| when(&b.record).cmp(&when(&a.record))));
+                if rows.is_empty() {
+                    let _ = menu.append(&MenuItem::with_id(format!("none:{}", node.node_id), "no sessions", false, None));
+                }
+                for r in rows {
+                    let r = &r.record;
                     let text = row_text(r, now);
                     let key = r.session_key.as_str();
-                    if k == 0 && r.activity_event.as_deref() == Some("permission") {
+                    if r.activity == Activity::NeedsAttention && r.liveness == Liveness::Live && r.activity_event.as_deref() == Some("permission") {
                         let sub = Submenu::new(&text, true);
                         #[cfg(any(target_os = "macos", target_os = "windows"))]
                         sub.set_icon(Some(disc(Shade::Attention, false)));
@@ -220,7 +282,7 @@ fn render(tray: &TrayIcon, view: &View) {
                         ]);
                         let _ = menu.append(&sub);
                     } else {
-                        let (shade, hollow) = match k {
+                        let (shade, hollow) = match rank(r) {
                             0 => (Shade::Attention, false),
                             1 => (Shade::Active, false),
                             2 => (Shade::Idle, false),
@@ -233,7 +295,7 @@ fn render(tray: &TrayIcon, view: &View) {
             }
             let shade = if attention > 0 {
                 Shade::Attention
-            } else if rows.iter().any(|r| r.activity == Activity::Active) {
+            } else if live.iter().any(|r| r.record.liveness == Liveness::Live && r.record.activity == Activity::Active) {
                 Shade::Active
             } else {
                 Shade::Idle
@@ -265,31 +327,71 @@ fn render(tray: &TrayIcon, view: &View) {
     }
 }
 
-/// The section a row belongs to, in menu order.
-fn rank(r: &Record) -> u8 {
-    match (r.liveness, r.activity) {
-        (_, Activity::NeedsAttention) => 0,
-        (Liveness::Suspended, _) => 4,
-        (_, Activity::Active) => 1,
-        (_, Activity::Idle) => 2,
-        (_, Activity::Unknown) => 3,
+/// This node first, then the reachable peers, then the unreachable ones.
+fn node_order(state: PeerState) -> u8 {
+    match state {
+        PeerState::Local => 0,
+        PeerState::Reachable => 1,
+        PeerState::Unreachable => 2,
     }
 }
 
-/// `label  harness  age`: the display name (the name, else the cwd's last segment in brackets,
-/// else where the session sits; never a pid), then how long since the last activity, or since
-/// the start when nothing was heard.
-fn row_text(r: &Record, now: i64) -> String {
-    let base = r.cwd.as_deref().and_then(|cwd| std::path::Path::new(cwd).file_name()).and_then(|f| f.to_str());
-    let label = match (r.name.as_deref().filter(|n| !n.is_empty()), base) {
-        (Some(name), _) => name.to_string(),
-        (None, Some(base)) => format!("[{base}]"),
-        (None, None) => r.origin.clone().unwrap_or_default(),
+/// The page's node header: `this node`, `revoked`, or the state with when it was heard and its uptime.
+fn health(node: &NodeHealth) -> String {
+    let state = match node.state {
+        _ if node.revoked => return "revoked".into(),
+        PeerState::Local => return "this node".into(),
+        PeerState::Reachable => "reachable",
+        PeerState::Unreachable => "unreachable",
     };
-    let since = r.activity_at.unwrap_or(r.started_at).timestamp();
-    let stale = if r.liveness == Liveness::Stale { " · stale" } else { "" };
-    let cpu = r.load.map(|l| format!("{}%  ", l.cpu_pct)).unwrap_or_default();
-    format!("{label}  {}  {cpu}{}{stale}", r.harness, age((now - since).max(0) as u64)).trim_start().to_string()
+    let seen = node.seen_ms.map(|ms| format!(" {} ago", age(ms / 1000))).unwrap_or_default();
+    let up = node.uptime_ms.map(|ms| format!(" · up {}", age(ms / 1000))).unwrap_or_default();
+    format!("{state}{seen}{up}")
+}
+
+/// One word for a row, liveness first, as the page does: ended, suspended and stale say more
+/// than the last activity did.
+fn word(r: &Record) -> &'static str {
+    match (r.liveness, r.activity) {
+        (Liveness::Ended, _) => "ended",
+        (Liveness::Suspended, _) => "suspended",
+        (Liveness::Stale, _) => "stale",
+        (_, Activity::NeedsAttention) => "needs attention",
+        (_, Activity::Active) => "active",
+        (_, Activity::Idle) => "idle",
+        (_, Activity::Unknown) => "unknown",
+    }
+}
+
+/// The page's RANK: the order of rows within a node.
+fn rank(r: &Record) -> u8 {
+    match word(r) {
+        "needs attention" => 0,
+        "active" => 1,
+        "idle" => 2,
+        "unknown" => 3,
+        "ended" => 5,
+        _ => 4,
+    }
+}
+
+/// When the row last moved: the last activity, else the start.
+fn when(r: &Record) -> i64 {
+    r.activity_at.unwrap_or(r.started_at).timestamp()
+}
+
+/// `label  harness  word  age`, the page's row: the name and the project (the cwd's last
+/// segment), else where the session sits; never a pid.
+fn row_text(r: &Record, now: i64) -> String {
+    format!("{}  {}  {}  {}", label(r), r.harness, word(r), age((now - when(r)).max(0) as u64))
+}
+
+/// The page's label: the name when set and the project beside it, else the project alone, else
+/// the origin.
+fn label(r: &Record) -> String {
+    let project = r.cwd.as_deref().and_then(|cwd| std::path::Path::new(cwd).file_name()).and_then(|f| f.to_str()).unwrap_or_default();
+    let name = r.name.as_deref().filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| if project.is_empty() { r.origin.clone().unwrap_or_default() } else { String::new() });
+    [name.as_str(), project].iter().filter(|p| !p.is_empty()).copied().collect::<Vec<_>>().join(" ")
 }
 
 fn plural(n: usize) -> &'static str {
@@ -351,26 +453,46 @@ fn dot(shade: Shade) -> Icon {
 mod tests {
     use super::*;
 
-    fn rec(pid: u32, name: Option<&str>, activity: &str, liveness: &str) -> Record {
+    fn rec(pid: u32, name: Option<&str>, activity: &str, liveness: &str, cwd: Option<&str>, origin: Option<&str>) -> Record {
         serde_json::from_value(serde_json::json!({
             "node": "n", "node_id": "abc", "session_key": format!("abc:{pid}:1"), "pid": pid, "start_ticks": 1,
             "started_at": "2026-09-16T00:00:00Z", "harness": "claude", "lane": "interactive",
-            "name": name, "activity": activity, "liveness": liveness, "cwd": if pid == 2 { Some("/home/x/api") } else { None },
+            "name": name, "activity": activity, "liveness": liveness, "cwd": cwd, "origin": origin,
         }))
         .unwrap()
     }
 
     #[test]
-    fn rows_sort_attention_first_and_ids_are_cli_lines() {
-        let mut rows = [rec(1, Some("docs"), "idle", "live"), rec(2, None, "active", "live"), rec(3, Some("fix"), "needs_attention", "live"), rec(4, Some("old"), "active", "suspended")];
-        rows.sort_by_key(|r| (rank(r), r.name.clone().unwrap_or_default(), r.pid));
+    fn rows_are_the_pages_rows_and_ids_are_cli_lines() {
+        let mut rows = [
+            rec(1, Some("docs"), "idle", "live", None, None),
+            rec(2, None, "active", "live", Some("/home/x/api"), None),
+            rec(3, Some("fix"), "needs_attention", "live", Some("/home/x/api"), None),
+            rec(4, Some("old"), "active", "suspended", None, None),
+            rec(5, None, "unknown", "live", None, Some("ssh")),
+        ];
+        rows.sort_by_key(rank);
         let now = rows[0].started_at.timestamp() + 7200;
         let texts: Vec<String> = rows.iter().map(|r| row_text(r, now)).collect();
-        assert_eq!(texts, ["fix  claude  2h", "[api]  claude  2h", "docs  claude  2h", "old  claude  2h"]);
-        assert_eq!(rows.iter().map(|r| SECTIONS[usize::from(rank(r))]).collect::<Vec<_>>(), ["Needs attention", "Active", "Idle", "Suspended"]);
+        assert_eq!(texts, ["fix api  claude  needs attention  2h", "api  claude  active  2h", "docs  claude  idle  2h", "ssh  claude  unknown  2h", "old  claude  suspended  2h"]);
         assert_eq!(cli_args("always:abc:3:1"), Some(vec!["allow", "abc:3:1", "--always"]));
         assert_eq!(cli_args("open:abc:3:1"), Some(vec!["open", "abc:3:1"]));
         assert_eq!(cli_args("ui"), Some(vec!["ui"]));
         assert_eq!(cli_args("summary"), None);
+        assert_eq!(applescript(r#"fix api · n · say "hi" \ bye"#), r#"display notification "fix api · n · say \"hi\" \\ bye" with title "rosterd""#);
+    }
+
+    #[test]
+    fn node_headers_read_like_the_page() {
+        let node = |state: PeerState, seen: Option<u64>, up: Option<u64>| NodeHealth {
+            node_id: "n".into(), name: "mato".into(), address: None, state, peer_age_ms: 0, seen_ms: seen, uptime_ms: up,
+            version: None, capabilities: Default::default(), revoked: false,
+        };
+        assert_eq!(health(&node(PeerState::Local, Some(0), Some(4 * 3_600_000))), "this node");
+        assert_eq!(health(&node(PeerState::Reachable, Some(1500), Some(4 * 3_600_000))), "reachable 1s ago · up 4h");
+        assert_eq!(health(&node(PeerState::Unreachable, None, None)), "unreachable");
+        let mut states = [PeerState::Unreachable, PeerState::Local, PeerState::Reachable];
+        states.sort_by_key(|s| node_order(*s));
+        assert_eq!(states, [PeerState::Local, PeerState::Reachable, PeerState::Unreachable]);
     }
 }

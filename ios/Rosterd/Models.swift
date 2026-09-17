@@ -1,4 +1,5 @@
-// The daemon's frames, R6: the swarm snapshot of /swarm/events and the session of /sessions/{key}.
+// The daemon's frames, R6: the swarm snapshot of /swarm/events, one change of /swarm/changes and
+// the session of /sessions/{key}.
 import Foundation
 
 struct SwarmSnapshot: Decodable {
@@ -15,8 +16,14 @@ struct NodeHealth: Decodable, Identifiable {
 
 struct Capabilities: Decodable { var harnesses: [String]? }
 
+/// One event of /swarm/changes: `record` on the session events, `node` on the node ones.
+struct Change: Decodable {
+    var event: String
+    var record: Record?
+}
+
 struct Record: Decodable, Identifiable {
-    var sessionKey: String, nodeId: String, pid: Int, startedAt: Date, harness: String, lane: String
+    var sessionKey: String, node: String, nodeId: String, pid: Int, startedAt: Date, harness: String, lane: String
     var name: String?, activity: String, activityEvent: String?, activityAt: Date?, activitySeq: Int
     var cwd: String?, origin: String?
     var liveness: String, endedReason: String?
@@ -29,6 +36,8 @@ struct Record: Decodable, Identifiable {
     var driven: Bool { lane == "headless" || holder != nil }
     var project: String { (cwd ?? "").split(separator: "/").last.map(String.init) ?? "" }
     var label: String { name ?? (project.isEmpty ? (origin ?? "") : "") }
+    /// The CLI's display name: the name, else the cwd basename in brackets, else where it sits.
+    var displayName: String { name ?? (project.isEmpty ? (origin ?? sessionKey) : "[\(project)]") }
     var when: Date { activityAt ?? startedAt }
 }
 

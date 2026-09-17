@@ -19,7 +19,11 @@ let r = s.records[0]
 assert(r.word == "needs_attention" && r.driven && r.project == "workspace" && r.label == "" && r.load?.rssMb == 1536)
 assert(tilde(r.cwd!) == "~/Code/gtm/workspace" && mem(1536) == "1.5 GB")
 let ended = try decoder.decode(SwarmSnapshot.self, from: Data(swarm.replacing("\"liveness\":\"live\"", with: "\"liveness\":\"ended\"").utf8)).records[0]
-assert(ended.word == "ended")
+assert(ended.word == "ended" && r.displayName == "[workspace]" && r.node == "mato")
+let change = try decoder.decode(Change.self, from: Data(("{\"event\":\"attention\",\"at\":\"2026-09-16T10:00:01Z\",\"record\":" + String(swarm.split(separator: "\"records\":[")[1].dropLast(2)) + "}").utf8))
+assert(change.event == "attention" && change.record?.activitySeq == 7)
+let left = try decoder.decode(Change.self, from: Data("{\"event\":\"node_left\",\"at\":\"2026-09-16T10:00:01Z\",\"node\":{}}".utf8))
+assert(left.event == "node_left" && left.record == nil)
 
 let g = try decoder.decode(Record.self, from: Data(session.utf8))
 let p = g.state!.pending

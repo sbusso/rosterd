@@ -49,6 +49,8 @@ rosterd watch [--swarm|--node N] --json         one frame per line on every chan
 rosterd changes --json                          GET /swarm/changes: the snapshot, then one
                                                 change per line (`event`: session_started,
                                                 attention, attention_cleared, activity, ...)
+rosterd attention --json                        [{record, session}] per session waiting on a
+                                                human (needs_attention, not ended); empty when none
 rosterd status --json                           node, listeners, swarm, counts
 rosterd nodes --json                            membership, reachability, harness health
 rosterd usage [--swarm] [--since 7d] --json     GET /usage or /swarm/usage: tokens and cost per

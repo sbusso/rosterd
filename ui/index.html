@@ -184,6 +184,7 @@ function renderRoster() {
   $('#hdr').innerHTML = `<b>rosterd</b> <span>${esc((sw?.nodes || []).find((n) => n.state === 'local')?.name || '')}</span>
     <span class="sum">${sw ? plural(live.length, 'session') + (need ? ` · <span class="needs_attention">${need} need${need === 1 ? 's' : ''} attention</span>` : '') : ''}</span>
     <a href="#" id="qrBtn">pair phone</a><span class="st ${state.status === 'live' ? '' : 'bad'}">${esc(state.status)}</span>`;
+  document.title = need ? `⚠ ${need} · rosterd` : 'rosterd';
   if (!sw) return;
   const byNode = {};
   for (const r of sw.records) (byNode[r.node_id] ||= []).push(r);
@@ -253,10 +254,23 @@ async function sessionPage() {
   sse(spath(sessionKey, '/stream'), logLine, (s) => { state.status = s || 'live'; head(); });
 }
 
+// ---------- attention, R9: one browser notification per claim of /swarm/changes, deduped on session_key and activity_seq ----------
+const notified = new Set();
+const nameOf = (r) => r.name || (projOf(r) ? `[${projOf(r)}]` : r.origin || r.session_key);
+document.addEventListener('click', () => { if (window.Notification && Notification.permission === 'default') Notification.requestPermission(); });
+function onAttention(r) {
+  const id = `${r.session_key}:${r.activity_seq}`;
+  if (!window.Notification || Notification.permission !== 'granted' || notified.has(id)) return;
+  notified.add(id);
+  const n = new Notification('rosterd', { body: `${nameOf(r)} · ${r.node} · ${r.activity_event || 'attention'}`, tag: id });
+  n.onclick = () => { window.focus(); n.close(); location.href = `/ui/sessions/${r.session_key}`; };
+}
+
 if (sessionKey) sessionPage();
 else {
   renderRoster(); setInterval(renderRoster, 30000);
   sse('/swarm/events', (snap) => { state.swarm = snap; state.local = (snap.nodes || []).find((n) => n.state === 'local')?.node_id || state.local; renderRoster(); },
     (s) => { state.status = s || 'live'; renderRoster(); });
+  sse('/swarm/changes', (c) => { if (c.event === 'attention') onAttention(c.record); }, () => {});
 }
 </script>
