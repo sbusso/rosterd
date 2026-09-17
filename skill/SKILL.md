@@ -46,6 +46,9 @@ rosterd changes --json                          GET /swarm/changes: the snapshot
                                                 attention, attention_cleared, activity, ...)
 rosterd status --json                           node, listeners, swarm, counts
 rosterd nodes --json                            membership and reachability
+rosterd usage [--swarm] [--since 7d] --json     GET /usage or /swarm/usage: tokens and cost per
+                                                day, harness and model; --swarm names the nodes
+                                                that did not answer in `unreachable`
 rosterd read KEY --json                         the record, runtime state, pending request, children
 rosterd explain KEY --json                      which source set each field; rejected claims
 rosterd start --harness H --cwd DIR [--name L] [--policy auto|attention] [--model M]

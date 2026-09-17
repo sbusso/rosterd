@@ -13,6 +13,10 @@ use serde::{Deserialize, Serialize};
 pub const SNAPSHOT_SCHEMA: &str = "rosterd.snapshot.v1";
 /// Schema marker on the swarm union, R6.
 pub const SWARM_SCHEMA: &str = "rosterd.swarm.v1";
+/// Schema marker on one node's token roll-up, GET /usage.
+pub const USAGE_SCHEMA: &str = "rosterd.usage.v1";
+/// Schema marker on the swarm roll-up, GET /swarm/usage.
+pub const SWARM_USAGE_SCHEMA: &str = "rosterd.swarm_usage.v1";
 /// The holder keeps this many ACP notifications for a reconnecting daemon, R2.1.
 pub const HOLDER_REPLAY_BUFFER: usize = 256;
 
@@ -350,6 +354,43 @@ pub struct SwarmSnapshot {
     pub generated_at: DateTime<Utc>,
     pub nodes: Vec<NodeHealth>,
     pub records: Vec<SwarmRecord>,
+}
+
+/// One (day UTC, harness, model) bucket of the token roll-up read from the harnesses' own
+/// transcripts on a node. `cost_usd` is None for a model the built-in price table does not know.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DayUsage {
+    pub day: chrono::NaiveDate,
+    pub harness: String,
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub cost_usd: Option<f64>,
+    /// Transcript files that contributed to the bucket.
+    pub sessions: u32,
+}
+
+/// GET /usage: one node's roll-up since `since`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeUsage {
+    pub schema: String,
+    pub node: String,
+    pub node_id: String,
+    pub generated_at: DateTime<Utc>,
+    pub since: DateTime<Utc>,
+    pub days: Vec<DayUsage>,
+}
+
+/// GET /swarm/usage: every reachable node's roll-up; `unreachable` names the nodes that did not answer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SwarmUsage {
+    pub schema: String,
+    pub generated_at: DateTime<Utc>,
+    pub since: DateTime<Utc>,
+    pub nodes: Vec<NodeUsage>,
+    pub unreachable: Vec<String>,
 }
 
 /// The file the holder writes next to its socket, R2.1. Read back by the daemon after a restart

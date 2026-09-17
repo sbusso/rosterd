@@ -15,6 +15,7 @@ mod roster;
 mod runner;
 mod scanner;
 mod setup;
+mod usage;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -102,6 +103,7 @@ async fn serve(config_path: PathBuf) -> Result<()> {
         mesh: mesh.clone(),
         runner: runner.clone(),
         loopback_token: loopback_token()?,
+        usage_roots: usage::Roots::home(),
     });
 
     tokio::spawn(scanner::run(config.clone(), roster.clone()));

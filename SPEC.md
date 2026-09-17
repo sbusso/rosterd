@@ -192,7 +192,11 @@ GET /swarm/snapshot. Union of this node's roster and every peer's last snapshot,
 GET /swarm/events. SSE, complete swarm snapshot on any change anywhere.
 GET /swarm/changes. SSE, the swarm snapshot once as event `snapshot`, then one event per change between consecutive frames, in the order records appear: `session_started`, `session_ended`, `session_suspended`, `attention` (an accepted claim landed on needs_attention, sent again for every new claim while it waits, `record.activity_event` names permission, question or login), `attention_cleared`, `activity`, `renamed`, each carrying `at` and the swarm record; `node` (a node joined or changed state) and `node_left` carrying the node. Pure function of two frames, so a client that missed events resyncs from the next `snapshot`.
 GET /swarm/nodes. Membership with health.
+GET /usage?since=. Tokens and cost on this node per day (UTC), harness and model: input, output, cache read and cache write tokens, cost_usd from a built-in price table (null for a model it does not know), and the number of transcript files that contributed. `since` is `Nd`, `Nh`, a date or an RFC 3339 datetime; 7d by default.
+GET /swarm/usage?since=. The same for every reachable node, asked over the mesh at once; nodes that did not answer within 5 s are listed by name in `unreachable`.
 Any /sessions path under /swarm/{node_id}/ is proxied to that node.
+
+The usage roll-up reads the harnesses' own transcripts on each node (Claude Code under ~/.claude/projects, Codex under ~/.codex/sessions), and only the usage fields of each entry: model, token counts, timestamp. Read only, never the text of a turn, which keeps the R0 rule that rosterd shows no transcript. Nothing is collected or stored; a node computes its own roll-up on request and a peer gets the result over the mesh, nothing is sent elsewhere.
 
 MCP server on the same socket, tool names.
 
@@ -360,6 +364,7 @@ rosterd list [--swarm|--node N] [--json]
 rosterd watch [--swarm|--node N] [--json]
 rosterd status [--json]
 rosterd nodes [--json]
+rosterd usage [--swarm] [--since 7d] [--json]
 rosterd read KEY [--json]
 rosterd explain KEY [--json]
 ```
@@ -371,6 +376,8 @@ rosterd explain KEY [--json]
 `status` shows the node name and id, version, listeners, swarm id, peer count and reachability, holder count, and which sources are enabled.
 
 `nodes` lists membership: name, node id, address, version, capabilities, reachability, last hello age, revoked flag.
+
+`usage` prints, per node, a header line then one row per day, harness and model with the four token counts, the cost and the session count, and a total row; `--swarm` asks every reachable node and adds a swarm total, naming the nodes that did not answer. A total's cost is `-` when any row in it is unpriced. `--json` is the /usage or /swarm/usage frame.
 
 `read` shows one session in full: every roster field, the runtime handle, the last recap if one exists, pending permission request if any, and the child sessions. It never shows the transcript.
 

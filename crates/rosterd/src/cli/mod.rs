@@ -13,7 +13,7 @@ use std::path::Path;
 
 use clap::{Args, Subcommand, ValueEnum};
 use reqwest::Method;
-use rosterd_proto::NodeHealth;
+use rosterd_proto::{DayUsage, NodeHealth, NodeUsage, SwarmUsage};
 use serde_json::{Value, json};
 
 use crate::config::Config;
@@ -65,6 +65,15 @@ pub enum Command {
     Status,
     /// Swarm membership and health.
     Nodes,
+    /// Tokens and cost per day, harness and model from the harnesses' transcripts on this node.
+    Usage {
+        /// Every reachable node, plus a swarm total.
+        #[arg(long)]
+        swarm: bool,
+        /// `7d`, `12h`, a date or a datetime.
+        #[arg(long, default_value = "7d")]
+        since: String,
+    },
     /// One session in full, never the transcript.
     Read { key: String },
     /// Which source set each field and when, and which claims were rejected.
@@ -212,6 +221,7 @@ pub async fn run(command: Command, config_path: &Path, json: bool) -> Out<()> {
         Command::Changes => list::changes(&client, json).await,
         Command::Status => status(&client, json).await,
         Command::Nodes => nodes(&client, json).await,
+        Command::Usage { swarm, since } => usage(&client, swarm, &since, json).await,
         Command::Invite { ttl } => {
             let body = client.call(Method::POST, "/node/invite", Some(json!({ "ttl_minutes": ttl }))).await?;
             if json {
@@ -317,6 +327,71 @@ fn nodes_table(nodes: &[NodeHealth]) -> String {
     table(&["NAME", "NODE_ID", "ADDRESS", "VERSION", "HARNESSES", "STATE", "SEEN", "UP", "REVOKED"], &rows)
 }
 
+/// `usage`: GET /usage or /swarm/usage, a table per node with its total as the last row, and
+/// with `--swarm` a total over every node that answered.
+async fn usage(client: &Client, swarm: bool, since: &str, json: bool) -> Out<()> {
+    let path = format!("{}?since={}", if swarm { "/swarm/usage" } else { "/usage" }, since);
+    let body = client.call(Method::GET, &path, None).await?;
+    if json {
+        return emit(&body);
+    }
+    let (nodes, unreachable) = if swarm {
+        let usage = parse::<SwarmUsage>(&body)?;
+        (usage.nodes, usage.unreachable)
+    } else {
+        (vec![parse::<NodeUsage>(&body)?], Vec::new())
+    };
+    let mut all = Vec::new();
+    for node in &nodes {
+        println!("{} ({}) since {}", node.node, node.node_id, node.since.format("%Y-%m-%d %H:%MZ"));
+        println!("{}", usage_table(&node.days));
+        all.extend(node.days.iter().cloned());
+    }
+    if swarm {
+        print!("{}", table(USAGE_HEADER, &[(usage_cells("swarm total", &all), false)]));
+    }
+    for name in unreachable {
+        println!("{name}: unreachable");
+    }
+    Ok(())
+}
+
+const USAGE_HEADER: &[&str] = &["DAY", "HARNESS", "MODEL", "INPUT", "OUTPUT", "CACHE_READ", "CACHE_WRITE", "COST", "SESSIONS"];
+
+fn usd(cost: Option<f64>) -> String {
+    cost.map_or("-".to_string(), |c| format!("${c:.2}"))
+}
+
+/// A total row over `days`; the cost is `-` when any bucket is unpriced, so a partial sum never
+/// reads as the whole.
+fn usage_cells(label: &str, days: &[DayUsage]) -> Vec<String> {
+    let sum = |f: fn(&DayUsage) -> u64| days.iter().map(f).sum::<u64>().to_string();
+    let cost = days.iter().map(|d| d.cost_usd).try_fold(0.0, |acc, c| c.map(|c| acc + c));
+    vec![label.into(), "".into(), "".into(), sum(|d| d.input_tokens), sum(|d| d.output_tokens), sum(|d| d.cache_read_tokens), sum(|d| d.cache_write_tokens), usd(cost), "".into()]
+}
+
+fn usage_table(days: &[DayUsage]) -> String {
+    let mut rows: Vec<(Vec<String>, bool)> = days
+        .iter()
+        .map(|d| {
+            let cells = vec![
+                d.day.to_string(),
+                d.harness.clone(),
+                d.model.clone(),
+                d.input_tokens.to_string(),
+                d.output_tokens.to_string(),
+                d.cache_read_tokens.to_string(),
+                d.cache_write_tokens.to_string(),
+                usd(d.cost_usd),
+                d.sessions.to_string(),
+            ];
+            (cells, false)
+        })
+        .collect();
+    rows.push((usage_cells("total", days), false));
+    table(USAGE_HEADER, &rows)
+}
+
 /// `doctor`, R14.3: `pass  name: detail` or `FIX   name: detail → fix`; exit 1 when any fails.
 fn doctor(config: &Config, json: bool) -> Out<()> {
     let checks = crate::doctor::run(config);
@@ -363,4 +438,29 @@ fn integrate(action: &Integrate, config: &Config, json: bool) -> Out<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_table_totals_and_refuses_a_partial_cost() {
+        let day = |model: &str, cost: Option<f64>| DayUsage {
+            day: chrono::NaiveDate::from_ymd_opt(2026, 9, 10).unwrap(),
+            harness: "claude".into(),
+            model: model.into(),
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_read_tokens: 30,
+            cache_write_tokens: 40,
+            cost_usd: cost,
+            sessions: 1,
+        };
+        let total = |text: String| text.lines().last().unwrap().split_whitespace().map(str::to_string).collect::<Vec<_>>();
+        let priced = usage_table(&[day("claude-opus-5", Some(1.5)), day("claude-sonnet-5", Some(0.25))]);
+        assert_eq!(total(priced), ["total", "20", "40", "60", "80", "$1.75"]);
+        let partial = usage_table(&[day("claude-opus-5", Some(1.5)), day("gpt-9", None)]);
+        assert_eq!(total(partial), ["total", "20", "40", "60", "80", "-"]);
+    }
 }

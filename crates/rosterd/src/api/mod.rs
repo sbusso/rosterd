@@ -114,10 +114,11 @@ pub async fn serve(node: Arc<Node>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Peer routes plus /events and the session actions, R7.6: everything but hello and join passes
-/// `Mesh::authenticate` first. The operator routes and /mcp are never mounted here.
+/// Peer routes plus /events, the session actions and the reads a peer fans out to, R7.6:
+/// everything but hello and join passes `Mesh::authenticate` first. The operator routes and
+/// /mcp are never mounted here.
 fn tailscale_router(node: &Arc<Node>) -> Router {
-    let authed = Router::new().route("/events", get(routes::events)).merge(routes::sessions()).with_state(node.clone());
+    let authed = Router::new().route("/events", get(routes::events)).merge(routes::sessions()).merge(routes::reads()).with_state(node.clone());
     node.mesh.peer_router().merge(authed).layer(middleware::from_fn_with_state(node.clone(), peer_auth))
 }
 
@@ -275,6 +276,7 @@ mod tests {
             mesh,
             runner,
             loopback_token: "secret-token".into(),
+            usage_roots: crate::usage::Roots { claude: dir.join("claude"), codex: dir.join("codex") },
         });
         tokio::spawn(serve(node.clone()));
         let socket_path = config.socket_path();
@@ -617,6 +619,41 @@ mod tests {
         let refused = h.socket.get("http://rosterd/pair").send().await.unwrap();
         assert_eq!(refused.status(), StatusCode::CONFLICT);
         assert!(refused.json::<Value>().await.unwrap()["error"].as_str().unwrap().contains("ui_listen"));
+    }
+
+    #[tokio::test]
+    async fn usage_rolls_up_the_transcripts_under_the_roots() {
+        let h = start("usage").await;
+        let today = chrono::Utc::now().format("%Y-%m-%d");
+        let claude = h.node.usage_roots.claude.join("proj");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("s.jsonl"),
+            format!(
+                r#"{{"type":"assistant","timestamp":"{today}T10:00:00.000Z","requestId":"r1","message":{{"id":"m1","model":"claude-opus-5","usage":{{"input_tokens":3,"output_tokens":40,"cache_creation_input_tokens":100,"cache_read_input_tokens":200}}}}}}
+{{"type":"assistant","timestamp":"{today}T10:00:01.000Z","requestId":"r1","message":{{"id":"m1","model":"claude-opus-5","usage":{{"input_tokens":3,"output_tokens":40,"cache_creation_input_tokens":100,"cache_read_input_tokens":200}}}}}}
+"#
+            ),
+        )
+        .unwrap();
+        let usage: Value = h.socket.get("http://rosterd/usage?since=1d").send().await.unwrap().json().await.unwrap();
+        assert_eq!(usage["schema"], "rosterd.usage.v1");
+        assert_eq!(usage["node"], "gibson");
+        let days = usage["days"].as_array().unwrap();
+        assert_eq!(days.len(), 1, "{usage}");
+        assert_eq!(days[0]["day"], today.to_string());
+        assert_eq!((&days[0]["harness"], &days[0]["model"], &days[0]["output_tokens"], &days[0]["sessions"]), (&json!("claude"), &json!("claude-opus-5"), &json!(40), &json!(1)));
+        assert!(days[0]["cost_usd"].as_f64().unwrap() > 0.0);
+
+        let bad = h.socket.get("http://rosterd/usage?since=lately").send().await.unwrap();
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+
+        // No peers: the swarm frame is this node alone, nobody unreachable.
+        let swarm: Value = h.socket.get("http://rosterd/swarm/usage").send().await.unwrap().json().await.unwrap();
+        assert_eq!(swarm["schema"], "rosterd.swarm_usage.v1");
+        assert_eq!(swarm["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(swarm["nodes"][0]["days"], usage["days"]);
+        assert_eq!(swarm["unreachable"], json!([]));
     }
 
     #[test]

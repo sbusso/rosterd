@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::rejection::PathRejection;
-use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, Path, Request, State};
+use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, Path, Query, Request, State};
 use axum::http::request::Parts;
 use axum::http::{Method, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -18,7 +18,7 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
-use rosterd_proto::{Activity, HerdrHandle, Lane, Liveness, PermissionPolicy, Record, Source, TmuxHandle};
+use rosterd_proto::{Activity, HerdrHandle, Lane, Liveness, NodeUsage, PeerState, PermissionPolicy, Record, Source, SwarmUsage, TmuxHandle};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -38,6 +38,10 @@ const KEEP_ALIVE: Duration = Duration::from_secs(15);
 /// Swarm events coalesce bursts of peer snapshots into one emission.
 const SWARM_DEBOUNCE: Duration = Duration::from_millis(100);
 const BODY_LIMIT: usize = 4 << 20;
+/// A peer that has not answered /usage by then is listed unreachable.
+const USAGE_FANOUT_TIMEOUT: Duration = Duration::from_secs(5);
+/// GET /usage without `?since=`.
+const USAGE_DEFAULT_SINCE: &str = "7d";
 
 #[derive(Debug)]
 pub struct ApiError {
@@ -160,13 +164,20 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/swarm/changes", get(swarm_changes))
         .route("/swarm/nodes", get(swarm_nodes))
         .route("/swarm/leave", post(swarm_leave))
+        .route("/swarm/usage", get(swarm_usage))
         // Any /sessions path under /swarm/{node_id}/ runs on that node, R6.
         .nest("/swarm/{node_id}", sessions())
         .route("/ui", get(ui))
         .route("/ui/sessions/{key}", get(ui))
         .merge(sessions())
+        .merge(reads())
         .fallback(|| async { ApiError::not_found("no such route") })
         .with_state(node)
+}
+
+/// Reads a peer fans out to over the mesh, mounted on every listener.
+pub fn reads() -> Router<Arc<Node>> {
+    Router::new().route("/usage", get(usage))
 }
 
 /// The session actions of R5. Also mounted on the Tailscale listener for proxied actions.
@@ -377,6 +388,60 @@ async fn swarm_events(State(node): State<Arc<Node>>) -> Response {
         }
     });
     Sse::new(stream).keep_alive(KeepAlive::new().interval(KEEP_ALIVE)).into_response()
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct SinceQuery {
+    since: Option<String>,
+}
+
+impl SinceQuery {
+    fn since(&self) -> Result<DateTime<Utc>, ApiError> {
+        crate::usage::parse_since(self.since.as_deref().unwrap_or(USAGE_DEFAULT_SINCE), Utc::now()).map_err(ApiError::bad_request)
+    }
+}
+
+async fn local_usage(node: &Arc<Node>, since: DateTime<Utc>) -> Result<NodeUsage, ApiError> {
+    let node = node.clone();
+    tokio::task::spawn_blocking(move || crate::usage::node_usage(&node.usage_roots, &node.config.node.name, &node.identity.node_id, since))
+        .await
+        .map_err(|error| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+}
+
+/// This node's token roll-up from the harnesses' transcripts, `?since=` as `7d`, `12h`, a date
+/// or a datetime.
+async fn usage(State(node): State<Arc<Node>>, Query(query): Query<SinceQuery>) -> Result<Json<NodeUsage>, ApiError> {
+    Ok(Json(local_usage(&node, query.since()?).await?))
+}
+
+/// Every reachable node's roll-up, this one computed here and the others asked over the mesh
+/// at once; a node that fails or takes over `USAGE_FANOUT_TIMEOUT` is named in `unreachable`.
+async fn swarm_usage(State(node): State<Arc<Node>>, Query(query): Query<SinceQuery>) -> Result<Json<SwarmUsage>, ApiError> {
+    let since = query.since()?;
+    let path = format!("/usage?since={}", since.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    let peers: Vec<_> = node.mesh.nodes().into_iter().filter(|n| n.state != PeerState::Local && !n.revoked).collect();
+    let asked = peers.iter().filter(|peer| peer.state == PeerState::Reachable).map(|peer| {
+        let node = node.clone();
+        let path = path.clone();
+        async move {
+            let answer = tokio::time::timeout(USAGE_FANOUT_TIMEOUT, node.mesh.proxy(&peer.node_id, Method::GET, &path, None)).await;
+            match answer {
+                Ok(Ok((status, value))) if status.is_success() => serde_json::from_value::<NodeUsage>(value).ok(),
+                _ => None,
+            }
+        }
+    });
+    let (local, answers) = futures::future::join(local_usage(&node, since), futures::future::join_all(asked)).await;
+    let mut nodes = vec![local?];
+    let mut unreachable: Vec<String> = peers.iter().filter(|peer| peer.state != PeerState::Reachable).map(|peer| peer.name.clone()).collect();
+    for (peer, answer) in peers.iter().filter(|peer| peer.state == PeerState::Reachable).zip(answers) {
+        match answer {
+            Some(usage) => nodes.push(usage),
+            None => unreachable.push(peer.name.clone()),
+        }
+    }
+    Ok(Json(SwarmUsage { schema: rosterd_proto::SWARM_USAGE_SCHEMA.into(), generated_at: Utc::now(), since, nodes, unreachable }))
 }
 
 async fn swarm_nodes(State(node): State<Arc<Node>>) -> Json<Vec<rosterd_proto::NodeHealth>> {
