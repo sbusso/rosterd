@@ -127,7 +127,7 @@ fn activity(record: &Record) -> String {
 }
 
 /// KEY to the exact session_key, R14.1, against everything this node knows.
-async fn session_key(client: &Client, key: &str) -> Out<String> {
+pub(super) async fn session_key(client: &Client, key: &str) -> Out<String> {
     let swarm: SwarmSnapshot = parse(&client.call(Method::GET, "/swarm/snapshot", None).await?)?;
     let local = swarm.nodes.iter().find(|n| n.state == PeerState::Local).map(|n| n.node_id.clone()).unwrap_or_default();
     let records: Vec<Record> = swarm.records.into_iter().map(|r| r.record).collect();

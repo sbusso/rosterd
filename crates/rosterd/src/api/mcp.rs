@@ -174,14 +174,16 @@ impl RosterMcp {
     fn session_name(&self, context: &RequestContext<RoleServer>, args: &Value) -> Result<Value, ApiError> {
         let key = self.caller(context)?;
         let name = args.get("name").and_then(Value::as_str).map(String::from);
-        Ok(serde_json::to_value(self.node.roster.set_name(&key, name, Source::Hook)?)?)
+        let record = self.node.roster.set_name(&key, name.clone(), Source::Hook)?;
+        self.node.journal.action("name", Some(key), Some("local".into()), json!({ "name": name }));
+        Ok(serde_json::to_value(record)?)
     }
 
     /// R5.4: a child session under the caller; the same operation as `POST /sessions/{key}/spawn`.
     async fn session_spawn(&self, context: &RequestContext<RoleServer>, args: &Value) -> Result<Value, ApiError> {
         let key = self.caller(context)?;
         let body: SpawnBody = serde_json::from_value(args.clone()).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e.to_string()))?;
-        spawn_child(&self.node, &key, body).await
+        spawn_child(&self.node, &key, body, Some("local".into())).await
     }
 
     async fn session_prompt(&self, args: &Value) -> Result<Value, ApiError> {
@@ -191,7 +193,10 @@ impl RosterMcp {
             return self.relay(&owner, Method::POST, &format!("/sessions/{key}/prompt"), Some(body)).await;
         }
         let request: PromptRequest = serde_json::from_value(args.clone()).map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e.to_string()))?;
-        Ok(serde_json::to_value(self.node.runner.prompt(key, request).await?)?)
+        let detail = json!({ "prompt": super::routes::brief(&request.prompt) });
+        let outcome = self.node.runner.prompt(key, request).await?;
+        self.node.journal.action("prompt", Some(key.to_string()), Some("local".into()), detail);
+        Ok(serde_json::to_value(outcome)?)
     }
 
     /// Activity and the last recap, never the transcript, R6. A session this node does not

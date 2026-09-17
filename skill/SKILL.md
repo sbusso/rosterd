@@ -44,6 +44,12 @@ rosterd watch [--swarm|--node N] --json         one frame per line on every chan
 rosterd changes --json                          GET /swarm/changes: the snapshot, then one
                                                 change per line (`event`: session_started,
                                                 attention, attention_cleared, activity, ...)
+rosterd journal [--swarm] [--since SEQ | --after TIME] [--session KEY] [--follow] --json
+                                                the journal, one entry per line: this node's
+                                                changes (`kind: change`, `event`, `record`) and
+                                                API actions (`kind: action`, `action`, `by`,
+                                                `detail`); keep the last `seq`, pass it as
+                                                --since to catch up after being away
 rosterd status --json                           node, listeners, swarm, counts
 rosterd nodes --json                            membership and reachability
 rosterd read KEY --json                         the record, runtime state, pending request, children

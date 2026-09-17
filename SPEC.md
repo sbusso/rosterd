@@ -190,9 +190,10 @@ POST /name. Set or clear a display name.
 POST /sessions, GET /sessions/{key}, PATCH, DELETE, /prompt, /cancel, /stream as in R5.
 GET /swarm/snapshot. Union of this node's roster and every peer's last snapshot, each tagged with node and peer_age_ms.
 GET /swarm/events. SSE, complete swarm snapshot on any change anywhere.
-GET /swarm/changes. SSE, the swarm snapshot once as event `snapshot`, then one event per change between consecutive frames, in the order records appear: `session_started`, `session_ended`, `session_suspended`, `attention` (an accepted claim landed on needs_attention, sent again for every new claim while it waits, `record.activity_event` names permission, question or login), `attention_cleared`, `activity`, `renamed`, each carrying `at` and the swarm record; `node` (a node joined or changed state) and `node_left` carrying the node. Pure function of two frames, so a client that missed events resyncs from the next `snapshot`.
+GET /swarm/changes. SSE, the swarm snapshot once as event `snapshot`, then one event per change between consecutive frames, in the order records appear: `session_started`, `session_ended`, `session_suspended`, `attention` (an accepted claim landed on needs_attention, sent again for every new claim while it waits, `record.activity_event` names permission, question or login), `attention_cleared`, `activity`, `renamed`, each carrying `at` and the swarm record; `node` (a node joined or changed state) and `node_left` carrying the node. Pure function of two frames, so a client that missed events resyncs from the next `snapshot`. This node's own events are its journal entries (R18) and carry `seq`; `?since=SEQ` replays the entries after SEQ before the `snapshot`.
 GET /swarm/nodes. Membership with health.
-Any /sessions path under /swarm/{node_id}/ is proxied to that node.
+GET /journal, GET /sessions/{key}/journal, GET /swarm/journal. The journal, R18.
+Any /sessions path, and /journal, under /swarm/{node_id}/ is proxied to that node.
 
 MCP server on the same socket, tool names.
 
@@ -281,6 +282,9 @@ recap = true
 files = false
 scan_interval_ms = 2000
 
+[journal]
+keep_days = 30
+
 [harness.claude]
 adapter = "claude-agent-acp"
 [harness.codex]
@@ -299,7 +303,7 @@ The holder, the hook script, and the opener are the only platform-conditional co
 
 ## R12. Not in scope
 
-Terminal rendering. Task or decision history. Rules or gates over agent behaviour. Credential management for harnesses. Cross swarm federation. Relay for machines that cannot reach each other over Tailscale. Multi user tenancy on one node.
+Terminal rendering. Task or decision history: the journal (R18) is a lifecycle and action log of what rosterd saw and did, never what a session was working on or why. Rules or gates over agent behaviour. Credential management for harnesses. Cross swarm federation. Relay for machines that cannot reach each other over Tailscale. Multi user tenancy on one node.
 
 ## R13. Acceptance
 
@@ -362,6 +366,7 @@ rosterd status [--json]
 rosterd nodes [--json]
 rosterd read KEY [--json]
 rosterd explain KEY [--json]
+rosterd journal [--swarm] [--since SEQ | --after TIME] [--session KEY] [--follow] [--json]
 ```
 
 `list` prints one row per session. Columns, in order: name or the cwd basename fallback in brackets, harness, activity, updated (age of the last accepted claim, never time spent working), lane, node, pid. With `--swarm` a header block first shows per node counts of active, idle, needs attention, unknown, and the node's reachability. Unreachable nodes are printed dimmed with `stale Ns` in the node column. Sessions in state suspended (R15) show activity `suspended` in place of the four words and their session_id instead of a pid.
@@ -375,6 +380,8 @@ rosterd explain KEY [--json]
 `read` shows one session in full: every roster field, the runtime handle, the last recap if one exists, pending permission request if any, and the child sessions. It never shows the transcript.
 
 `explain` shows, for each field of a session, which source set it and when, and which claims were rejected and why. This is the truthfulness view.
+
+`journal` prints the journal of R18, one line per entry, oldest first: time, node, the event or action name, the session, the detail. `--swarm` merges every reachable node's entries by time (GET /swarm/journal). `--since SEQ` and `--after TIME` narrow it, `--session KEY` to one session. `--follow` keeps printing live from `/swarm/changes?since=` the last seq printed. `--json` prints one entry per line as the API sent it.
 
 Sessions.
 
@@ -532,4 +539,25 @@ gate_timeout_s = 3600
 7. A pi session started through `rosterd start` with policy attention prints the warning and runs as auto when the extension is absent. With the extension installed and ROSTERD_GATE=attention, a tool call blocks until `rosterd allow KEY`.
 8. `rosterd integrate install pi` twice, then uninstall twice. Second runs change zero bytes.
 9. `rosterd explain KEY` on a session with both acp and hook sources shows acp winning every field they both set.
+
+## R18. Journal
+
+Each node keeps an append-only log of what happened on it, so a client that was down learns what agents did without having kept an SSE stream open. It is a lifecycle and action log: what rosterd saw and what its API did, never a transcript and never the task a session worked on (R12).
+
+Entry. One JSON object: `seq` (monotonic per node, across restarts and files), `node`, `node_id`, `at`, and `kind`:
+
+- `kind: "change"`: one of this node's own `/swarm/changes` events, flattened: `event` (`session_started`, `session_ended`, `session_suspended`, `attention`, `attention_cleared`, `activity`, `renamed`) and `record`. Node events are not journaled: they are about the swarm, not the node.
+- `kind: "action"`: what the API did on this node: `action` is `start`, `prompt`, `cancel`, `permission`, `answer`, `name`, `suspend`, `resume`, `spawn` or `delete`; `session_key`; `by` is `local` for the socket or loopback, else the name of the peer node that proxied it (R7.5); `detail` is the action's gist (a prompt cut to 500 characters, the permission answer, the new name, the child's harness and cwd).
+
+Only successful actions are journaled. A daemon start journals every session it then finds as `session_started`. Changes are diffed from the roster by one writer per node, which is also the source of the local events on `/swarm/changes`, so the stream and the file never disagree.
+
+Storage. `<state dir>/journal/YYYY-MM-DD.jsonl`, one entry per line, one file per UTC day. Files older than `[journal] keep_days` (default 30) are deleted at start and daily. On start `seq` continues from the last line of the newest file.
+
+Reads.
+
+GET /journal?since=SEQ&after=TIME&limit=N. This node's entries with `seq > SEQ` (and `at > TIME`), oldest first, at most N (default 200, at most 2000). Proxied under /swarm/{node_id}/.
+GET /sessions/{key}/journal. The owner node's entries about the session, same parameters; proxied like the other session routes.
+GET /swarm/journal?after=TIME&limit=N. `{entries, unreachable}`: every reachable node's entries merged by `at` (5 s per node), and the names of the nodes that did not answer. `since` means nothing across nodes.
+
+Replay. `GET /swarm/changes?since=SEQ` sends this node's entries after SEQ as SSE events (event name = the change name, or `action`; data = the entry, so it carries `seq`), then the `snapshot`, then live. A client stores the last `seq` it saw and reconnects with it; it never misses a local event and resyncs peers from the snapshot as before. Peer events on the stream are diffed from swarm frames and carry no `seq`.
 10. `rosterd doctor` on a fresh machine lists every missing harness and adapter with the command to install it, and changes nothing.

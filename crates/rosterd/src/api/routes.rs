@@ -1,7 +1,7 @@
-//! The JSON routes of R6, the session actions of R5 and R15, the gate of R16.2, and the cross
-//! node proxy of R7.5. Success bodies are the plain object; errors are `{error}` with 400
-//! validation, 404 not found, 409 conflict or suspended, 429 resume limit (`retry_after_s`),
-//! 502 proxy failure, 503 no swarm.
+//! The JSON routes of R6, the session actions of R5 and R15, the gate of R16.2, the journal
+//! reads of R18, and the cross node proxy of R7.5. Success bodies are the plain object; errors
+//! are `{error}` with 400 validation, 404 not found, 409 conflict or suspended, 429 resume
+//! limit (`retry_after_s`), 502 proxy failure, 503 no swarm.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::rejection::PathRejection;
-use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, Path, Request, State};
+use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, Path, Query, Request, State};
 use axum::http::request::Parts;
 use axum::http::{Method, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -18,7 +18,7 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
-use rosterd_proto::{Activity, HerdrHandle, Lane, Liveness, PermissionPolicy, Record, Source, TmuxHandle};
+use rosterd_proto::{Activity, HerdrHandle, JournalEntry, Lane, Liveness, PeerState, PermissionPolicy, Record, Source, SwarmSnapshot, TmuxHandle};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -38,6 +38,12 @@ const KEEP_ALIVE: Duration = Duration::from_secs(15);
 /// Swarm events coalesce bursts of peer snapshots into one emission.
 const SWARM_DEBOUNCE: Duration = Duration::from_millis(100);
 const BODY_LIMIT: usize = 4 << 20;
+/// A peer's share of GET /swarm/journal waits this long, R18.
+const JOURNAL_FANOUT_TIMEOUT: Duration = Duration::from_secs(5);
+const JOURNAL_DEFAULT_LIMIT: usize = 200;
+const JOURNAL_MAX_LIMIT: usize = 2000;
+/// A prompt's text in the journal is cut here; the transcript is never the journal's, R18.
+const JOURNAL_PROMPT_CHARS: usize = 500;
 
 #[derive(Debug)]
 pub struct ApiError {
@@ -160,11 +166,13 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/swarm/changes", get(swarm_changes))
         .route("/swarm/nodes", get(swarm_nodes))
         .route("/swarm/leave", post(swarm_leave))
-        // Any /sessions path under /swarm/{node_id}/ runs on that node, R6.
-        .nest("/swarm/{node_id}", sessions())
+        .route("/swarm/journal", get(swarm_journal))
+        // Any /sessions path or /journal under /swarm/{node_id}/ runs on that node, R6.
+        .nest("/swarm/{node_id}", sessions().merge(reads()))
         .route("/ui", get(ui))
         .route("/ui/sessions/{key}", get(ui))
         .merge(sessions())
+        .merge(reads())
         .fallback(|| async { ApiError::not_found("no such route") })
         .with_state(node)
 }
@@ -185,6 +193,12 @@ pub fn sessions() -> Router<Arc<Node>> {
         .route("/sessions/{key}/suspend", post(suspend))
         .route("/sessions/{key}/resume", post(resume))
         .route("/sessions/{key}/spawn", post(spawn))
+}
+
+/// The journal reads of R18, this node's entries. Also mounted on the Tailscale listener so
+/// `/swarm/journal` and `/swarm/{node_id}/journal` can fetch a peer's.
+pub fn reads() -> Router<Arc<Node>> {
+    Router::new().route("/journal", get(journal)).route("/sessions/{key}/journal", get(session_journal))
 }
 
 async fn snapshot(State(node): State<Arc<Node>>) -> Json<Arc<rosterd_proto::Snapshot>> {
@@ -298,7 +312,18 @@ async fn name(
             key_for_pid(&node, pid)?
         }
     };
-    Ok(Json(node.roster.set_name(&key, body.name, Source::Hook)?))
+    let record = node.roster.set_name(&key, body.name.clone(), Source::Hook)?;
+    node.journal.action("name", Some(key), Some("local".into()), json!({ "name": body.name }));
+    Ok(Json(record))
+}
+
+/// The first `JOURNAL_PROMPT_CHARS` of a prompt for the journal.
+pub(super) fn brief(text: &str) -> String {
+    let mut out: String = text.chars().take(JOURNAL_PROMPT_CHARS).collect();
+    if out.len() < text.len() {
+        out.push('…');
+    }
+    out
 }
 
 /// The session a live process reports under: its own record or the root it was collapsed
@@ -341,26 +366,124 @@ async fn swarm_snapshot(State(node): State<Arc<Node>>) -> Json<rosterd_proto::Sw
     Json(node.mesh.swarm_snapshot())
 }
 
+/// `?since=SEQ&after=TIME&limit=N` on the journal routes, R18. `raw` travels with a proxied read.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct JournalQuery {
+    since: Option<u64>,
+    after: Option<DateTime<Utc>>,
+    limit: Option<usize>,
+    #[serde(skip)]
+    raw: String,
+}
+
+impl JournalQuery {
+    fn limit(&self) -> usize {
+        self.limit.unwrap_or(JOURNAL_DEFAULT_LIMIT).clamp(1, JOURNAL_MAX_LIMIT)
+    }
+    fn suffix(&self) -> String {
+        if self.raw.is_empty() { String::new() } else { format!("?{}", self.raw) }
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for JournalQuery {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, ApiError> {
+        let Query(mut query) = Query::<JournalQuery>::from_request_parts(parts, state).await.map_err(|error| ApiError::bad_request(error.body_text()))?;
+        query.raw = parts.uri.query().unwrap_or_default().to_string();
+        Ok(query)
+    }
+}
+
+/// GET /journal, R18: this node's entries after `since` (and `after`), oldest first. Under
+/// `/swarm/{node_id}/` it is that node's.
+async fn journal(captures: Captures, query: JournalQuery) -> Result<Response, ApiError> {
+    if let Some(node_id) = captures.remote()? {
+        return captures.proxy(node_id, Method::GET, format!("/journal{}", query.suffix()), None).await;
+    }
+    ok(captures.node.journal.read(query.since.unwrap_or(0), query.after, query.limit(), None))
+}
+
+/// GET /sessions/{key}/journal: the owner node's entries about the session.
+async fn session_journal(captures: Captures, query: JournalQuery) -> Result<Response, ApiError> {
+    if let Some(node_id) = captures.remote()? {
+        return captures.proxy(node_id, Method::GET, format!("{}{}", captures.path("/journal"), query.suffix()), None).await;
+    }
+    ok(captures.node.journal.read(query.since.unwrap_or(0), query.after, query.limit(), Some(&captures.key)))
+}
+
+/// GET /swarm/journal?after=&limit=: every reachable node's entries merged by time, plus the
+/// names of the nodes that did not answer. `since` means nothing across nodes and is ignored.
+async fn swarm_journal(State(node): State<Arc<Node>>, query: JournalQuery) -> Result<Response, ApiError> {
+    let limit = query.limit();
+    let mut entries = node.journal.read(0, query.after, limit, None);
+    let mut path = format!("/journal?limit={limit}");
+    if let Some(after) = query.after {
+        path += &format!("&after={}", after.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true));
+    }
+    let nodes = node.mesh.nodes();
+    let peers: Vec<_> = nodes.iter().filter(|n| n.state != PeerState::Local && !n.revoked).collect();
+    let answers = futures::future::join_all(peers.iter().map(|peer| async {
+        if peer.state != PeerState::Reachable {
+            return None;
+        }
+        tokio::time::timeout(JOURNAL_FANOUT_TIMEOUT, node.mesh.proxy(&peer.node_id, Method::GET, &path, None)).await.ok()?.ok()
+    }))
+    .await;
+    let mut unreachable = Vec::new();
+    for (peer, answer) in peers.iter().zip(answers) {
+        match answer {
+            Some((status, value)) if status.is_success() => entries.extend(serde_json::from_value::<Vec<JournalEntry>>(value).unwrap_or_default()),
+            _ => unreachable.push(peer.name.clone()),
+        }
+    }
+    entries.sort_by_key(JournalEntry::at);
+    entries.truncate(limit);
+    ok(json!({ "entries": entries, "unreachable": unreachable }))
+}
+
 /// SSE, R6: one `snapshot` event with the whole swarm, then one event per change, named by
-/// the change (`attention`, `session_started`, `node`, ...). Derived from consecutive swarm
-/// frames, so a client keeps one connection and never diffs.
-async fn swarm_changes(State(node): State<Arc<Node>>) -> Response {
+/// the change (`attention`, `session_started`, `node`, ...). With `?since=SEQ` this node's
+/// journal entries after SEQ come first, R18, so a client that was down catches up on one
+/// connection. Local entries carry `seq` (the journal writer is their source); peer changes
+/// are diffed from consecutive swarm frames and carry none.
+async fn swarm_changes(State(node): State<Arc<Node>>, query: JournalQuery) -> Response {
+    // Subscribe before reading so nothing falls between the replay and the live stream.
+    let local = node.journal.subscribe();
+    let replay = match query.since {
+        Some(since) => node.journal.read(since, None, usize::MAX, None),
+        None => Vec::new(),
+    };
+    let last = replay.last().map_or(query.since.unwrap_or(0), |e| e.seq);
     let first = node.mesh.swarm_snapshot();
-    let head = futures::stream::once(async move { Ok::<_, Infallible>(sse_json(&first).event("snapshot")) });
-    let prev = node.mesh.swarm_snapshot();
-    let rest = futures::stream::unfold((node.mesh.changed(), prev), move |(mut changed, prev)| {
+    let head = futures::stream::iter(replay.iter().map(|e| Ok::<_, Infallible>(sse_json(e).event(e.name()))).collect::<Vec<_>>())
+        .chain(futures::stream::once(async move { Ok::<_, Infallible>(sse_json(&first).event("snapshot")) }));
+    let local = BroadcastStream::new(local).filter_map(move |item| async move {
+        match item {
+            Ok(entry) if entry.seq > last => Some(Ok::<_, Infallible>(sse_json(&entry).event(entry.name()))),
+            Ok(_) => None,
+            Err(BroadcastStreamRecvError::Lagged(n)) => Some(Ok(Event::default().comment(format!("lagged {n}")))),
+        }
+    });
+    let peers_only = |mut frame: SwarmSnapshot| {
+        frame.records.retain(|r| r.peer_state != PeerState::Local);
+        frame
+    };
+    let prev = peers_only(node.mesh.swarm_snapshot());
+    let peers = futures::stream::unfold((node.mesh.changed(), prev), move |(mut changed, prev)| {
         let node = node.clone();
         async move {
             changed.changed().await.ok()?;
             tokio::time::sleep(SWARM_DEBOUNCE).await;
             changed.borrow_and_update();
-            let next = node.mesh.swarm_snapshot();
+            let next = peers_only(node.mesh.swarm_snapshot());
             let events: Vec<_> = rosterd_proto::changes(&prev, &next).iter().map(|c| Ok::<_, Infallible>(sse_json(c).event(c.name()))).collect();
             Some((futures::stream::iter(events), (changed, next)))
         }
     })
     .flatten();
-    Sse::new(head.chain(rest)).keep_alive(KeepAlive::new().interval(KEEP_ALIVE)).into_response()
+    Sse::new(head.chain(futures::stream::select(local, peers))).keep_alive(KeepAlive::new().interval(KEEP_ALIVE)).into_response()
 }
 
 /// SSE, the whole swarm first and on any change anywhere, R6, debounced.
@@ -447,7 +570,8 @@ struct Captures {
     node: Arc<Node>,
     key: String,
     node_id: Option<String>,
-    from_peer: bool,
+    /// The name of the peer node that proxied the request, none from the socket or loopback.
+    peer: Option<String>,
 }
 
 impl FromRequestParts<Arc<Node>> for Captures {
@@ -463,7 +587,7 @@ impl FromRequestParts<Arc<Node>> for Captures {
             node: node.clone(),
             key: params.get("key").cloned().unwrap_or_default(),
             node_id: params.get("node_id").cloned(),
-            from_peer: parts.extensions.get::<PeerAuth>().is_some(),
+            peer: parts.extensions.get::<PeerAuth>().map(|peer| peer.name.clone()),
         })
     }
 }
@@ -472,7 +596,16 @@ impl Captures {
     /// The node this action runs on: None here, Some elsewhere, R7.5. A proxied action never
     /// hops again.
     fn remote(&self) -> Result<Option<String>, ApiError> {
-        remote_owner(&self.node, self.node_id.as_deref(), &self.key, self.from_peer)
+        remote_owner(&self.node, self.node_id.as_deref(), &self.key, self.peer.is_some())
+    }
+
+    /// Who asked, for the journal: `local` or the proxying peer's name, R18.
+    fn by(&self) -> Option<String> {
+        Some(self.peer.clone().unwrap_or_else(|| "local".into()))
+    }
+
+    fn journal(&self, action: &str, detail: Value) {
+        self.node.journal.action(action, Some(self.key.clone()), self.by(), detail);
     }
 
     fn path(&self, suffix: &str) -> String {
@@ -519,6 +652,7 @@ async fn start_session(captures: Captures, Body(body): Body<Value>) -> Result<Re
     let request: StartSession = parse(&body)?;
     let warnings = captures.node.runner.start_warnings(&request);
     let record = captures.node.runner.start(request).await?;
+    captures.node.journal.action("start", Some(record.session_key.clone()), captures.by(), json!({ "harness": record.harness, "cwd": record.cwd, "name": record.name }));
     let mut value = serde_json::to_value(&record)?;
     if !warnings.is_empty() {
         // R16.1: the session runs, but not as asked.
@@ -580,7 +714,9 @@ async fn suspend(captures: Captures) -> Result<Response, ApiError> {
     if let Some(node_id) = captures.remote()? {
         return captures.proxy(node_id, Method::POST, captures.path("/suspend"), None).await;
     }
-    ok(captures.node.runner.suspend(&captures.key).await?)
+    let record = captures.node.runner.suspend(&captures.key).await?;
+    captures.journal("suspend", Value::Null);
+    ok(record)
 }
 
 /// R15.3: the new record, under a new key bound to the same harness session id.
@@ -588,7 +724,9 @@ async fn resume(captures: Captures) -> Result<Response, ApiError> {
     if let Some(node_id) = captures.remote()? {
         return captures.proxy(node_id, Method::POST, captures.path("/resume"), None).await;
     }
-    ok(captures.node.runner.resume(&captures.key).await?)
+    let record = captures.node.runner.resume(&captures.key).await?;
+    captures.journal("resume", json!({ "session_key": record.session_key }));
+    ok(record)
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -603,7 +741,7 @@ pub(super) struct SpawnBody {
 
 /// R5.4: a child session under the parent's key. Shared by `POST /sessions/{key}/spawn` and
 /// the MCP tool session.spawn.
-pub(super) async fn spawn_child(node: &Node, parent_key: &str, body: SpawnBody) -> Result<Value, ApiError> {
+pub(super) async fn spawn_child(node: &Node, parent_key: &str, body: SpawnBody, by: Option<String>) -> Result<Value, ApiError> {
     let parent = node.roster.get(parent_key).ok_or_else(|| ApiError::not_found(format!("no session {parent_key}")))?;
     if body.harness.is_empty() {
         return Err(ApiError::bad_request("harness is required"));
@@ -621,6 +759,7 @@ pub(super) async fn spawn_child(node: &Node, parent_key: &str, body: SpawnBody) 
             ..StartSession::default()
         })
         .await?;
+    node.journal.action("spawn", Some(record.session_key.clone()), by, json!({ "parent": parent_key, "harness": record.harness, "cwd": record.cwd, "name": record.name }));
     Ok(json!({ "session_key": record.session_key, "record": record }))
 }
 
@@ -628,7 +767,7 @@ async fn spawn(captures: Captures, Body(body): Body<Value>) -> Result<Response, 
     if let Some(node_id) = captures.remote()? {
         return captures.proxy(node_id, Method::POST, captures.path("/spawn"), Some(body)).await;
     }
-    ok(spawn_child(&captures.node, &captures.key, parse(&body)?).await?)
+    ok(spawn_child(&captures.node, &captures.key, parse(&body)?, captures.by()).await?)
 }
 
 async fn patch_session(captures: Captures, Body(body): Body<Value>) -> Result<Response, ApiError> {
@@ -644,7 +783,9 @@ async fn delete_session(captures: Captures) -> Result<Response, ApiError> {
     if let Some(node_id) = captures.remote()? {
         return captures.proxy(node_id, Method::DELETE, captures.path(""), None).await;
     }
-    ok(captures.node.runner.stop(&captures.key).await?)
+    let record = captures.node.runner.stop(&captures.key).await?;
+    captures.journal("delete", Value::Null);
+    ok(record)
 }
 
 async fn prompt(captures: Captures, Body(body): Body<Value>) -> Result<Response, ApiError> {
@@ -652,14 +793,19 @@ async fn prompt(captures: Captures, Body(body): Body<Value>) -> Result<Response,
         return captures.proxy(node_id, Method::POST, captures.path("/prompt"), Some(body)).await;
     }
     let request: PromptRequest = parse(&body)?;
-    ok(captures.node.runner.prompt(&captures.key, request).await?)
+    let detail = json!({ "prompt": brief(&request.prompt) });
+    let outcome = captures.node.runner.prompt(&captures.key, request).await?;
+    captures.journal("prompt", detail);
+    ok(outcome)
 }
 
 async fn cancel(captures: Captures) -> Result<Response, ApiError> {
     if let Some(node_id) = captures.remote()? {
         return captures.proxy(node_id, Method::POST, captures.path("/cancel"), None).await;
     }
-    ok(captures.node.runner.cancel(&captures.key).await?)
+    let record = captures.node.runner.cancel(&captures.key).await?;
+    captures.journal("cancel", Value::Null);
+    ok(record)
 }
 
 /// Jumps to the session on the machine that has it: `rosterd-open` with the tmux or herdr handle,
@@ -724,12 +870,16 @@ async fn permission(captures: Captures, Body(body): Body<Value>) -> Result<Respo
         .or_else(|| node.runner.state(&captures.key).ok().and_then(|s| s.pending.first().map(|p| p.request_id.clone())));
     if let Some(id) = runners {
         match node.runner.answer_permission(&captures.key, &id, answer.clone()).await {
-            Ok(record) => return ok(record),
+            Ok(record) => {
+                captures.journal("permission", body);
+                return ok(record);
+            }
             Err(RunnerError::NotFound(_) | RunnerError::NoPending(_)) => {}
             Err(error) => return Err(error.into()),
         }
     }
     gate::answer(&captures.key, request_id.as_ref(), answer, reason)?;
+    captures.journal("permission", body);
     ok(captures.record()?)
 }
 
@@ -747,7 +897,9 @@ async fn answer_question(captures: Captures, Body(body): Body<Value>) -> Result<
         return captures.proxy(node_id, Method::POST, captures.path("/answer"), Some(body)).await;
     }
     let AnswerBody { request_id, answer } = parse(&body)?;
-    ok(captures.node.runner.answer_question(&captures.key, request_id.as_ref(), answer).await?)
+    let record = captures.node.runner.answer_question(&captures.key, request_id.as_ref(), answer).await?;
+    captures.journal("answer", body);
+    ok(record)
 }
 
 async fn session_name(captures: Captures, Body(body): Body<Value>) -> Result<Response, ApiError> {
@@ -755,7 +907,9 @@ async fn session_name(captures: Captures, Body(body): Body<Value>) -> Result<Res
         return captures.proxy(node_id, Method::POST, captures.path("/name"), Some(body)).await;
     }
     let name = parse::<NameBody>(&body)?.name;
-    ok(captures.node.roster.set_name(&captures.key, name, Source::Hook)?)
+    let record = captures.node.roster.set_name(&captures.key, name.clone(), Source::Hook)?;
+    captures.journal("name", json!({ "name": name }));
+    ok(record)
 }
 
 #[cfg(test)]

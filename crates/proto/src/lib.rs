@@ -300,6 +300,16 @@ impl Snapshot {
             records: Vec::new(),
         }
     }
+
+    /// This node's roster as a one-node swarm frame: every record `local`, no node list.
+    pub fn as_swarm(&self) -> SwarmSnapshot {
+        SwarmSnapshot {
+            schema: SWARM_SCHEMA.into(),
+            generated_at: self.generated_at,
+            nodes: Vec::new(),
+            records: self.records.iter().map(|record| SwarmRecord { record: record.clone(), peer_state: PeerState::Local, peer_age_ms: 0 }).collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -488,9 +498,134 @@ pub fn changes(prev: &SwarmSnapshot, next: &SwarmSnapshot) -> Vec<Change> {
     out
 }
 
+/// One line of a node's journal, R18: what happened on that node, in order. `seq` is monotonic
+/// per node across restarts and files; `kind` is `change` (one of this node's own `Change`s,
+/// flattened, so `event`, `at` and `record` sit beside `seq`) or `action` (what the API did).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JournalEntry {
+    pub seq: u64,
+    pub node: String,
+    pub node_id: String,
+    #[serde(flatten)]
+    pub kind: JournalKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
+pub enum JournalKind {
+    /// A record change of this node. Never `node` or `node_left`: those would clash with the
+    /// entry's `node` name and are about the swarm, not this node.
+    Change {
+        #[serde(flatten)]
+        change: Change,
+    },
+    /// An API action: `prompt`, `cancel`, `permission`, `answer`, `name`, `suspend`, `resume`,
+    /// `spawn`, `start`, `delete`. `by` is `local` for the socket or loopback, else the name of
+    /// the peer node that proxied it.
+    Action {
+        at: DateTime<Utc>,
+        action: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<String>,
+        #[serde(default)]
+        detail: serde_json::Value,
+    },
+}
+
+impl JournalEntry {
+    pub fn at(&self) -> DateTime<Utc> {
+        match &self.kind {
+            JournalKind::Change { change } => change.at(),
+            JournalKind::Action { at, .. } => *at,
+        }
+    }
+
+    /// The session the entry is about, when it is about one.
+    pub fn session_key(&self) -> Option<&str> {
+        match &self.kind {
+            JournalKind::Change { change } => change.record().map(|r| r.record.session_key.as_str()),
+            JournalKind::Action { session_key, .. } => session_key.as_deref(),
+        }
+    }
+
+    /// The SSE event name: the change's, or `action`.
+    pub fn name(&self) -> &'static str {
+        match &self.kind {
+            JournalKind::Change { change } => change.name(),
+            JournalKind::Action { .. } => "action",
+        }
+    }
+}
+
+impl Change {
+    pub fn at(&self) -> DateTime<Utc> {
+        match self {
+            Change::SessionStarted { at, .. }
+            | Change::SessionEnded { at, .. }
+            | Change::SessionSuspended { at, .. }
+            | Change::Attention { at, .. }
+            | Change::AttentionCleared { at, .. }
+            | Change::Activity { at, .. }
+            | Change::Renamed { at, .. }
+            | Change::Node { at, .. }
+            | Change::NodeLeft { at, .. } => *at,
+        }
+    }
+
+    /// The record after the change; none for the node events.
+    pub fn record(&self) -> Option<&SwarmRecord> {
+        match self {
+            Change::SessionStarted { record, .. }
+            | Change::SessionEnded { record, .. }
+            | Change::SessionSuspended { record, .. }
+            | Change::Attention { record, .. }
+            | Change::AttentionCleared { record, .. }
+            | Change::Activity { record, .. }
+            | Change::Renamed { record, .. } => Some(record),
+            Change::Node { .. } | Change::NodeLeft { .. } => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn journal_entries_flatten_and_round_trip() {
+        let record: Record = serde_json::from_value(serde_json::json!({
+            "node": "a", "node_id": "a", "session_key": "k1", "pid": 1, "start_ticks": 1, "started_at": Utc::now(),
+            "harness": "claude", "lane": "headless",
+        }))
+        .unwrap();
+        let at = Utc::now();
+        let change = JournalEntry {
+            seq: 7,
+            node: "a".into(),
+            node_id: "a".into(),
+            kind: JournalKind::Change { change: Change::Attention { at, record: SwarmRecord { record, peer_state: PeerState::Local, peer_age_ms: 0 } } },
+        };
+        let json = serde_json::to_value(&change).unwrap();
+        assert_eq!((json["seq"].as_u64(), json["kind"].as_str(), json["event"].as_str(), json["record"]["session_key"].as_str()), (Some(7), Some("change"), Some("attention"), Some("k1")));
+        assert_eq!(serde_json::from_value::<JournalEntry>(json).unwrap(), change);
+        assert_eq!((change.at(), change.session_key(), change.name()), (at, Some("k1"), "attention"));
+        // The frame also reads as a bare Change, so a client that only knows /swarm/changes keeps working.
+        let bare: Change = serde_json::from_value(serde_json::to_value(&change).unwrap()).unwrap();
+        assert_eq!(bare.name(), "attention");
+
+        let action = JournalEntry {
+            seq: 8,
+            node: "a".into(),
+            node_id: "a".into(),
+            kind: JournalKind::Action { at, action: "prompt".into(), session_key: Some("k1".into()), by: Some("local".into()), detail: serde_json::json!({ "prompt": "go" }) },
+        };
+        let json = serde_json::to_value(&action).unwrap();
+        assert_eq!((json["kind"].as_str(), json["action"].as_str(), json["by"].as_str()), (Some("action"), Some("prompt"), Some("local")));
+        assert_eq!(serde_json::from_value::<JournalEntry>(json).unwrap(), action);
+    }
 
     #[test]
     fn age_picks_the_largest_whole_unit() {

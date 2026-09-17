@@ -1,16 +1,17 @@
-//! `list` and `watch`, R14.3: the roster as a table, or the API frame byte for byte. They read
-//! /snapshot, /swarm/snapshot, /events and /swarm/events only, so they answer when the runner
-//! or the mesh is broken, R14.2.
+//! `list`, `watch`, `changes` and `journal`, R14.3: the roster as a table, or the API frame
+//! byte for byte. They read /snapshot, /swarm/snapshot, /events, /swarm/events, /swarm/changes
+//! and the journal only, so they answer when the runner or the mesh is broken, R14.2.
 
 use std::io::Write;
 
 use chrono::Utc;
 use reqwest::Method;
-use rosterd_proto::{Activity, Change, Liveness, NodeHealth, PeerState, Record, Snapshot, SwarmRecord, SwarmSnapshot, age};
+use rosterd_proto::{Activity, Change, JournalEntry, JournalKind, Liveness, NodeHealth, PeerState, Record, Snapshot, SwarmRecord, SwarmSnapshot, age};
 use serde_json::Value;
 
 use super::client::{emit, parse, stdout_is_tty, table};
 use super::resolve::display_name;
+use super::session::session_key;
 use super::{Client, Exit, Out, Scope};
 
 pub async fn list(client: &Client, scope: &Scope, json: bool) -> Out<()> {
@@ -61,6 +62,104 @@ pub async fn changes(client: &Client, json: bool) -> Out<()> {
             Ok(true)
         })
         .await
+}
+
+pub struct JournalArgs {
+    pub swarm: bool,
+    pub since: Option<u64>,
+    pub after: Option<chrono::DateTime<Utc>>,
+    pub session: Option<String>,
+    pub follow: bool,
+}
+
+/// `journal`, R18: one line per entry, oldest first; `--json` one entry per line as the API
+/// sent it. `--follow` then keeps reading `/swarm/changes?since=` from the last seq printed.
+pub async fn journal(client: &Client, args: JournalArgs, json: bool) -> Out<()> {
+    let session = match &args.session {
+        Some(key) => Some(session_key(client, key).await?),
+        None => None,
+    };
+    let mut query = Vec::new();
+    if let Some(since) = args.since {
+        query.push(format!("since={since}"));
+    }
+    if let Some(after) = args.after {
+        // `Z`, not `+00:00`: a plus in a query string is a space.
+        query.push(format!("after={}", after.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)));
+    }
+    let query = if query.is_empty() { String::new() } else { format!("?{}", query.join("&")) };
+    let path = match (&session, args.swarm) {
+        (Some(key), _) => format!("/sessions/{key}/journal{query}"),
+        (None, true) => format!("/swarm/journal{query}"),
+        (None, false) => format!("/journal{query}"),
+    };
+    let body: Value = parse(&client.call(Method::GET, &path, None).await?)?;
+    let entries: Vec<JournalEntry> = serde_json::from_value(if args.swarm && session.is_none() { body["entries"].clone() } else { body })?;
+    let mut out = std::io::stdout().lock();
+    for entry in &entries {
+        if json {
+            writeln!(out, "{}", serde_json::to_string(entry)?)?;
+        } else {
+            writeln!(out, "{}", journal_line(entry))?;
+        }
+    }
+    out.flush()?;
+    drop(out);
+    if !args.follow {
+        return Ok(());
+    }
+    // Live: this node's entries carry seq and resume after the last one printed; peers' changes
+    // (--swarm) carry none. The snapshot frame is skipped.
+    let ours = local_node_id(client).await?;
+    let last = entries.iter().filter(|e| e.node_id == ours).map(|e| e.seq).max().unwrap_or(0);
+    client
+        .events(&format!("/swarm/changes?since={last}"), |frame| {
+            let value: Value = parse(frame)?;
+            if value.get("schema").is_some() {
+                return Ok(true);
+            }
+            let wanted = session.as_deref().is_none_or(|key| value["record"]["session_key"] == key || value["session_key"] == key);
+            if !wanted {
+                return Ok(true);
+            }
+            let mut out = std::io::stdout().lock();
+            if let Ok(entry) = serde_json::from_value::<JournalEntry>(value.clone()) {
+                if json {
+                    writeln!(out, "{frame}")?;
+                } else {
+                    writeln!(out, "{}", journal_line(&entry))?;
+                }
+            } else if args.swarm {
+                if json {
+                    writeln!(out, "{frame}")?;
+                } else if let Ok(change) = serde_json::from_value::<Change>(value) {
+                    writeln!(out, "{}", change_line(&change))?;
+                }
+            }
+            out.flush()?;
+            Ok(true)
+        })
+        .await
+}
+
+async fn local_node_id(client: &Client) -> Out<String> {
+    let status: Value = parse(&client.call(Method::GET, "/status", None).await?)?;
+    Ok(status["node_id"].as_str().unwrap_or_default().to_string())
+}
+
+/// `HH:MM:SS  node  kind/name  session  detail`: a change prints as `changes` does.
+fn journal_line(entry: &JournalEntry) -> String {
+    match &entry.kind {
+        JournalKind::Change { change } => change_line(change),
+        JournalKind::Action { at, action, session_key, by, detail } => {
+            let detail = match detail {
+                Value::Null => String::new(),
+                Value::Object(map) if map.is_empty() => String::new(),
+                other => other.to_string(),
+            };
+            format!("{} {:<17} {} {} {} {}", at.format("%H:%M:%S"), action, entry.node, session_key.as_deref().unwrap_or("-"), by.as_deref().unwrap_or("-"), detail).trim_end().to_string()
+        }
+    }
 }
 
 fn change_line(change: &Change) -> String {
@@ -194,6 +293,17 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn journal_lines_name_the_action_and_who_asked() {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-09-17T10:11:12Z").unwrap().with_timezone(&Utc);
+        let entry = |detail: Value| JournalEntry {
+            seq: 1, node: "gibson".into(), node_id: "abc".into(),
+            kind: JournalKind::Action { at, action: "prompt".into(), session_key: Some("abc:1:1".into()), by: Some("wintermute".into()), detail },
+        };
+        assert_eq!(journal_line(&entry(json!({ "prompt": "go" }))), "10:11:12 prompt            gibson abc:1:1 wintermute {\"prompt\":\"go\"}");
+        assert_eq!(journal_line(&entry(Value::Null)), "10:11:12 prompt            gibson abc:1:1 wintermute");
+    }
 
     #[test]
     fn node_scope_narrows_the_swarm_frame_and_refuses_unknown_nodes() {

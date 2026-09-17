@@ -117,7 +117,7 @@ pub async fn serve(node: Arc<Node>) -> anyhow::Result<()> {
 /// Peer routes plus /events and the session actions, R7.6: everything but hello and join passes
 /// `Mesh::authenticate` first. The operator routes and /mcp are never mounted here.
 fn tailscale_router(node: &Arc<Node>) -> Router {
-    let authed = Router::new().route("/events", get(routes::events)).merge(routes::sessions()).with_state(node.clone());
+    let authed = Router::new().route("/events", get(routes::events)).merge(routes::sessions()).merge(routes::reads()).with_state(node.clone());
     node.mesh.peer_router().merge(authed).layer(middleware::from_fn_with_state(node.clone(), peer_auth))
 }
 
@@ -268,12 +268,15 @@ mod tests {
         let mesh = crate::mesh::Mesh::new_at(config.clone(), identity.clone(), roster.clone(), "test", &dir, "127.0.0.1:1").unwrap();
         tokio::spawn(mesh.clone().watch_local());
         let runner = crate::runner::Runner::new(config.clone(), roster.clone());
+        let journal = crate::journal::Journal::open(dir.join("journal"), "gibson", &identity.node_id, 30);
+        tokio::spawn(journal.clone().run(roster.clone()));
         let node = Arc::new(Node {
             config: config.clone(),
             identity,
             roster,
             mesh,
             runner,
+            journal,
             loopback_token: "secret-token".into(),
         });
         tokio::spawn(serve(node.clone()));
@@ -323,27 +326,33 @@ mod tests {
         assert_eq!(snap["schema"], "rosterd.snapshot.v1");
     }
 
+    /// The next SSE event, comments skipped. Events end with a blank line; chunks may split
+    /// them anywhere.
+    async fn next_event(body: &mut (impl futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin), buf: &mut String) -> String {
+        loop {
+            if let Some(end) = buf.find("\n\n") {
+                let ev = buf[..end].to_string();
+                buf.drain(..end + 2);
+                if ev.starts_with(':') {
+                    continue;
+                }
+                return ev;
+            }
+            let chunk = tokio::time::timeout(Duration::from_secs(5), body.next()).await.expect("timely").unwrap().unwrap();
+            buf.push_str(std::str::from_utf8(&chunk).unwrap());
+        }
+    }
+
+    fn event_data(event: &str) -> Value {
+        serde_json::from_str(event.trim_start_matches("data: ").lines().next().unwrap()).unwrap()
+    }
+
     #[tokio::test]
     async fn changes_stream_the_snapshot_then_one_event_per_change() {
         let h = start("changes").await;
         let response = h.socket.get("http://rosterd/swarm/changes").send().await.unwrap();
         let mut body = response.bytes_stream();
         let mut buf = String::new();
-        // SSE events end with a blank line; chunks may split them anywhere.
-        async fn next_event(body: &mut (impl futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin), buf: &mut String) -> String {
-            loop {
-                if let Some(end) = buf.find("\n\n") {
-                    let ev = buf[..end].to_string();
-                    buf.drain(..end + 2);
-                    if ev.starts_with(':') {
-                        continue;
-                    }
-                    return ev;
-                }
-                let chunk = tokio::time::timeout(Duration::from_secs(5), body.next()).await.expect("timely").unwrap().unwrap();
-                buf.push_str(std::str::from_utf8(&chunk).unwrap());
-            }
-        }
         let first = next_event(&mut body, &mut buf).await;
         assert!(first.contains("\nevent: snapshot") && first.starts_with("data: {\"schema\":\"rosterd.swarm.v1\""), "{first}");
 
@@ -358,7 +367,75 @@ mod tests {
         assert!(attention.ends_with("\nevent: attention"), "{attention}");
         assert_eq!((data["event"].as_str(), data["record"]["session_key"].as_str(), data["record"]["peer_state"].as_str()), (Some("attention"), Some(key.as_str()), Some("local")));
         h.node.roster.claim(Source::Hook, &key, Activity::Active, "permission_answered", chrono::Utc::now()).unwrap();
-        assert!(next_event(&mut body, &mut buf).await.ends_with("\nevent: attention_cleared"));
+        let cleared = next_event(&mut body, &mut buf).await;
+        assert!(cleared.ends_with("\nevent: attention_cleared"));
+        // Local changes come from the journal and carry its seq, R18.
+        assert_eq!((data["seq"].as_u64(), data["kind"].as_str()), (Some(2), Some("change")));
+        assert_eq!(event_data(&cleared)["seq"], 3);
+    }
+
+    /// R18: the journal answers since, after and limit; a session's route narrows to it; and
+    /// `/swarm/changes?since=` replays the entries before the snapshot, then goes live.
+    #[tokio::test]
+    async fn journal_reads_and_replays_before_the_snapshot() {
+        let h = start("journal").await;
+        let pid = std::process::id();
+        let ticks = crate::scanner::start_ticks(pid).unwrap();
+        let key = h.node.roster.apply(Source::Hook, Patch { pid: Some(pid), start_ticks: Some(ticks), harness: Some("claude".into()), ..Default::default() }).unwrap().session_key;
+        let named = h.socket.post(format!("http://rosterd/sessions/{key}/name")).json(&json!({ "name": "worker" })).send().await.unwrap();
+        assert_eq!(named.status(), StatusCode::OK);
+        let other = h.node.roster.apply(Source::Launcher, Patch { pid: Some(4243), start_ticks: Some(1), harness: Some("codex".into()), ..Default::default() }).unwrap().session_key;
+        let mut all = Vec::new();
+        for _ in 0..200 {
+            all = h.socket.get("http://rosterd/journal").send().await.unwrap().json::<Vec<Value>>().await.unwrap();
+            if all.len() >= 4 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let names: Vec<(u64, &str)> = all.iter().map(|e| (e["seq"].as_u64().unwrap(), e.get("event").or(e.get("action")).and_then(Value::as_str).unwrap())).collect();
+        assert_eq!(names, [(1, "session_started"), (2, "name"), (3, "renamed"), (4, "session_started")], "{all:?}");
+        assert_eq!((all[1]["kind"].as_str(), all[1]["by"].as_str(), all[1]["session_key"].as_str(), all[1]["detail"]["name"].as_str()), (Some("action"), Some("local"), Some(key.as_str()), Some("worker")));
+        assert_eq!(all[2]["node"], "gibson");
+        assert_eq!(all[2]["record"]["name"], "worker");
+
+        let since: Vec<Value> = h.socket.get("http://rosterd/journal?since=2&limit=1").send().await.unwrap().json().await.unwrap();
+        assert_eq!(since.iter().map(|e| e["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [3]);
+        // The action's `at` is when it finished, after the rename it caused was stamped.
+        let after = all[1]["at"].as_str().unwrap();
+        let after: Vec<Value> = h.socket.get(format!("http://rosterd/journal?after={after}")).send().await.unwrap().json().await.unwrap();
+        assert_eq!(after.iter().map(|e| e["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [4]);
+        let bad = h.socket.get("http://rosterd/journal?since=x").send().await.unwrap();
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+        assert!(bad.json::<Value>().await.unwrap()["error"].is_string());
+
+        let ours = &h.node.identity.node_id;
+        let mine: Vec<Value> = h.socket.get(format!("http://rosterd/swarm/{ours}/sessions/{key}/journal")).send().await.unwrap().json().await.unwrap();
+        assert_eq!(mine.iter().map(|e| e["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [1, 2, 3]);
+        let theirs: Vec<Value> = h.socket.get(format!("http://rosterd/sessions/{other}/journal")).send().await.unwrap().json().await.unwrap();
+        assert_eq!(theirs.iter().map(|e| e["seq"].as_u64().unwrap()).collect::<Vec<_>>(), [4]);
+        // No swarm: this node alone, nobody unreachable.
+        let swarm: Value = h.socket.get("http://rosterd/swarm/journal?limit=2").send().await.unwrap().json().await.unwrap();
+        assert_eq!(swarm["entries"].as_array().unwrap().len(), 2);
+        assert_eq!(swarm["unreachable"], json!([]));
+
+        // Replay from seq 2: entries 3 and 4, the snapshot, then live with seq 5.
+        let response = h.socket.get("http://rosterd/swarm/changes?since=2").send().await.unwrap();
+        let mut body = response.bytes_stream();
+        let mut buf = String::new();
+        let replayed = next_event(&mut body, &mut buf).await;
+        assert!(replayed.ends_with("\nevent: renamed"), "{replayed}");
+        assert_eq!(event_data(&replayed)["seq"], 3);
+        let replayed = next_event(&mut body, &mut buf).await;
+        assert!(replayed.ends_with("\nevent: session_started"), "{replayed}");
+        assert_eq!(event_data(&replayed)["seq"], 4);
+        let snapshot = next_event(&mut body, &mut buf).await;
+        assert!(snapshot.ends_with("\nevent: snapshot"), "{snapshot}");
+        assert_eq!(event_data(&snapshot)["records"].as_array().unwrap().len(), 2);
+        h.node.roster.claim(Source::Hook, &key, Activity::Idle, "turn_end", chrono::Utc::now()).unwrap();
+        let live = next_event(&mut body, &mut buf).await;
+        assert!(live.ends_with("\nevent: activity"), "{live}");
+        assert_eq!(event_data(&live)["seq"], 5);
     }
 
     #[tokio::test]
