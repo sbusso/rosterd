@@ -190,9 +190,13 @@ rosterd journal [--swarm] [--since SEQ | --after TIME] [--session KEY] [--follow
 rosterd status | nodes                     this node; swarm membership and health
 rosterd usage [--swarm] [--since 7d]       tokens and cost per day, harness and model
 rosterd read KEY | explain KEY             one session in full; which source set each field
-rosterd start --harness H --cwd DIR [--name L] [--policy auto|attention] [--model M]
-              [--effort E] [--env K=V ...] [--interactive] [--node NODE]
-                                           headless, or the harness's own terminal UI in tmux there
+rosterd claude | codex | pi [--name L] [--node NODE] [--cwd DIR] [--model M] [--detach]
+                                           the harness's own terminal UI in a tmux session
+                                           there, joined at once; here and this directory by
+                                           default, named by the harness's own title
+rosterd start --harness H [--cwd DIR] [--name L] [--policy auto|attention] [--model M]
+              [--effort E] [--env K=V ...] [--interactive [--detach]] [--node NODE]
+                                           the long form; without --interactive, headless
 rosterd attach KEY                         that terminal in this one, from any node
 rosterd prompt KEY TEXT [--wait idle|needs_attention|ended] [--timeout SECONDS]
 rosterd cancel|stop|suspend|resume|open KEY

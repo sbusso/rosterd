@@ -33,7 +33,7 @@ const BUILTIN: [(&str, &str); 5] =
 /// itself turns a pipe inside a name into `_` first, so the split is exact.
 /// ponytail: a session named with a pipe attaches under the wrong name; use #{session_id} when one shows up.
 const TMUX_FORMAT: &str =
-    "#{s/[|]/_/:session_name}|#{window_index}|#{s/[|]/_/:window_name}|#{pane_id}|#{pane_pid}|#{pane_tty}";
+    "#{s/[|]/_/:session_name}|#{window_index}|#{s/[|]/_/:window_name}|#{pane_id}|#{pane_pid}|#{pane_tty}|#{s/[|]/_/:pane_title}";
 #[derive(Debug, Clone)]
 struct ProcInfo {
     ppid: Option<u32>,
@@ -263,24 +263,35 @@ async fn pass(roster: &Roster, names: &BTreeMap<String, String>) {
         }
     }
 
-    // Runtime handles, R4: one tmux list-panes per pass, only when a live record still lacks
-    // the handle.
+    // Runtime handles, R4: one tmux list-panes per pass while any live record is in tmux or
+    // still unplaced. The pane title is the harness's own name for the session, R9: it becomes
+    // the record's name unless a higher source named it, and follows the harness's changes.
     let tmux_present = on_path("tmux");
-    if tmux_present && live.iter().any(|r| r.tmux.is_none() || r.tty.is_none()) {
+    if tmux_present && !live.is_empty() {
         let panes = tmux_panes().await;
-        for rec in live.iter().filter(|r| r.tmux.is_none() || r.tty.is_none()) {
-            let chain = chain_of(rec.pid);
-            if let Some(pane) = owning_pane(&chain, &panes) {
-                // ponytail: tty comes from tmux's pane_tty, not from the process (sysinfo has no
-                // tty); read it through libproc/procfs if a session outside tmux ever needs it.
-                let patch = Patch {
-                    session_key: Some(rec.session_key.clone()),
-                    tmux: Some(pane.handle.clone()),
-                    tty: pane.tty.clone(),
-                    ..Patch::default()
-                };
-                let _ = roster.apply(Source::Scan, patch);
+        let hostname = hostname();
+        let short = hostname.split('.').next().unwrap_or_default().to_string();
+        for rec in &live {
+            let pane = match &rec.tmux {
+                Some(handle) => panes.iter().find(|p| p.handle.pane_id == handle.pane_id && p.handle.session == handle.session),
+                None => owning_pane(&chain_of(rec.pid), &panes),
+            };
+            let Some(pane) = pane else { continue };
+            let title = pane.title.clone().filter(|t| *t != hostname && *t != short && t != "tmux");
+            let name = title.filter(|t| rec.name.as_deref() != Some(t.as_str()));
+            if rec.tmux.is_some() && rec.tty.is_some() && name.is_none() {
+                continue;
             }
+            // ponytail: tty comes from tmux's pane_tty, not from the process (sysinfo has no
+            // tty); read it through libproc/procfs if a session outside tmux ever needs it.
+            let patch = Patch {
+                session_key: Some(rec.session_key.clone()),
+                tmux: rec.tmux.is_none().then(|| pane.handle.clone()),
+                tty: if rec.tty.is_none() { pane.tty.clone() } else { None },
+                name,
+                ..Patch::default()
+            };
+            let _ = roster.apply(Source::Scan, patch);
         }
     }
     roster.update_capabilities(|c| {
@@ -329,6 +340,8 @@ struct TmuxPane {
     handle: TmuxHandle,
     pane_pid: u32,
     tty: Option<String>,
+    /// What the harness set with the terminal title sequence; tmux's default is the hostname.
+    title: Option<String>,
 }
 
 /// One line of `tmux list-panes -a -F TMUX_FORMAT`.
@@ -346,7 +359,13 @@ fn parse_tmux_line(line: &str) -> Option<TmuxPane> {
         },
         pane_pid: f[4].parse().ok()?,
         tty: Some(f[5].to_string()).filter(|t| !t.is_empty()),
+        title: f.get(6).map(|t| t.trim().to_string()).filter(|t| !t.is_empty()),
     })
+}
+
+/// tmux's default pane title is the host name, in either form; that is no title.
+fn hostname() -> String {
+    std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
 }
 
 /// The pane whose shell is nearest in the chain (the pid itself, then each ancestor).
@@ -450,6 +469,8 @@ mod tests {
         assert_eq!(parse_tmux_line("main|2||%6|4343|").unwrap().handle.window_name, None);
         assert_eq!(parse_tmux_line("main|x||%6|4343|"), None);
         assert_eq!(parse_tmux_line("short|line"), None);
+        assert_eq!(parse_tmux_line("main|2||%6|4343||").unwrap().title, None);
+        assert_eq!(parse_tmux_line("main|2||%6|4343||_ Fix the login bug").unwrap().title.as_deref(), Some("_ Fix the login bug"));
         let other = parse_tmux_line("main|3||%7|5000|/dev/ttys004").unwrap();
         let panes = vec![pane.clone(), other.clone()];
         // A harness two levels under the pane shell: pane_pid is an ancestor, not the pid.

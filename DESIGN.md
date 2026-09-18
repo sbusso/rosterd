@@ -210,9 +210,10 @@ terminal over the mesh rosterd already has, still without rendering anything.
 1. Interactive sessions start in tmux. `rosterd start --interactive [--node N]` has the daemon
    there run `tmux new-session` around rosterd-launch, which registers the pane's pid and
    execs the harness; the scanner attaches the handle on its next pass, so the record has it
-   from birth for every practical purpose. From a shell, `rosterd-launch --tmux` does the same
-   in place. A human-started session keeps being found by the scanner as before. Shipped in
-   0.1.19 and 0.1.21.
+   from birth. `rosterd claude` is the short form: here, this directory, joined at once, and
+   the pane title the harness sets is the record's name until someone names it. From a shell,
+   `rosterd-launch --tmux` does the same in place. A human-started session keeps being found
+   by the scanner as before. Shipped in 0.1.19, 0.1.21 and 0.1.22.
 2. Attach over the mesh. `GET /sessions/{key}/attach` upgrades to a websocket; the owning node
    runs `tmux attach -t <target>` in a PTY and relays bytes both ways, with resize; any node
    proxies it like every other session route. `rosterd attach KEY` is the raw-mode client; the

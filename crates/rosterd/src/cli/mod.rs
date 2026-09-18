@@ -101,16 +101,20 @@ pub enum Command {
     /// Which source set each field and when, and which claims were rejected.
     Explain { key: String },
     /// Create a session, R5.1: headless, or with --interactive the harness's own terminal UI
-    /// in a tmux session, joined from anywhere with `attach`.
+    /// in a tmux session, attached here at once when this is a terminal.
     Start {
         #[arg(long)]
         harness: String,
+        /// The directory it works in, on the node it starts on; none is this one.
         #[arg(long)]
-        cwd: String,
+        cwd: Option<String>,
         #[arg(long)]
         name: Option<String>,
         #[arg(long)]
         interactive: bool,
+        /// Print the key and leave an interactive session in the background.
+        #[arg(long, requires = "interactive")]
+        detach: bool,
         /// The node it starts on; none is this one.
         #[arg(long)]
         node: Option<String>,

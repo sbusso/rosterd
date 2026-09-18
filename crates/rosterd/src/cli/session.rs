@@ -14,11 +14,15 @@ use crate::config::{Config, config_dir};
 
 pub async fn run(client: &Client, config: &Config, command: Command, json: bool) -> Out<()> {
     match command {
-        Command::Start { harness, cwd, name, interactive, node, policy, model, effort, env } => {
+        Command::Start { harness, cwd, name, interactive, detach, node, policy, model, effort, env } => {
             let env = env
                 .iter()
                 .map(|pair| pair.split_once('=').map(|(k, v)| (k.to_string(), Value::String(v.to_string()))).ok_or_else(|| Exit::user(format!("--env {pair}: expected K=V"))))
                 .collect::<Out<Map<String, Value>>>()?;
+            let cwd = match cwd {
+                Some(cwd) => cwd,
+                None => std::env::current_dir().map_err(|e| Exit::user(format!("no --cwd and no current directory: {e}")))?.to_string_lossy().into_owned(),
+            };
             let body = json!({
                 "harness": harness, "cwd": cwd, "name": name, "model": model, "effort": effort, "permission_policy": policy.map(policy_word), "env": env,
                 "lane": interactive.then_some("interactive"),
@@ -28,6 +32,17 @@ pub async fn run(client: &Client, config: &Config, command: Command, json: bool)
                 None => "/sessions".into(),
             };
             let body = client.call(Method::POST, &path, Some(body)).await?;
+            // An interactive start from a terminal is joined at once; the key goes to stderr so
+            // a script still gets it.
+            if interactive && !detach && !json && std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                let value: Value = parse(&body)?;
+                for warning in value["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                    eprintln!("warning: {warning}");
+                }
+                let key = value["session_key"].as_str().unwrap_or_default().to_string();
+                eprintln!("{key}");
+                return super::attach::attach(&super::client::socket_path(config), &key).await.map_err(Into::into);
+            }
             started(&body, json)
         }
         Command::Prompt { key, text, wait, timeout } => {

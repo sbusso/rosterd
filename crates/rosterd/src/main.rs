@@ -48,7 +48,14 @@ pub struct Cli {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let cli = match Cli::try_parse() {
+    // `rosterd claude [--name L] [--node N] ...` is `rosterd start --interactive --harness claude
+    // ...`: the harness's own terminal UI here, in this directory, joined at once.
+    // ponytail: the three harness words are literal; read them from [harness.*] if a fourth comes.
+    let mut argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if let Some(harness) = argv.get(1).and_then(|a| a.to_str()).filter(|a| ["claude", "codex", "pi"].contains(a)).map(str::to_string) {
+        argv.splice(1..2, ["start", "--interactive", "--harness", &harness].map(Into::into));
+    }
+    let cli = match Cli::try_parse_from(argv) {
         Ok(cli) => cli,
         // A bad invocation is a user error, R14.2: exit 1, not clap's 2. Help and version stay 0.
         Err(error) => {
