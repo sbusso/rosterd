@@ -10,6 +10,12 @@ class Rosterd < Formula
   license "MIT"
   # The bottle is what lets a Mac install without a compiler toolchain: `brew bottle` of the
   # tarball install, uploaded next to it on the release.
+  bottle do
+    root_url "https://github.com/sbusso/rosterd/releases/download/v0.1.26"
+    sha256 arm64_tahoe: "79a98dd9d86a9986d7ea5fcb95abded40e14c1e9e2d442a8bf5784d8fd1128b7"
+  end
+  # The bottle is what lets a Mac install without a compiler toolchain: `brew bottle` of the
+  # tarball install, uploaded next to it on the release.
   # The bottle is what lets a Mac install without a compiler toolchain: `brew bottle` of the
   # tarball install, uploaded next to it on the release.
   head do
