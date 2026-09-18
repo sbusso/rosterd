@@ -14,7 +14,7 @@ pub(crate) mod e2e_test;
 pub mod health;
 mod holder;
 mod session;
-mod transcript;
+pub(crate) mod transcript;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

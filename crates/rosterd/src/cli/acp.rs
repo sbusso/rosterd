@@ -58,21 +58,25 @@ struct Proxy {
 pub async fn serve(client: Client, config: &Config, node: Option<String>, harness: Option<String>) -> Out<()> {
     let (out, mut out_rx) = mpsc::unbounded_channel::<Value>();
     let proxy = Arc::new(Proxy { client, socket: super::client::socket_path(config), node, harness, out, next_id: AtomicU64::new(1), inner: Mutex::default() });
+    // A null frame is the end: everything queued before it is written first.
     let writer = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
         while let Some(v) = out_rx.recv().await {
-            if stdout.write_all(format!("{v}\n").as_bytes()).await.is_err() || stdout.flush().await.is_err() {
+            if v.is_null() || stdout.write_all(format!("{v}\n").as_bytes()).await.is_err() || stdout.flush().await.is_err() {
                 break;
             }
         }
     });
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut tasks = tokio::task::JoinSet::new();
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
-        tokio::spawn(proxy.clone().handle(v));
+        tasks.spawn(proxy.clone().handle(v));
     }
-    // The client hung up: the sessions run on; the relays holding the proxy end with the process.
-    writer.abort();
+    // The client hung up: what it asked is answered, then the process ends; the sessions run on.
+    while tasks.join_next().await.is_some() {}
+    proxy.send(Value::Null);
+    let _ = writer.await;
     Ok(())
 }
 

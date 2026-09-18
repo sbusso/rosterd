@@ -52,6 +52,8 @@ struct ProcInfo {
     rss: u64,
 }
 
+mod titles;
+
 /// The last pass, keyed by pid.
 static TABLE: LazyLock<RwLock<HashMap<u32, ProcInfo>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
 /// When the last pass sampled, for the CPU share.
@@ -62,6 +64,8 @@ pub async fn run(config: Arc<Config>, roster: Arc<Roster>) {
     let names = harness_names(&config);
     let interval = Duration::from_millis(config.sources.scan_interval_ms.max(200));
     let mut sys = System::new();
+    let mut titles = titles::Titles::default();
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
     loop {
         sys = tokio::task::spawn_blocking(move || {
             refresh(&mut sys);
@@ -70,6 +74,11 @@ pub async fn run(config: Arc<Config>, roster: Arc<Roster>) {
         .await
         .unwrap_or_else(|_| System::new());
         pass(&roster, &names).await;
+        // The harness's own thread name, from its files, R20 names.
+        let live: Vec<Record> = roster.snapshot().records.iter().filter(|r| r.liveness != Liveness::Ended).cloned().collect();
+        for (key, title) in titles.refresh(&live, &home).await {
+            let _ = roster.set_name(&key, Some(title), Source::Files);
+        }
         tokio::time::sleep(interval).await;
     }
 }
