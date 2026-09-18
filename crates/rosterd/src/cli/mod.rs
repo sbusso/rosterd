@@ -4,6 +4,7 @@
 //!
 //! OWNER: the cli agent.
 
+mod acp;
 mod attach;
 mod attention;
 mod client;
@@ -165,6 +166,15 @@ pub enum Command {
     Open { key: String },
     /// The session's terminal in this one, R9: over the mesh when it runs elsewhere; the tmux detach key returns.
     Attach { key: String },
+    /// The swarm as one ACP agent on stdin and stdout, R20: every headless session on every node.
+    Acp {
+        /// Where session/new starts sessions; `_meta.rosterd.node` overrides.
+        #[arg(long)]
+        node: Option<String>,
+        /// The harness session/new starts; `_meta.rosterd.harness` overrides.
+        #[arg(long)]
+        harness: Option<String>,
+    },
     /// Open the roster page in the browser.
     Ui,
     /// Answer the pending permission request with allow.
@@ -258,6 +268,7 @@ pub async fn run(command: Command, config_path: &Path, json: bool) -> Out<()> {
     let client = Client::new(&config);
     match command {
         Command::List { scope } => list::list(&client, &scope, json).await,
+        Command::Acp { node, harness } => acp::serve(client, &config, node, harness).await,
         Command::Watch { scope } => list::watch(&client, &scope, json).await,
         Command::Changes => list::changes(&client, json).await,
         Command::Attention => attention::attention(&client, json).await,

@@ -10,6 +10,7 @@
 //!
 //! OWNER: the api agent.
 
+mod acp;
 mod attach;
 mod interactive;
 mod mcp;
@@ -871,6 +872,99 @@ mod tests {
         let missing = h.socket.post("http://rosterd/send").json(&json!({ "to": "nobody", "prompt": "x" })).send().await.unwrap();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 
+        let stopped = h.socket.delete(format!("http://rosterd/sessions/{key}")).send().await.unwrap();
+        assert_eq!(stopped.status(), StatusCode::OK);
+        let _ = std::fs::remove_dir_all(&holders);
+    }
+
+    /// R20 over the socket: the fake harness's session on the ACP websocket. One client
+    /// prompts and sees the updates; the permission the agent asks for reaches it under the
+    /// roster key, a second client joining meanwhile gets the same request at once, and its
+    /// answer ends the first one's turn. Skips like the runner's e2e tests.
+    #[tokio::test]
+    async fn the_acp_websocket_bridges_a_session_to_many_clients() {
+        use std::path::PathBuf;
+
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+        let Some((bin, fake)) = crate::runner::e2e_test::binaries() else { return };
+        let holders = std::env::temp_dir().join(format!("racp{}", std::process::id()));
+        let h = start_with("acp", |c| {
+            c.runner.holder_dir = holders.clone();
+            c.runner.holder_bin = Some(bin);
+            c.runner.default_permission_policy = rosterd_proto::PermissionPolicy::Attention;
+            c.runner.resume_on_crash = false;
+            c.harness.insert("fake".into(), crate::config::HarnessConfig { adapter: fake.to_string_lossy().into_owned(), ..Default::default() });
+        })
+        .await;
+        let started = h.socket.post("http://rosterd/sessions").json(&json!({ "harness": "fake", "name": "acp" })).send().await.unwrap();
+        assert_eq!(started.status(), StatusCode::CREATED);
+        let key = started.json::<Value>().await.unwrap()["session_key"].as_str().unwrap().to_string();
+        async fn connect(socket: PathBuf, key: &str) -> tokio_tungstenite::WebSocketStream<tokio::net::UnixStream> {
+            let stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+            let (ws, _) = tokio_tungstenite::client_async(format!("ws://rosterd/sessions/{key}/acp"), stream).await.unwrap();
+            ws
+        }
+        let socket = h.node.config.socket_path();
+        async fn next(ws: &mut tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>) -> Value {
+            loop {
+                let message = tokio::time::timeout(Duration::from_secs(10), ws.next()).await.expect("timely").expect("open").unwrap();
+                if let Message::Text(text) = message {
+                    return serde_json::from_str(text.as_str()).unwrap();
+                }
+            }
+        }
+        let mut a = connect(socket.clone(), &key).await;
+        let handshake = json!({ "jsonrpc": "2.0", "id": 1, "method": "_rosterd/handshake", "params": {} });
+        a.send(Message::Text(handshake.to_string().into())).await.unwrap();
+        let answer = next(&mut a).await;
+        assert!(answer["result"]["configOptions"].is_array(), "{answer}");
+
+        let prompt = json!({ "jsonrpc": "2.0", "id": "p", "method": "session/prompt", "params": { "sessionId": key, "prompt": [{ "type": "text", "text": "hello" }] } });
+        a.send(Message::Text(prompt.to_string().into())).await.unwrap();
+        let ask = loop {
+            let v = next(&mut a).await;
+            assert_ne!(v["id"], "p", "the turn must wait on the permission: {v}");
+            if v["method"] == "session/request_permission" {
+                break v;
+            }
+            assert_eq!(v["method"], "session/update");
+            assert_eq!(v["params"]["sessionId"], key, "updates carry the roster key");
+        };
+        assert_eq!(ask["params"]["sessionId"], key);
+        assert_eq!(ask["params"]["toolCall"]["title"], "Bash");
+
+        // B joins while the request is pending and sees it first thing.
+        let mut b = connect(socket.clone(), &key).await;
+        let seen = next(&mut b).await;
+        assert_eq!(seen["method"], "session/request_permission");
+        assert_eq!(seen["id"], ask["id"]);
+        let allow = json!({ "jsonrpc": "2.0", "id": seen["id"], "result": { "outcome": { "outcome": "selected", "optionId": "allow" } } });
+        b.send(Message::Text(allow.to_string().into())).await.unwrap();
+        let done = loop {
+            let v = next(&mut a).await;
+            if v["id"] == "p" {
+                break v;
+            }
+        };
+        assert_eq!(done["result"]["stopReason"], "end_turn", "{done}");
+        // B saw the rest of the turn too.
+        let mut b_saw_end = false;
+        for _ in 0..8 {
+            let v = next(&mut b).await;
+            if v["params"]["update"]["sessionUpdate"] == "usage_update" {
+                b_saw_end = true;
+                break;
+            }
+        }
+        assert!(b_saw_end);
+        // A's late answer is dropped; an unknown method is refused; a pty session has no agent.
+        a.send(Message::Text(allow.to_string().into())).await.unwrap();
+        let mode = json!({ "jsonrpc": "2.0", "id": 3, "method": "session/set_mode", "params": { "sessionId": key, "modeId": "plan" } });
+        a.send(Message::Text(mode.to_string().into())).await.unwrap();
+        let refused = next(&mut a).await;
+        assert_eq!(refused["id"], 3);
+        assert_eq!(refused["error"]["code"], -32603, "the fake answers method not found: {refused}");
         let stopped = h.socket.delete(format!("http://rosterd/sessions/{key}")).send().await.unwrap();
         assert_eq!(stopped.status(), StatusCode::OK);
         let _ = std::fs::remove_dir_all(&holders);

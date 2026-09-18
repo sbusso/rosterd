@@ -198,6 +198,7 @@ rosterd start --harness H [--cwd DIR] [--name L] [--policy auto|attention] [--mo
               [--effort E] [--env K=V ...] [--interactive [--detach]] [--node NODE]
                                            the long form; without --interactive, headless
 rosterd attach KEY                         that terminal in this one, from any node
+rosterd acp [--node NODE] [--harness H]    the swarm as one ACP agent on stdin and stdout
 rosterd prompt KEY TEXT [--wait idle|needs_attention|ended] [--timeout SECONDS]
 rosterd cancel|stop|suspend|resume|open KEY
 rosterd handoff KEY --to NODE              move a session to another node, same session id
@@ -262,6 +263,18 @@ Attach. `rosterd attach KEY` puts the session's terminal in this one: `GET /sess
 is a websocket to a pty running `tmux attach` on the owning node, relayed over the mesh by any
 other node; binary frames are the terminal bytes, a text frame carries resize or the exit code.
 The page's attach button renders the same stream in place.
+
+ACP. `rosterd acp` serves the Agent Client Protocol on stdin and stdout for any ACP client
+(Zed, an editor, the workspace, a script): one agent whose session ids are roster keys.
+`session/list` is every session in the swarm, with the node, harness, lane and activity under
+`_meta.rosterd`; `session/new` starts a headless session where `_meta.rosterd.node` and
+`.harness` say (else the command's `--node` and `--harness`), with `name`, `model`, `effort` and
+`permission_policy` alongside; `session/load` joins a running one by key or name. Prompts,
+cancels, mode and config changes, the agent's updates, and the permission and form requests it
+leaves pending all pass through as they are, over `GET /sessions/{key}/acp`, a websocket the
+owner node serves and any other relays. Many clients may join one session: each sees every
+update, and the first answer to a pending request wins. Interactive sessions are listed and
+attached, never loaded; a loaded session replays no history.
 
 Open. `rosterd-open --handle '<runtime handle json>'` jumps to a session from a shell: tmux (attached
 here, or over ssh on the owning node) or the conversation view; `rosterd open KEY` resolves the handle first.

@@ -99,7 +99,7 @@ pub async fn wait(session_key: &str, tool: &str, summary: &str, policy: Permissi
         PermissionPolicy::Attention => {
             let request_id = Value::String(ulid::Ulid::new().to_string().to_lowercase());
             let (reply, answered) = oneshot::channel();
-            let permission = PendingPermission { request_id: request_id.clone(), tool: tool.into(), summary: summary.into(), options: options(), at: Utc::now() };
+            let permission = PendingPermission { request_id: request_id.clone(), tool: tool.into(), summary: summary.into(), options: options(), at: Utc::now(), raw: Value::Null };
             PENDING.lock().unwrap().entry(session_key.into()).or_default().push(Waiting { permission, reply });
             match tokio::time::timeout(timeout, answered).await {
                 Ok(Ok(answer)) => answer,

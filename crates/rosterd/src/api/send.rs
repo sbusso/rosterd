@@ -60,6 +60,7 @@ pub async fn send(node: &Node, from: Option<&str>, body: SendBody) -> Result<Val
     }
     let request = PromptRequest {
         prompt: body.prompt,
+        blocks: None,
         wait_until: Some(body.wait_until.unwrap_or(WaitUntil::Idle)),
         timeout_ms: Some(body.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
     };

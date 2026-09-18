@@ -112,7 +112,7 @@ async fn a_session_through_the_real_holder_survives_a_daemon_restart() {
     assert_eq!(saved.session_id.as_deref(), Some("fake-1"));
 
     let s = one.clone();
-    let turn = tokio::spawn(async move { s.prompt("hello").await });
+    let turn = tokio::spawn(async move { s.prompt("hello", None).await });
     claim(&mut fx, Activity::Active, "prompt").await;
     claim(&mut fx, Activity::Active, "message").await;
     claim(&mut fx, Activity::Active, "tool_call").await;
@@ -130,7 +130,7 @@ async fn a_session_through_the_real_holder_survives_a_daemon_restart() {
 
     // A second turn blocks on its permission; then the daemon "restarts".
     let s = one.clone();
-    let _turn = tokio::spawn(async move { s.prompt("again").await });
+    let _turn = tokio::spawn(async move { s.prompt("again", None).await });
     claim(&mut fx, Activity::Active, "prompt").await;
     claim(&mut fx, Activity::Active, "message").await;
     claim(&mut fx, Activity::Active, "tool_call").await;
@@ -230,7 +230,7 @@ fn start(harness: &str) -> StartSession {
 }
 
 fn prompt(text: &str) -> PromptRequest {
-    PromptRequest { prompt: text.into(), wait_until: None, timeout_ms: None }
+    PromptRequest { prompt: text.into(), blocks: None, wait_until: None, timeout_ms: None }
 }
 
 /// The one state file under `holders`.

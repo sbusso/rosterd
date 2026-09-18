@@ -96,6 +96,14 @@ pub fn mode_of(v: &Value) -> Option<String> {
 }
 
 /// A `plan` update's entries.
+/// The thread's title from a `session_info_update`, when the agent named it.
+pub fn title_of(update: &Value) -> Option<String> {
+    if update.get("sessionUpdate").and_then(Value::as_str) != Some("session_info_update") {
+        return None;
+    }
+    update.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(String::from)
+}
+
 pub fn plan_of(update: &Value) -> Option<Plan> {
     if update.get("sessionUpdate").and_then(Value::as_str) != Some("plan") {
         return None;

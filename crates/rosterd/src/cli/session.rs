@@ -166,7 +166,7 @@ fn activity(record: &Record) -> String {
 
 /// KEY to the exact session_key, R14.1, against everything this node knows.
 /// `--node NAME` to its id, from the swarm snapshot.
-async fn node_id(client: &Client, name: &str) -> Out<String> {
+pub(super) async fn node_id(client: &Client, name: &str) -> Out<String> {
     let swarm: SwarmSnapshot = parse(&client.call(Method::GET, "/swarm/snapshot", None).await?)?;
     swarm.nodes.into_iter().find(|n| n.name.eq_ignore_ascii_case(name)).map(|n| n.node_id).ok_or_else(|| Exit::user(format!("no node {name} in the swarm")))
 }

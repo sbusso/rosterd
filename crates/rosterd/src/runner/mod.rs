@@ -8,7 +8,7 @@
 //!
 //! OWNER: the holder/runner agent. Unix sockets only; Windows is a later target.
 
-mod acp;
+pub mod acp;
 #[cfg(test)]
 pub(crate) mod e2e_test;
 pub mod health;
@@ -89,6 +89,10 @@ pub enum WaitUntil {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PromptRequest {
     pub prompt: String,
+    /// ACP content blocks sent as they are, from a client behind the proxy; `prompt` is then
+    /// only their text, for the journal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<serde_json::Value>,
     #[serde(default)]
     pub wait_until: Option<WaitUntil>,
     #[serde(default)]
@@ -127,6 +131,9 @@ pub struct PendingPermission {
     pub summary: String,
     pub options: Vec<PermissionOption>,
     pub at: DateTime<Utc>,
+    /// The request as the agent sent it, for an ACP client that connects while it is pending.
+    #[serde(skip)]
+    pub raw: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -144,6 +151,8 @@ pub struct PendingQuestion {
     /// The form's `requestedSchema`, a flat object schema.
     pub schema: serde_json::Value,
     pub at: DateTime<Utc>,
+    #[serde(skip)]
+    pub raw: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -395,12 +404,13 @@ impl Runner {
         };
         let session_key = session_key.as_str();
         let text = req.prompt;
+        let blocks = req.blocks;
         // The turn claims active from its own task, later than a wait for idle first reads the
         // record; claimed here first, the wait cannot answer with the idle before the turn.
         self.claim(session_key, Activity::Active, "prompt");
         let runner = self.clone();
         let turn = tokio::spawn(async move {
-            let outcome = session.prompt(&text).await;
+            let outcome = session.prompt(&text, blocks).await;
             runner.note_turn(&session.harness, &outcome);
             outcome
         });
@@ -629,6 +639,16 @@ impl Runner {
     /// The raw ACP notification stream of a session, R5.5. Not stored anywhere.
     pub fn stream(&self, session_key: &str) -> Result<broadcast::Receiver<serde_json::Value>, RunnerError> {
         Ok(self.session(session_key)?.subscribe())
+    }
+
+    /// The agent's session/new or session/load answer, for the ACP proxy.
+    pub fn handshake_answer(&self, session_key: &str) -> Result<serde_json::Value, RunnerError> {
+        Ok(self.session(session_key)?.handshake_answer())
+    }
+
+    /// A `session/*` request from an ACP client behind the proxy, answered by the agent.
+    pub async fn forward(&self, session_key: &str, method: &str, params: serde_json::Value) -> Result<serde_json::Value, RunnerError> {
+        self.session(session_key)?.forward(method, params).await
     }
 
     /// Works for a suspended key too: activity as the roster kept it, nothing pending.
@@ -942,6 +962,12 @@ impl Runner {
                 Effect::Plan(plan) => {
                     if let Err(error) = self.roster.update(&key, |r| r.plan = Some(plan)) {
                         tracing::warn!(%key, %error, "plan refused");
+                    }
+                }
+                // The harness's own thread name; a name set through the API or at start outranks it.
+                Effect::Title(title) => {
+                    if let Err(error) = self.roster.set_name(&key, Some(title), Source::Acp) {
+                        tracing::warn!(%key, %error, "title refused");
                     }
                 }
                 Effect::Exited { code, signal } => {

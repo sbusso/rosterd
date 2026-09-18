@@ -221,6 +221,7 @@ pub fn sessions() -> Router<Arc<Node>> {
         .route("/sessions/{key}/cancel", post(cancel))
         .route("/sessions/{key}/open", post(open_session))
         .route("/sessions/{key}/attach", get(attach_session))
+        .route("/sessions/{key}/acp", get(acp_session))
         .route("/sessions/{key}/stream", get(stream))
         .route("/sessions/{key}/permission", post(permission))
         .route("/sessions/{key}/answer", post(answer_question))
@@ -1043,6 +1044,21 @@ async fn attach_session(captures: Captures, Query(size): Query<super::attach::Si
     let record = captures.record()?;
     let Some(tmux) = record.tmux.clone() else { return Err(ApiError::bad_request(format!("nothing to attach for {}: no tmux handle", captures.key))) };
     Ok(ws.on_upgrade(move |socket| super::attach::serve(socket, tmux, size)))
+}
+
+/// The session's ACP traffic over a websocket, R20: the owner bridges the runner, any other
+/// node relays to the owner over the mesh. A pty session has no agent to talk to.
+async fn acp_session(captures: Captures, ws: WebSocketUpgrade) -> Result<Response, ApiError> {
+    if let Some(node_id) = captures.remote()? {
+        let upstream = captures.node.mesh.websocket(&node_id, &captures.path("/acp")).await?;
+        return Ok(ws.on_upgrade(move |socket| super::attach::relay(socket, upstream)));
+    }
+    let record = captures.record()?;
+    if record.lane != Lane::Headless {
+        return Err(ApiError::bad_request(format!("{} is an interactive session: attach to it", captures.key)));
+    }
+    let node = captures.node.clone();
+    Ok(ws.on_upgrade(move |socket| super::acp::serve(socket, node, captures.key)))
 }
 
 /// The raw ACP notification stream, R5.5. Served by the owner only: `Mesh::proxy` carries one

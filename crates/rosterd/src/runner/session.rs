@@ -35,6 +35,8 @@ pub enum Effect {
     Mode(String),
     /// The agent's `plan`, whole.
     Plan(Plan),
+    /// The agent named the thread: `session_info_update` with a title.
+    Title(String),
     /// The adapter exited, `HolderFrame::Exited`.
     Exited { code: Option<i32>, signal: Option<i32> },
     /// The holder socket closed and did not come back.
@@ -67,6 +69,9 @@ pub struct Session {
     recap: AtomicBool,
     last_recap: Mutex<Option<String>>,
     turn_text: Mutex<String>,
+    /// The agent's session/new or session/load answer: modes and config options, for an ACP
+    /// client behind the proxy.
+    handshake: Mutex<Value>,
     state: Mutex<HolderState>,
     load_session: AtomicBool,
     /// session/load in flight: replayed history claims nothing.
@@ -110,6 +115,7 @@ impl Session {
             recap: AtomicBool::new(recap),
             last_recap: Mutex::new(None),
             turn_text: Mutex::new(String::new()),
+            handshake: Mutex::new(Value::Null),
             state: Mutex::new(state),
             load_session: AtomicBool::new(false),
             loading: AtomicBool::new(false),
@@ -204,6 +210,7 @@ impl Session {
             .to_string();
         self.set_session_id(id);
         self.mode_from(&result);
+        *self.handshake.lock().unwrap() = result.clone();
         Ok(result)
     }
 
@@ -215,7 +222,22 @@ impl Session {
         let result = result?;
         self.set_session_id(session_id.to_string());
         self.mode_from(&result);
+        *self.handshake.lock().unwrap() = result.clone();
         Ok(result)
+    }
+
+    pub fn handshake_answer(&self) -> Value {
+        self.handshake.lock().unwrap().clone()
+    }
+
+    /// Any other `session/*` request an ACP client sends through the proxy: the agent's answer,
+    /// with the client's session id swapped for the harness's.
+    pub async fn forward(&self, method: &str, mut params: Value) -> Result<Value, RunnerError> {
+        let session_id = self.session_id().ok_or_else(|| RunnerError::Acp("no session id yet".into()))?;
+        if let Some(params) = params.as_object_mut() {
+            params.insert("sessionId".into(), json!(session_id));
+        }
+        self.request(method, params).await
     }
 
     fn mode_from(&self, v: &Value) {
@@ -236,11 +258,17 @@ impl Session {
     }
 
     /// One turn, R5.5: the stop reason and, with recap on, the turn's assistant text.
-    pub async fn prompt(&self, text: &str) -> Result<(Option<String>, Option<String>), RunnerError> {
+    /// `blocks` are the ACP content blocks to send instead of one text block, from a client
+    /// behind the proxy.
+    pub async fn prompt(&self, text: &str, blocks: Option<Value>) -> Result<(Option<String>, Option<String>), RunnerError> {
         let session_id = self.session_id().ok_or_else(|| RunnerError::Acp("no session id yet".into()))?;
         self.turn_text.lock().unwrap().clear();
         self.claim(Activity::Active, "prompt");
-        let result = self.request("session/prompt", acp::prompt_params(&session_id, text)).await;
+        let params = match blocks {
+            Some(blocks) => json!({"sessionId": session_id, "prompt": blocks}),
+            None => acp::prompt_params(&session_id, text),
+        };
+        let result = self.request("session/prompt", params).await;
         let stop_reason = result.as_ref().ok().and_then(|r| r["stopReason"].as_str().map(String::from));
         if self.closed.load(Ordering::Relaxed) {
             return result.map(|_| (stop_reason, None));
@@ -441,9 +469,9 @@ impl Session {
             }
             Message::Request { id, method, params } => {
                 if method == "session/request_permission" {
-                    self.handle_permission(id.clone(), params);
+                    self.handle_permission(id.clone(), params, v);
                 } else if method == "elicitation/create" {
-                    self.handle_question(id.clone(), params);
+                    self.handle_question(id.clone(), params, v);
                 } else {
                     // fs/* and terminal/*: capabilities this client did not advertise.
                     self.send(&acp::error_response(id, acp::METHOD_NOT_FOUND, &format!("{method} is not supported")));
@@ -480,6 +508,9 @@ impl Session {
         if let Some(plan) = acp::plan_of(update) {
             let _ = self.effects.send(Effect::Plan(plan));
         }
+        if let Some(title) = acp::title_of(update) {
+            let _ = self.effects.send(Effect::Title(title));
+        }
         if self.loading.load(Ordering::Relaxed) {
             return None;
         }
@@ -491,7 +522,9 @@ impl Session {
     }
 
     /// R5.3.
-    fn handle_permission(self: &Arc<Self>, id: Value, params: &Value) {
+    /// A request left pending goes on the stream whole, so an ACP client behind the proxy sees
+    /// it as the agent sent it; `raw` keeps it for a client that connects later.
+    fn handle_permission(self: &Arc<Self>, id: Value, params: &Value, raw: &Value) {
         let options = acp::permission_options(params);
         let (title, summary) = acp::tool_summary(params);
         match self.policy() {
@@ -503,7 +536,9 @@ impl Session {
                     summary,
                     options,
                     at: Utc::now(),
+                    raw: raw.clone(),
                 });
+                let _ = self.stream.send(raw.clone());
                 self.claim(Activity::NeedsAttention, "permission");
             }
         }
@@ -512,7 +547,7 @@ impl Session {
 
 impl Session {
     /// An `elicitation/create`: form mode waits for the page, anything else is declined.
-    fn handle_question(&self, id: Value, params: &Value) {
+    fn handle_question(&self, id: Value, params: &Value, raw: &Value) {
         if params.get("mode").and_then(Value::as_str) != Some("form") {
             self.respond(&id, json!({"action": "decline"}));
             return;
@@ -522,7 +557,9 @@ impl Session {
             message: params.get("message").and_then(Value::as_str).unwrap_or("").to_string(),
             schema: params.get("requestedSchema").cloned().unwrap_or_else(|| json!({})),
             at: Utc::now(),
+            raw: raw.clone(),
         });
+        let _ = self.stream.send(raw.clone());
         self.claim(Activity::NeedsAttention, "question");
     }
 }
@@ -624,7 +661,7 @@ mod tests {
         handshake(&session, &mut agent, &mut effects).await;
 
         let s = session.clone();
-        let turn = tokio::spawn(async move { s.prompt("go").await });
+        let turn = tokio::spawn(async move { s.prompt("go", None).await });
         let req = agent.recv().await;
         assert_eq!(req["method"], "session/prompt");
         assert_eq!(req["params"], json!({"sessionId": "s1", "prompt": [{"type": "text", "text": "go"}]}));
@@ -741,6 +778,9 @@ mod tests {
         agent.send(json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {
             "sessionUpdate": "usage_update", "used": 40, "size": 200}}})).await;
         assert!(matches!(skip_claims(&mut effects).await, Effect::Usage(u) if u.context_used == Some(40) && u.context_size == Some(200)));
+        agent.send(json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {
+            "sessionUpdate": "session_info_update", "title": "Fix the login"}}})).await;
+        assert!(matches!(skip_claims(&mut effects).await, Effect::Title(t) if t == "Fix the login"));
     }
 
     #[tokio::test]

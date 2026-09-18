@@ -224,14 +224,24 @@ terminal over the mesh rosterd already has, still without rendering anything.
 
 Not built: a multiplexer, a screen model, a scrollback store, a VT parser in the daemon.
 
+The other lane, decided the same day: rosterd is an ACP proxy (R20). The pty lane carries a
+harness's own UI; the ACP lane carries the protocol, and any client, an editor, the workspace,
+a phone card, a script, talks to every headless session on every node through one `rosterd acp`
+whose session ids are roster keys. `session/list` tells a client what is behind the connection;
+`session/new` names the node and harness in `_meta.rosterd`. Fan-out is the point: several
+clients hold one session, each sees every update, the first answer to a permission wins. The
+workspace becomes one such client, and gets updates pushed instead of asking agents to report.
+
 ## 8. Roadmap
 
 In order, each shippable alone.
 
 1. `rosterd start --interactive` and `rosterd-launch --tmux` (7.1), done.
 2. `/sessions/{key}/attach`, `rosterd attach`, xterm.js in the page (7.2), done.
-3. iOS rendering on GhosttyKit; the page's QR pairing already gives the phone its node.
-4. Then, from the spec's acceptance list and the deferred items: Windows service, the Linux
+3. The ACP proxy: `rosterd acp` and `/sessions/{key}/acp`, the swarm as one agent with the
+   roster key as session id, fan-out to many clients, done in 0.1.24.
+4. iOS rendering on GhosttyKit; the page's QR pairing already gives the phone its node.
+5. Then, from the spec's acceptance list and the deferred items: Windows service, the Linux
    install as a package, `MIN_COMPAT` bumps as part of the release checklist.
 
 Operational now: every node must run 0.1.11 or later (the compatibility floor); the MacBook and
