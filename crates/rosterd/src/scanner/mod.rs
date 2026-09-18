@@ -277,8 +277,10 @@ async fn pass(roster: &Roster, names: &BTreeMap<String, String>) {
                 None => owning_pane(&chain_of(rec.pid), &panes),
             };
             let Some(pane) = pane else { continue };
-            let title = pane.title.clone().filter(|t| *t != hostname && *t != short && t != "tmux");
-            let name = title.filter(|t| rec.name.as_deref() != Some(t.as_str()));
+            // ponytail: the pane's session name stands in until the harness titles the pane; a
+            // human's one session with many panes names them all alike until then.
+            let title = pane.title.as_deref().and_then(|t| real_title(t, &rec.harness, &[&hostname, &short])).unwrap_or_else(|| pane.handle.session.clone());
+            let name = Some(title).filter(|t| rec.name.as_deref() != Some(t.as_str()));
             if rec.tmux.is_some() && rec.tty.is_some() && name.is_none() {
                 continue;
             }
@@ -363,6 +365,14 @@ fn parse_tmux_line(line: &str) -> Option<TmuxPane> {
     })
 }
 
+/// The harness's own title for the session, without its leading glyph; none for tmux's
+/// default (the host name), the harness's idle product name, or nothing at all.
+fn real_title(title: &str, harness: &str, hosts: &[&str]) -> Option<String> {
+    let t = title.trim_start_matches(|c: char| !c.is_alphanumeric()).trim();
+    let idle = t.eq_ignore_ascii_case("claude code") || t.eq_ignore_ascii_case(harness) || t == "tmux";
+    (!t.is_empty() && !idle && !hosts.contains(&t)).then(|| t.to_string())
+}
+
 /// tmux's default pane title is the host name, in either form; that is no title.
 fn hostname() -> String {
     std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
@@ -376,7 +386,8 @@ fn owning_pane<'a>(chain: &[u32], panes: &'a [TmuxPane]) -> Option<&'a TmuxPane>
 async fn tmux_panes() -> Vec<TmuxPane> {
     let output = tokio::time::timeout(
         HANDLE_TIMEOUT,
-        tokio::process::Command::new("tmux").args(["list-panes", "-a", "-F", TMUX_FORMAT]).output(),
+        // A UTF-8 locale, so a title's glyphs survive the client (a service has no LANG).
+        tokio::process::Command::new("tmux").env("LC_ALL", "C.UTF-8").args(["list-panes", "-a", "-F", TMUX_FORMAT]).output(),
     )
     .await;
     match output {
@@ -470,7 +481,11 @@ mod tests {
         assert_eq!(parse_tmux_line("main|x||%6|4343|"), None);
         assert_eq!(parse_tmux_line("short|line"), None);
         assert_eq!(parse_tmux_line("main|2||%6|4343||").unwrap().title, None);
-        assert_eq!(parse_tmux_line("main|2||%6|4343||_ Fix the login bug").unwrap().title.as_deref(), Some("_ Fix the login bug"));
+        assert_eq!(parse_tmux_line("main|2||%6|4343||✳ Fix the login bug").unwrap().title.as_deref(), Some("✳ Fix the login bug"));
+        assert_eq!(real_title("✳ Fix the login bug", "claude", &["Mato.local", "Mato"]).as_deref(), Some("Fix the login bug"));
+        for idle in ["✳ Claude Code", "Mato", "Mato.local", "codex", "tmux", "✳ "] {
+            assert_eq!(real_title(idle, "codex", &["Mato.local", "Mato"]), None, "{idle}");
+        }
         let other = parse_tmux_line("main|3||%7|5000|/dev/ttys004").unwrap();
         let panes = vec![pane.clone(), other.clone()];
         // A harness two levels under the pane shell: pane_pid is an ancestor, not the pid.

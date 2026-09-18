@@ -83,7 +83,7 @@ pub async fn start(node: &Node, req: &StartSession) -> Result<(Record, Vec<Strin
 
 /// One tmux command's stdout, none when it failed.
 async fn tmux(args: &[&str]) -> Option<String> {
-    let out = tokio::process::Command::new("tmux").args(args).output().await.ok()?;
+    let out = tokio::process::Command::new("tmux").env("LC_ALL", "C.UTF-8").args(args).output().await.ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
