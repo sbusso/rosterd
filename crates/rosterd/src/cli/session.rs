@@ -14,15 +14,20 @@ use crate::config::{Config, config_dir};
 
 pub async fn run(client: &Client, config: &Config, command: Command, json: bool) -> Out<()> {
     match command {
-        Command::Start { harness, cwd, name, policy, model, effort, env } => {
+        Command::Start { harness, cwd, name, interactive, node, policy, model, effort, env } => {
             let env = env
                 .iter()
                 .map(|pair| pair.split_once('=').map(|(k, v)| (k.to_string(), Value::String(v.to_string()))).ok_or_else(|| Exit::user(format!("--env {pair}: expected K=V"))))
                 .collect::<Out<Map<String, Value>>>()?;
             let body = json!({
                 "harness": harness, "cwd": cwd, "name": name, "model": model, "effort": effort, "permission_policy": policy.map(policy_word), "env": env,
+                "lane": interactive.then_some("interactive"),
             });
-            let body = client.call(Method::POST, "/sessions", Some(body)).await?;
+            let path = match node {
+                Some(name) => format!("/swarm/{}/sessions", node_id(client, &name).await?),
+                None => "/sessions".into(),
+            };
+            let body = client.call(Method::POST, &path, Some(body)).await?;
             started(&body, json)
         }
         Command::Prompt { key, text, wait, timeout } => {
@@ -145,6 +150,12 @@ fn activity(record: &Record) -> String {
 }
 
 /// KEY to the exact session_key, R14.1, against everything this node knows.
+/// `--node NAME` to its id, from the swarm snapshot.
+async fn node_id(client: &Client, name: &str) -> Out<String> {
+    let swarm: SwarmSnapshot = parse(&client.call(Method::GET, "/swarm/snapshot", None).await?)?;
+    swarm.nodes.into_iter().find(|n| n.name.eq_ignore_ascii_case(name)).map(|n| n.node_id).ok_or_else(|| Exit::user(format!("no node {name} in the swarm")))
+}
+
 pub(super) async fn session_key(client: &Client, key: &str) -> Out<String> {
     let swarm: SwarmSnapshot = parse(&client.call(Method::GET, "/swarm/snapshot", None).await?)?;
     let local = swarm.nodes.iter().find(|n| n.state == PeerState::Local).map(|n| n.node_id.clone()).unwrap_or_default();

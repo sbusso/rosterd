@@ -191,7 +191,9 @@ rosterd status | nodes                     this node; swarm membership and healt
 rosterd usage [--swarm] [--since 7d]       tokens and cost per day, harness and model
 rosterd read KEY | explain KEY             one session in full; which source set each field
 rosterd start --harness H --cwd DIR [--name L] [--policy auto|attention] [--model M]
-              [--effort E] [--env K=V ...]
+              [--effort E] [--env K=V ...] [--interactive] [--node NODE]
+                                           headless, or the harness's own terminal UI in tmux there
+rosterd attach KEY                         that terminal in this one, from any node
 rosterd prompt KEY TEXT [--wait idle|needs_attention|ended] [--timeout SECONDS]
 rosterd cancel|stop|suspend|resume|open KEY
 rosterd handoff KEY --to NODE              move a session to another node, same session id

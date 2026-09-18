@@ -100,7 +100,8 @@ pub enum Command {
     Read { key: String },
     /// Which source set each field and when, and which claims were rejected.
     Explain { key: String },
-    /// Create a headless session, R5.1.
+    /// Create a session, R5.1: headless, or with --interactive the harness's own terminal UI
+    /// in a tmux session, joined from anywhere with `attach`.
     Start {
         #[arg(long)]
         harness: String,
@@ -108,6 +109,11 @@ pub enum Command {
         cwd: String,
         #[arg(long)]
         name: Option<String>,
+        #[arg(long)]
+        interactive: bool,
+        /// The node it starts on; none is this one.
+        #[arg(long)]
+        node: Option<String>,
         #[arg(long)]
         policy: Option<Policy>,
         #[arg(long)]

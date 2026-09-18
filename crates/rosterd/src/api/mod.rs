@@ -11,6 +11,7 @@
 //! OWNER: the api agent.
 
 mod attach;
+mod interactive;
 mod mcp;
 mod routes;
 mod send;

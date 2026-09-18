@@ -784,9 +784,13 @@ async fn start_session(captures: Captures, Body(body): Body<Value>) -> Result<Re
         return captures.proxy(node_id, Method::POST, "/sessions".into(), Some(body)).await;
     }
     let request: StartSession = parse(&body)?;
-    let warnings = captures.node.runner.start_warnings(&request);
-    let record = captures.node.runner.start(request).await?;
-    captures.node.journal.action("start", Some(record.session_key.clone()), captures.by(), json!({ "harness": record.harness, "cwd": record.cwd, "name": record.name }));
+    let (record, warnings) = if request.lane == Some(Lane::Interactive) {
+        super::interactive::start(&captures.node, &request).await?
+    } else {
+        let warnings = captures.node.runner.start_warnings(&request);
+        (captures.node.runner.start(request).await?, warnings)
+    };
+    captures.node.journal.action("start", Some(record.session_key.clone()), captures.by(), json!({ "harness": record.harness, "cwd": record.cwd, "name": record.name, "lane": record.lane }));
     let mut value = serde_json::to_value(&record)?;
     if !warnings.is_empty() {
         // R16.1: the session runs, but not as asked.

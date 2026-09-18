@@ -72,6 +72,9 @@ pub struct StartSession {
     /// Forwarded as the session config option whose id contains "effort", when the adapter
     /// advertises one.
     pub effort: Option<String>,
+    /// R9: interactive starts the harness's own terminal UI in a tmux session on the node
+    /// (api::interactive) instead of a holder; none is headless.
+    pub lane: Option<rosterd_proto::Lane>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -253,6 +256,7 @@ impl Meta {
             recap: self.recap,
             idle_timeout_s: self.idle_timeout_s,
             effort: self.effort,
+            lane: None,
         }
     }
 }

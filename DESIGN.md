@@ -207,10 +207,12 @@ The gap after the herdr removal: from the phone, open does nothing for an intera
 because open means `ssh node -t tmux attach` and a phone has no ssh. The fix is to carry the
 terminal over the mesh rosterd already has, still without rendering anything.
 
-1. Interactive sessions start in tmux. `rosterd-launch --tmux` re-runs itself in a new tmux
-   session and execs the harness inside it; the scanner attaches the handle on its next pass,
-   so the record has it from birth for every practical purpose. A human-started session keeps
-   being found by the scanner as before. Shipped in 0.1.19.
+1. Interactive sessions start in tmux. `rosterd start --interactive [--node N]` has the daemon
+   there run `tmux new-session` around rosterd-launch, which registers the pane's pid and
+   execs the harness; the scanner attaches the handle on its next pass, so the record has it
+   from birth for every practical purpose. From a shell, `rosterd-launch --tmux` does the same
+   in place. A human-started session keeps being found by the scanner as before. Shipped in
+   0.1.19 and 0.1.21.
 2. Attach over the mesh. `GET /sessions/{key}/attach` upgrades to a websocket; the owning node
    runs `tmux attach -t <target>` in a PTY and relays bytes both ways, with resize; any node
    proxies it like every other session route. `rosterd attach KEY` is the raw-mode client; the
@@ -225,7 +227,7 @@ Not built: a multiplexer, a screen model, a scrollback store, a VT parser in the
 
 In order, each shippable alone.
 
-1. `rosterd-launch --tmux` (7.1), done.
+1. `rosterd start --interactive` and `rosterd-launch --tmux` (7.1), done.
 2. `/sessions/{key}/attach`, `rosterd attach`, xterm.js in the page (7.2), done.
 3. iOS rendering on GhosttyKit; the page's QR pairing already gives the phone its node.
 4. Then, from the spec's acceptance list and the deferred items: Windows service, the Linux
