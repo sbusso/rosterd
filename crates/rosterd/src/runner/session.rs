@@ -230,6 +230,23 @@ impl Session {
         self.handshake.lock().unwrap().clone()
     }
 
+    /// The conversation so far as ACP updates, R20, from the harness's transcript; empty when
+    /// the harness keeps none rosterd knows of. Over `TRANSCRIPT_LIMIT` is refused, as a handoff is.
+    pub fn history(&self) -> Result<Vec<Value>, RunnerError> {
+        let (harness, cwd, session_id) = {
+            let s = self.state.lock().unwrap();
+            (s.harness.clone(), s.cwd.clone(), s.session_id.clone())
+        };
+        let Some(session_id) = session_id else { return Ok(Vec::new()) };
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let Some(rel) = super::transcript::locate(&harness, &cwd, &session_id, &home) else { return Ok(Vec::new()) };
+        let bytes = std::fs::read(home.join(&rel))?;
+        if bytes.len() > super::TRANSCRIPT_LIMIT {
+            return Err(RunnerError::TooLarge(format!("transcript {} is {} bytes; the limit is {}", rel.display(), bytes.len(), super::TRANSCRIPT_LIMIT)));
+        }
+        Ok(super::transcript::updates(&harness, &String::from_utf8_lossy(&bytes)))
+    }
+
     /// Any other `session/*` request an ACP client sends through the proxy: the agent's answer,
     /// with the client's session id swapped for the harness's.
     pub async fn forward(&self, method: &str, mut params: Value) -> Result<Value, RunnerError> {

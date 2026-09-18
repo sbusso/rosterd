@@ -273,8 +273,9 @@ ACP. `rosterd acp` serves the Agent Client Protocol on stdin and stdout for any 
 cancels, mode and config changes, the agent's updates, and the permission and form requests it
 leaves pending all pass through as they are, over `GET /sessions/{key}/acp`, a websocket the
 owner node serves and any other relays. Many clients may join one session: each sees every
-update, and the first answer to a pending request wins. Interactive sessions are listed and
-attached, never loaded; a loaded session replays no history.
+update, and the first answer to a pending request wins. A loaded session replays its conversation first,
+read from the harness's own transcript: the user's and the agent's messages, not the tool calls.
+Interactive sessions are listed and attached, never loaded.
 
 Open. `rosterd-open --handle '<runtime handle json>'` jumps to a session from a shell: tmux (attached
 here, or over ssh on the owning node) or the conversation view; `rosterd open KEY` resolves the handle first.

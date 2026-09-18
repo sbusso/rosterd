@@ -136,6 +136,7 @@ async fn handle(node: Arc<Node>, key: String, v: Value, out: mpsc::UnboundedSend
                     node.runner.prompt(&key, request).await.map(|outcome| json!({ "stopReason": outcome.stop_reason.unwrap_or_else(|| "end_turn".into()) }))
                 }
                 "_rosterd/handshake" => node.runner.handshake_answer(&key),
+                "_rosterd/history" => node.runner.history(&key).map(|updates| json!({ "updates": updates })),
                 m if m.starts_with("session/") => node.runner.forward(&key, m, params.clone()).await,
                 m => {
                     let _ = out.send(acp::error_response(id, METHOD_NOT_FOUND, &format!("{m} is not served per session")));

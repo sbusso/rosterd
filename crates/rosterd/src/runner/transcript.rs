@@ -3,9 +3,12 @@
 //!
 //! Claude Code: `~/.claude/projects/<cwd with every '/' and '.' as '-'>/<session_id>.jsonl`.
 //! Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-<stamp>-<session_id>.jsonl`.
-//! Anything else keeps nothing rosterd knows of.
+//! Anything else keeps nothing rosterd knows of. R20 reads the messages out of it, once, to
+//! replay them to an ACP client that loads the session.
 
 use std::path::{Component, Path, PathBuf};
+
+use serde_json::{Value, json};
 
 use super::RunnerError;
 
@@ -40,6 +43,62 @@ pub fn locate(harness: &str, cwd: &str, session_id: &str, home: &Path) -> Option
         }
         _ => None,
     }
+}
+
+/// The conversation in a transcript as ACP `session/update` updates, R20: user and agent
+/// message chunks, one per message, text only. Tool calls, thoughts, images and what the
+/// harness injects around the user's words are left out; a line that is not one of the
+/// harness's message records is skipped.
+pub fn updates(harness: &str, text: &str) -> Vec<Value> {
+    let chunk = |kind: &str, text: String| (!text.trim().is_empty()).then(|| json!({ "sessionUpdate": kind, "content": { "type": "text", "text": text } }));
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|v| match harness {
+            "claude" => {
+                // Claude Code: `{"type":"user"|"assistant","message":{"content":...}}`; a meta
+                // or sidechain record is the harness talking to itself.
+                if v["isMeta"].as_bool() == Some(true) || v["isSidechain"].as_bool() == Some(true) {
+                    return None;
+                }
+                let kind = match v["type"].as_str()? {
+                    "user" => "user_message_chunk",
+                    "assistant" => "agent_message_chunk",
+                    _ => return None,
+                };
+                let text = match &v["message"]["content"] {
+                    Value::String(s) => s.clone(),
+                    Value::Array(blocks) => blocks.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"),
+                    _ => return None,
+                };
+                chunk(kind, text)
+            }
+            "codex" => {
+                // Codex: `{"type":"response_item","payload":{"type":"message","role":...,"content":[...]}}`.
+                // ponytail: a user text starting with `<` or `# AGENTS.md instructions` is
+                // Codex's own context block (`<environment_context>`, `<app-context>`, the
+                // instructions file), not the user's; a user opening with either is the ceiling.
+                let payload = &v["payload"];
+                if v["type"] != "response_item" || payload["type"] != "message" {
+                    return None;
+                }
+                let kind = match payload["role"].as_str()? {
+                    "user" => "user_message_chunk",
+                    "assistant" => "agent_message_chunk",
+                    _ => return None,
+                };
+                let text = payload["content"]
+                    .as_array()?
+                    .iter()
+                    .filter(|b| b["type"] == "input_text" || b["type"] == "output_text")
+                    .filter_map(|b| b["text"].as_str())
+                    .filter(|t| kind != "user_message_chunk" || !(t.trim_start().starts_with('<') || t.starts_with("# AGENTS.md instructions")))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                chunk(kind, text)
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// A path from another node is written under this home only when it is plainly relative:
@@ -94,6 +153,35 @@ mod tests {
         assert_eq!(locate("codex", "/w/repo", "uuid-9", &home), None);
         assert_eq!(locate("pi", "/w/repo", "sid-1", &home), None);
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn updates_are_the_messages_of_either_transcript() {
+        let claude = concat!(
+            r#"{"type":"user","message":{"role":"user","content":"fix the build"}}"#, "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"On it."},{"type":"tool_use","id":"t1","name":"Bash"}]}}"#, "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#, "\n",
+            r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"[Image: 2x2]"}}"#, "\n",
+            r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":"subagent brief"}}"#, "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}"#, "\n",
+            "not json\n",
+            r#"{"type":"custom-title","customTitle":"build fix"}"#, "\n",
+        );
+        let got: Vec<(String, String)> = updates("claude", claude).iter().map(|u| (u["sessionUpdate"].as_str().unwrap().into(), u["content"]["text"].as_str().unwrap().into())).collect();
+        assert_eq!(got, vec![("user_message_chunk".into(), "fix the build".into()), ("agent_message_chunk".into(), "On it.".into()), ("agent_message_chunk".into(), "Done.".into())]);
+
+        let codex = concat!(
+            r#"{"type":"session_meta","payload":{"id":"x"}}"#, "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"You are Codex"}]}}"#, "\n",
+            r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n</environment_context>"},{"type":"input_text","text":"# AGENTS.md instructions for /w\n\n<INSTRUCTIONS>\nbe brief\n</INSTRUCTIONS>"},{"type":"input_text","text":"fix the build"},{"type":"input_image","image_url":"data:"}]}}"##, "\n",
+            r#"{"type":"response_item","payload":{"type":"reasoning","summary":[]}}"#, "\n",
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"shell"}}"#, "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]}}"#, "\n",
+            r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#, "\n",
+        );
+        let got: Vec<(String, String)> = updates("codex", codex).iter().map(|u| (u["sessionUpdate"].as_str().unwrap().into(), u["content"]["text"].as_str().unwrap().into())).collect();
+        assert_eq!(got, vec![("user_message_chunk".into(), "fix the build".into()), ("agent_message_chunk".into(), "Done.".into())]);
+        assert!(updates("pi", claude).is_empty());
     }
 
     #[test]

@@ -185,8 +185,8 @@ impl Proxy {
         Ok(json!({ "sessionId": record.session_key, "modes": answer["modes"], "configOptions": answer["configOptions"], "_meta": { "rosterd": { "node": record.node, "harness": record.harness } } }))
     }
 
-    /// ponytail: no history replay; the client sees updates from now on. The transcript is the
-    /// harness's own file, reading it is the upgrade.
+    /// The conversation so far goes down as `session/update` notifications before the answer,
+    /// as the protocol has it, read from the harness's transcript on the owner node.
     async fn load_session(self: &Arc<Self>, params: &Value) -> Result<Value, String> {
         let key = params["sessionId"].as_str().ok_or("sessionId is required")?;
         let key = super::session::session_key(&self.client, key).await.map_err(|e| e.message)?;
@@ -195,6 +195,10 @@ impl Proxy {
             return Err(format!("{key} is an interactive session: rosterd attach {key}"));
         }
         let answer = self.join(&key).await?;
+        let history = self.ask(&key, "_rosterd/history", json!({})).await?;
+        for update in history["updates"].as_array().into_iter().flatten() {
+            self.send(acp::notification("session/update", json!({ "sessionId": key, "update": update })));
+        }
         Ok(json!({ "modes": answer["modes"], "configOptions": answer["configOptions"], "_meta": { "rosterd": { "sessionId": key, "node": record.node, "harness": record.harness } } }))
     }
 
@@ -329,6 +333,10 @@ mod tests {
                 Some("_rosterd/handshake") => {
                     let _ = socket.send(AxMessage::Text(acp::response(&v["id"], json!({ "modes": { "currentModeId": "code" } })).to_string().into())).await;
                 }
+                Some("_rosterd/history") => {
+                    let history = json!({ "updates": [{ "sessionUpdate": "user_message_chunk", "content": { "type": "text", "text": "earlier" } }] });
+                    let _ = socket.send(AxMessage::Text(acp::response(&v["id"], history).to_string().into())).await;
+                }
                 Some("session/prompt") => {
                     let echo = json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": "n:1:2", "update": { "sessionUpdate": "agent_message_chunk", "content": v["params"]["prompt"][0] } } });
                     let _ = socket.send(AxMessage::Text(echo.to_string().into())).await;
@@ -401,6 +409,15 @@ mod tests {
 
         feed(json!({ "jsonrpc": "2.0", "id": 5, "method": "session/set_mode", "params": { "sessionId": "n:1:2", "modeId": "plan" } }));
         assert_eq!(next(&mut out_rx).await["id"], 5);
+
+        feed(json!({ "jsonrpc": "2.0", "id": 7, "method": "session/load", "params": { "sessionId": "n:1:2", "cwd": "/w" } }));
+        let earlier = next(&mut out_rx).await;
+        assert_eq!(earlier["method"], "session/update", "history replays before the answer");
+        assert_eq!(earlier["params"]["sessionId"], "n:1:2");
+        assert_eq!(earlier["params"]["update"]["content"]["text"], "earlier");
+        let loaded = next(&mut out_rx).await;
+        assert_eq!(loaded["id"], 7);
+        assert_eq!(loaded["result"]["modes"]["currentModeId"], "code");
 
         feed(json!({ "jsonrpc": "2.0", "id": 6, "method": "session/prompt", "params": { "sessionId": "nope", "prompt": [] } }));
         let err = next(&mut out_rx).await;

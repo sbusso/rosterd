@@ -231,6 +231,8 @@ whose session ids are roster keys. `session/list` tells a client what is behind 
 `session/new` names the node and harness in `_meta.rosterd`. Fan-out is the point: several
 clients hold one session, each sees every update, the first answer to a permission wins. The
 workspace becomes one such client, and gets updates pushed instead of asking agents to report.
+A loaded session replays its conversation from the harness's own transcript, read once at load;
+the daemon still stores none of it, the file is the harness's and the memory is the client's.
 
 ## 8. Roadmap
 
@@ -239,7 +241,8 @@ In order, each shippable alone.
 1. `rosterd start --interactive` and `rosterd-launch --tmux` (7.1), done.
 2. `/sessions/{key}/attach`, `rosterd attach`, xterm.js in the page (7.2), done.
 3. The ACP proxy: `rosterd acp` and `/sessions/{key}/acp`, the swarm as one agent with the
-   roster key as session id, fan-out to many clients, done in 0.1.24.
+   roster key as session id, fan-out to many clients, done in 0.1.24; history replay on load
+   from the harness's transcript in 0.1.26.
 4. iOS rendering on GhosttyKit; the page's QR pairing already gives the phone its node.
 5. Then, from the spec's acceptance list and the deferred items: Windows service, the Linux
    install as a package, `MIN_COMPAT` bumps as part of the release checklist.

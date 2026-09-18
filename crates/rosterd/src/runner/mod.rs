@@ -646,6 +646,11 @@ impl Runner {
         Ok(self.session(session_key)?.handshake_answer())
     }
 
+    /// The session's conversation so far as ACP updates, R20.
+    pub fn history(&self, session_key: &str) -> Result<Vec<serde_json::Value>, RunnerError> {
+        self.session(session_key)?.history()
+    }
+
     /// A `session/*` request from an ACP client behind the proxy, answered by the agent.
     pub async fn forward(&self, session_key: &str, method: &str, params: serde_json::Value) -> Result<serde_json::Value, RunnerError> {
         self.session(session_key)?.forward(method, params).await
