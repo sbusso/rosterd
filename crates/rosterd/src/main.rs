@@ -81,6 +81,8 @@ async fn main() -> ExitCode {
         tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
             .init();
+        #[cfg(unix)]
+        raise_open_files();
         return match serve(config_path).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -94,6 +96,30 @@ async fn main() -> ExitCode {
         Err(exit) => {
             eprintln!("rosterd: {}", exit.message);
             ExitCode::from(exit.code)
+        }
+    }
+}
+
+/// A launchd service starts with 256 open files, and every client stream, holder socket and
+/// peer is one: the daemon ran out within a day. The soft limit goes to the hard limit, capped
+/// where macOS caps it.
+#[cfg(unix)]
+fn raise_open_files() {
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: getrlimit and setrlimit on a struct this function owns.
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+            return;
+        }
+        let want = limit.rlim_max.min(10_240);
+        if limit.rlim_cur >= want {
+            return;
+        }
+        limit.rlim_cur = want;
+        if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) == 0 {
+            tracing::info!(open_files = want, "open file limit raised");
+        } else {
+            tracing::warn!(open_files = want, "open file limit not raised");
         }
     }
 }
