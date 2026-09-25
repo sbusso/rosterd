@@ -11,6 +11,7 @@ mod client;
 mod list;
 pub(crate) mod resolve;
 mod session;
+mod tui;
 
 use std::path::Path;
 
@@ -101,6 +102,9 @@ pub enum Command {
     Read { key: String },
     /// Which source set each field and when, and which claims were rejected.
     Explain { key: String },
+    /// The roster on a screen: what waits on you first, every work piece, and each one's
+    /// stream with a line to steer it.
+    Tui,
     /// Create a session, R5.1: headless, or with --interactive the harness's own terminal UI
     /// in a tmux session, attached here at once when this is a terminal.
     Start {
@@ -269,6 +273,7 @@ pub async fn run(command: Command, config_path: &Path, json: bool) -> Out<()> {
     match command {
         Command::List { scope } => list::list(&client, &scope, json).await,
         Command::Acp { node, harness } => acp::serve(client, &config, node, harness).await,
+        Command::Tui => tui::run(client, &config).await,
         Command::Watch { scope } => list::watch(&client, &scope, json).await,
         Command::Changes => list::changes(&client, json).await,
         Command::Attention => attention::attention(&client, json).await,

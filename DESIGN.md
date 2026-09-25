@@ -233,6 +233,9 @@ clients hold one session, each sees every update, the first answer to a permissi
 workspace becomes one such client, and gets updates pushed instead of asking agents to report.
 A loaded session replays its conversation from the harness's own transcript, read once at load;
 the daemon still stores none of it, the file is the harness's and the memory is the client's.
+`rosterd tui` is the first client shaped for this: an inbox of what waits on a human, the
+work pieces, and one piece's stream with a line to steer it, all through the API and the ACP
+websocket, so a screen and a script can do the same things.
 
 ## 8. Roadmap
 

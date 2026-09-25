@@ -99,6 +99,7 @@ States come from hooks and ACP, never from the process scan: a session only the 
 - `rosterd status`: the node, listeners, swarm, counts
 - `rosterd list` / `rosterd watch`: the rows
 - `rosterd attention`: the sessions waiting on a human and what each waits on
+- `rosterd tui`: the roster on a screen, what waits on you first, each piece's stream and a line to steer it
 - `rosterd daemon`: run the daemon by hand
 - config: `~/.config/rosterd/rosterd.toml` (Linux), `~/Library/Application Support/rosterd/rosterd.toml` (macOS), next to `node.key`, `loopback.token`, `swarm.json`
 
@@ -199,6 +200,7 @@ rosterd start --harness H [--cwd DIR] [--name L] [--policy auto|attention] [--mo
                                            the long form; without --interactive, headless
 rosterd attach KEY                         that terminal in this one, from any node
 rosterd acp [--node NODE] [--harness H]    the swarm as one ACP agent on stdin and stdout
+rosterd tui                                the roster on a screen: answer, steer, watch
 rosterd prompt KEY TEXT [--wait idle|needs_attention|ended] [--timeout SECONDS]
 rosterd cancel|stop|suspend|resume|open KEY
 rosterd handoff KEY --to NODE              move a session to another node, same session id
@@ -263,6 +265,13 @@ Attach. `rosterd attach KEY` puts the session's terminal in this one: `GET /sess
 is a websocket to a pty running `tmux attach` on the owning node, relayed over the mesh by any
 other node; binary frames are the terminal bytes, a text frame carries resize or the exit code.
 The page's attach button renders the same stream in place.
+
+Screen. `rosterd tui` is the roster arranged around your attention: what waits on you first,
+then every work piece in the swarm, name, project, node, harness, age and state. A pending
+permission shows its options numbered, `1`-`9`, `y`, `a` and `n` answer it, `c` cancels a turn,
+`z` suspends, `r` resumes, `s` stops. Enter opens a piece: its conversation so far from the
+harness's transcript, then live, over the same websocket as ACP; the line under it is a prompt,
+or the answer when a question pending takes one text field. Everything it does is one API call.
 
 ACP. `rosterd acp` serves the Agent Client Protocol on stdin and stdout for any ACP client
 (Zed, an editor, the workspace, a script): one agent whose session ids are roster keys.

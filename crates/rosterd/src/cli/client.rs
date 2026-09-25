@@ -53,6 +53,7 @@ impl From<std::io::Error> for Exit {
     }
 }
 
+#[derive(Clone)]
 pub struct Client {
     socket: PathBuf,
     http: reqwest::Client,
